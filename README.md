@@ -2,7 +2,7 @@
 
 Wildbound is a desktop-first 2D adventure game foundation built with TypeScript, Phaser, Electron, and Electron Forge. Windows is the current release target.
 
-Current release: `1.0.0` - Desktop Foundation.
+Current release: `1.1.0` - Procedural World Core.
 
 ## Current state
 
@@ -10,6 +10,8 @@ Current release: `1.0.0` - Desktop Foundation.
 - The initial Windows game window is resizable and preserves the intended 16:9 game rendering.
 - A placeholder player moves with WASD or the arrow keys.
 - Packaged builds load local game files and do not require a web server or internet connection.
+- The camera follows the player for desktop exploration.
+- F3 shows world position, tile position, seed, chunk position, loaded chunks, and FPS.
 - The world uses deterministic, seed-based terrain chunks with grass, dirt, and water placeholders.
 
 ## Procedural world core
