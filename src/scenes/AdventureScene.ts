@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { biomeAtTile } from '../world/generation/biomeGenerator';
 import { ChunkManager } from '../world/ChunkManager';
 import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
 
@@ -95,9 +96,13 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private updateDebugText(): void {
+    const tileX = worldToTile(this.player.x);
+    const tileY = worldToTile(this.player.y);
+
     this.debugText.setText([
       `World: ${Math.round(this.player.x)}, ${Math.round(this.player.y)}`,
-      `Tile: ${worldToTile(this.player.x)}, ${worldToTile(this.player.y)} (${WORLD_TILE_SIZE}px)`,
+      `Tile: ${tileX}, ${tileY} (${WORLD_TILE_SIZE}px)`,
+      `Biome: ${biomeAtTile(WORLD_SEED, tileX, tileY)}`,
       `Seed: ${WORLD_SEED}`,
       `Chunk: ${this.chunkManager.currentChunkX}, ${this.chunkManager.currentChunkY}`,
       `Loaded chunks: ${this.chunkManager.loadedChunkCount}`,

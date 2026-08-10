@@ -12,7 +12,8 @@ Current release: `1.1.0` - Procedural World Core.
 - Packaged builds load local game files and do not require a web server or internet connection.
 - The camera follows the player for desktop exploration.
 - F3 shows world position, tile position, seed, chunk position, loaded chunks, and FPS.
-- The world uses deterministic, seed-based terrain chunks with grass, dirt, and water placeholders.
+- Elevation, moisture, and temperature noise classify deterministic ocean, beach, plains, forest, desert, swamp, hills, mountains, and snow biomes.
+- The world uses deterministic, seed-based terrain chunks with code-generated biome color placeholders.
 
 ## Procedural world core
 
