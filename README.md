@@ -10,10 +10,10 @@ Current release: `1.1.0` - Procedural World Core.
 - The initial Windows game window is resizable and preserves the intended 16:9 game rendering.
 - A placeholder player moves with WASD or the arrow keys.
 - Packaged builds load local game files and do not require a web server or internet connection.
-- The camera follows the player for desktop exploration.
-- F3 shows world position, tile position, seed, chunk position, loaded chunks, and FPS.
-- Elevation, moisture, and temperature noise classify deterministic ocean, beach, plains, forest, desert, swamp, hills, mountains, and snow biomes.
-- The world uses deterministic, seed-based terrain chunks with code-generated biome color placeholders.
+- The camera follows the player at a 0.75 zoom level to show a wider exploration area.
+- F3 shows world position, tile position, biome, elevation, moisture, temperature, current tile feature, seed, chunk position, loaded chunks, and FPS.
+- Large-scale elevation, moisture, and temperature noise classify broad deterministic ocean, beach, plains, forest, desert, swamp, hills, mountains, and snow biomes.
+- Sparse deterministic trees, cacti, rocks, reeds, snowy rocks, and ice patches stream with their biome terrain chunks.
 
 ## Procedural world core
 

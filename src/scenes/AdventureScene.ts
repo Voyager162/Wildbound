@@ -1,10 +1,12 @@
 import Phaser from 'phaser';
-import { biomeAtTile } from '../world/generation/biomeGenerator';
+import { biomeAtTile, climateAtTile } from '../world/generation/biomeGenerator';
+import { featureAtTile } from '../world/generation/featureGenerator';
 import { ChunkManager } from '../world/ChunkManager';
 import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
 
 const PLAYER_SPEED = 220;
 const PLAYER_SIZE = 32;
+const CAMERA_ZOOM = 0.75;
 
 type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
 
@@ -82,6 +84,7 @@ export class AdventureScene extends Phaser.Scene {
     const camera = this.cameras.main;
     camera.removeBounds();
     camera.setBackgroundColor('#16261f');
+    camera.setZoom(CAMERA_ZOOM);
     camera.setRoundPixels(true);
     camera.startFollow(this.player, true, 0.1, 0.1);
   }
@@ -98,11 +101,17 @@ export class AdventureScene extends Phaser.Scene {
   private updateDebugText(): void {
     const tileX = worldToTile(this.player.x);
     const tileY = worldToTile(this.player.y);
+    const climate = climateAtTile(WORLD_SEED, tileX, tileY);
+    const feature = featureAtTile(WORLD_SEED, tileX, tileY);
 
     this.debugText.setText([
       `World: ${Math.round(this.player.x)}, ${Math.round(this.player.y)}`,
       `Tile: ${tileX}, ${tileY} (${WORLD_TILE_SIZE}px)`,
       `Biome: ${biomeAtTile(WORLD_SEED, tileX, tileY)}`,
+      `Elevation: ${climate.elevation.toFixed(2)}`,
+      `Moisture: ${climate.moisture.toFixed(2)}`,
+      `Temperature: ${climate.temperature.toFixed(2)}`,
+      `Feature: ${feature ?? 'none'}`,
       `Seed: ${WORLD_SEED}`,
       `Chunk: ${this.chunkManager.currentChunkX}, ${this.chunkManager.currentChunkY}`,
       `Loaded chunks: ${this.chunkManager.loadedChunkCount}`,

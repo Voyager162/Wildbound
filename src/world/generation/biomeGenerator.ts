@@ -18,10 +18,11 @@ export interface ClimateSample {
   temperature: number;
 }
 
+// Large climate wavelengths make each biome a region to explore instead of a small patch.
 export const climateAtTile = (seed: string, tileX: number, tileY: number): ClimateSample => ({
-  elevation: coherentNoise(seed, tileX, tileY, 96, 0x63d83595),
-  moisture: coherentNoise(seed, tileX, tileY, 72, 0xa511e9b3),
-  temperature: coherentNoise(seed, tileX, tileY, 120, 0x4f1bbcdc)
+  elevation: coherentNoise(seed, tileX, tileY, 768, 0x63d83595),
+  moisture: coherentNoise(seed, tileX, tileY, 576, 0xa511e9b3),
+  temperature: coherentNoise(seed, tileX, tileY, 1024, 0x4f1bbcdc)
 });
 
 export const biomeAtTile = (seed: string, tileX: number, tileY: number): Biome => {

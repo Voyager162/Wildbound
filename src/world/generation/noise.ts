@@ -48,7 +48,10 @@ export const coherentNoise = (
 ): number => {
   const seedValue = seedFromString(seed) ^ salt;
   const broadRegion = valueNoise(tileX / scale, tileY / scale, seedValue);
-  const localVariation = valueNoise(tileX / (scale / 3), tileY / (scale / 3), seedValue ^ 0x9e3779b9);
+  const localVariation = valueNoise(tileX / (scale / 4), tileY / (scale / 4), seedValue ^ 0x9e3779b9);
 
-  return broadRegion * 0.76 + localVariation * 0.24;
+  return broadRegion * 0.88 + localVariation * 0.12;
 };
+
+export const randomAtTile = (seed: string, tileX: number, tileY: number, salt: number): number =>
+  hashGridPoint(tileX, tileY, seedFromString(seed) ^ salt);
