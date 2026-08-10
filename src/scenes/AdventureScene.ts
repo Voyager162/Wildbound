@@ -1,8 +1,14 @@
 import Phaser from 'phaser';
+import {
+  drawTestWorld,
+  TEST_WORLD_HEIGHT,
+  TEST_WORLD_WIDTH,
+  WORLD_TILE_SIZE,
+  worldToTile
+} from '../world/testWorld';
 
-const WORLD_WIDTH = 960;
-const WORLD_HEIGHT = 540;
 const PLAYER_SPEED = 220;
+const PLAYER_SIZE = 32;
 
 type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
 
@@ -10,20 +16,24 @@ export class AdventureScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Rectangle;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private movementKeys!: MovementKeys;
+  private debugText!: Phaser.GameObjects.Text;
+  private isDebugVisible = false;
 
   constructor() {
     super('adventure');
   }
 
   create(): void {
-    this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    this.drawGround();
+    this.physics.world.setBounds(0, 0, TEST_WORLD_WIDTH, TEST_WORLD_HEIGHT);
+    drawTestWorld(this);
 
-    this.player = this.add.rectangle(WORLD_WIDTH / 2, WORLD_HEIGHT / 2, 32, 32, 0x65d6ff);
+    this.player = this.add.rectangle(TEST_WORLD_WIDTH / 2, TEST_WORLD_HEIGHT / 2, PLAYER_SIZE, PLAYER_SIZE, 0x65d6ff);
     this.physics.add.existing(this.player);
 
     const playerBody = this.player.body as Phaser.Physics.Arcade.Body;
     playerBody.setCollideWorldBounds(true);
+
+    this.configureCamera();
 
     this.cursors = this.input.keyboard!.createCursorKeys();
     this.movementKeys = this.input.keyboard!.addKeys({
@@ -32,14 +42,26 @@ export class AdventureScene extends Phaser.Scene {
       left: Phaser.Input.Keyboard.KeyCodes.A,
       right: Phaser.Input.Keyboard.KeyCodes.D
     }) as MovementKeys;
+    this.input.keyboard!.on('keydown-F3', this.toggleDebug, this);
 
     this.add
-      .text(16, 16, 'Move with WASD or arrow keys', {
+      .text(16, 16, 'Move with WASD or arrow keys · F3: Debug', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '18px',
         color: '#e8f0f7'
       })
       .setScrollFactor(0);
+
+    this.debugText = this.add
+      .text(16, 48, '', {
+        fontFamily: 'monospace',
+        fontSize: '16px',
+        color: '#cfe8d8',
+        backgroundColor: '#102019cc',
+        padding: { x: 8, y: 6 }
+      })
+      .setScrollFactor(0)
+      .setVisible(false);
   }
 
   update(): void {
@@ -49,24 +71,37 @@ export class AdventureScene extends Phaser.Scene {
 
     const direction = new Phaser.Math.Vector2(horizontal, vertical).normalize().scale(PLAYER_SPEED);
     playerBody.setVelocity(direction.x, direction.y);
+
+    if (this.isDebugVisible) {
+      this.updateDebugText();
+    }
   }
 
   private isDown(direction: keyof MovementKeys): boolean {
     return Boolean(this.cursors[direction]?.isDown || this.movementKeys[direction].isDown);
   }
 
-  private drawGround(): void {
-    const ground = this.add.graphics();
-    ground.fillStyle(0x263d32, 1);
-    ground.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    ground.lineStyle(1, 0x385746, 0.55);
+  private configureCamera(): void {
+    const camera = this.cameras.main;
+    camera.setBounds(0, 0, TEST_WORLD_WIDTH, TEST_WORLD_HEIGHT);
+    camera.setRoundPixels(true);
+    camera.startFollow(this.player, true, 0.1, 0.1);
+  }
 
-    for (let x = 0; x <= WORLD_WIDTH; x += 48) {
-      ground.lineBetween(x, 0, x, WORLD_HEIGHT);
-    }
+  private toggleDebug(): void {
+    this.isDebugVisible = !this.isDebugVisible;
+    this.debugText.setVisible(this.isDebugVisible);
 
-    for (let y = 0; y <= WORLD_HEIGHT; y += 48) {
-      ground.lineBetween(0, y, WORLD_WIDTH, y);
+    if (this.isDebugVisible) {
+      this.updateDebugText();
     }
+  }
+
+  private updateDebugText(): void {
+    this.debugText.setText([
+      `World: ${Math.round(this.player.x)}, ${Math.round(this.player.y)}`,
+      `Tile: ${worldToTile(this.player.x)}, ${worldToTile(this.player.y)} (${WORLD_TILE_SIZE}px)`,
+      `FPS: ${this.game.loop.actualFps.toFixed(0)}`
+    ]);
   }
 }
