@@ -1,11 +1,6 @@
 import Phaser from 'phaser';
-import {
-  drawTestWorld,
-  TEST_WORLD_HEIGHT,
-  TEST_WORLD_WIDTH,
-  WORLD_TILE_SIZE,
-  worldToTile
-} from '../world/testWorld';
+import { ChunkManager } from '../world/ChunkManager';
+import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
 
 const PLAYER_SPEED = 220;
 const PLAYER_SIZE = 32;
@@ -16,6 +11,7 @@ export class AdventureScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Rectangle;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private movementKeys!: MovementKeys;
+  private chunkManager!: ChunkManager;
   private debugText!: Phaser.GameObjects.Text;
   private isDebugVisible = false;
 
@@ -24,14 +20,10 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.physics.world.setBounds(0, 0, TEST_WORLD_WIDTH, TEST_WORLD_HEIGHT);
-    drawTestWorld(this);
-
-    this.player = this.add.rectangle(TEST_WORLD_WIDTH / 2, TEST_WORLD_HEIGHT / 2, PLAYER_SIZE, PLAYER_SIZE, 0x65d6ff);
+    this.chunkManager = new ChunkManager(this, WORLD_SEED);
+    this.player = this.add.rectangle(WORLD_TILE_SIZE / 2, WORLD_TILE_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE, 0x65d6ff);
     this.physics.add.existing(this.player);
-
-    const playerBody = this.player.body as Phaser.Physics.Arcade.Body;
-    playerBody.setCollideWorldBounds(true);
+    this.chunkManager.update(this.player.x, this.player.y);
 
     this.configureCamera();
 
@@ -45,7 +37,7 @@ export class AdventureScene extends Phaser.Scene {
     this.input.keyboard!.on('keydown-F3', this.toggleDebug, this);
 
     this.add
-      .text(16, 16, 'Move with WASD or arrow keys · F3: Debug', {
+      .text(16, 16, 'Move with WASD or arrow keys - F3: Debug', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '18px',
         color: '#e8f0f7'
@@ -71,6 +63,7 @@ export class AdventureScene extends Phaser.Scene {
 
     const direction = new Phaser.Math.Vector2(horizontal, vertical).normalize().scale(PLAYER_SPEED);
     playerBody.setVelocity(direction.x, direction.y);
+    this.chunkManager.update(this.player.x, this.player.y);
 
     if (this.isDebugVisible) {
       this.updateDebugText();
@@ -83,7 +76,8 @@ export class AdventureScene extends Phaser.Scene {
 
   private configureCamera(): void {
     const camera = this.cameras.main;
-    camera.setBounds(0, 0, TEST_WORLD_WIDTH, TEST_WORLD_HEIGHT);
+    camera.removeBounds();
+    camera.setBackgroundColor('#16261f');
     camera.setRoundPixels(true);
     camera.startFollow(this.player, true, 0.1, 0.1);
   }
@@ -101,6 +95,9 @@ export class AdventureScene extends Phaser.Scene {
     this.debugText.setText([
       `World: ${Math.round(this.player.x)}, ${Math.round(this.player.y)}`,
       `Tile: ${worldToTile(this.player.x)}, ${worldToTile(this.player.y)} (${WORLD_TILE_SIZE}px)`,
+      `Seed: ${WORLD_SEED}`,
+      `Chunk: ${this.chunkManager.currentChunkX}, ${this.chunkManager.currentChunkY}`,
+      `Loaded chunks: ${this.chunkManager.loadedChunkCount}`,
       `FPS: ${this.game.loop.actualFps.toFixed(0)}`
     ]);
   }
