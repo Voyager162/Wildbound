@@ -23,6 +23,7 @@ export class AdventureScene extends Phaser.Scene {
     this.chunkManager = new ChunkManager(this, WORLD_SEED);
     this.player = this.add.rectangle(WORLD_TILE_SIZE / 2, WORLD_TILE_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE, 0x65d6ff);
     this.physics.add.existing(this.player);
+    this.player.setDepth(10);
     this.chunkManager.update(this.player.x, this.player.y);
 
     this.configureCamera();
@@ -42,6 +43,7 @@ export class AdventureScene extends Phaser.Scene {
         fontSize: '18px',
         color: '#e8f0f7'
       })
+      .setDepth(100)
       .setScrollFactor(0);
 
     this.debugText = this.add
@@ -52,6 +54,7 @@ export class AdventureScene extends Phaser.Scene {
         backgroundColor: '#102019cc',
         padding: { x: 8, y: 6 }
       })
+      .setDepth(100)
       .setScrollFactor(0)
       .setVisible(false);
   }
