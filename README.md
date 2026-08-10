@@ -12,6 +12,7 @@ Current release: `1.1.0` - Procedural World Core.
 - Packaged builds load local game files and do not require a web server or internet connection.
 - The camera follows the player at a 0.75 zoom level to show a wider exploration area.
 - F3 shows world position, tile position, biome, elevation, moisture, temperature, current tile feature, seed, chunk position, loaded chunks, and FPS.
+- A circular top-right minimap keeps the player centered and displays surrounding biome colors.
 - Large-scale elevation, moisture, and temperature noise classify broad deterministic ocean, beach, plains, forest, desert, swamp, hills, mountains, and snow biomes.
 - Sparse deterministic trees, cacti, rocks, reeds, snowy rocks, and ice patches stream with their biome terrain chunks.
 

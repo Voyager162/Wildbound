@@ -18,6 +18,18 @@ export interface ClimateSample {
   temperature: number;
 }
 
+export const BIOME_COLORS: Record<Biome, number> = {
+  [Biome.Ocean]: 0x2878b5,
+  [Biome.Beach]: 0xd6b861,
+  [Biome.Plains]: 0x5da955,
+  [Biome.Forest]: 0x245937,
+  [Biome.Desert]: 0xc28c3d,
+  [Biome.Swamp]: 0x3d6d5e,
+  [Biome.Hills]: 0x937a57,
+  [Biome.Mountains]: 0x657080,
+  [Biome.Snow]: 0xaec2cf
+};
+
 // Large climate wavelengths make each biome a region to explore instead of a small patch.
 export const climateAtTile = (seed: string, tileX: number, tileY: number): ClimateSample => ({
   elevation: coherentNoise(seed, tileX, tileY, 768, 0x63d83595),
