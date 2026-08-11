@@ -1,7 +1,9 @@
 import Phaser from 'phaser';
+import { SessionWorldState } from './SessionWorldState';
 import { WorldChunk } from './WorldChunk';
 import {
   CHUNK_LOAD_RADIUS,
+  CHUNK_SIZE_TILES,
   CHUNK_UNLOAD_RADIUS,
   worldToChunk
 } from './worldConfig';
@@ -11,7 +13,11 @@ export class ChunkManager {
   private activeChunkX = Number.NaN;
   private activeChunkY = Number.NaN;
 
-  constructor(private readonly scene: Phaser.Scene, private readonly seed: string) {}
+  constructor(
+    private readonly scene: Phaser.Scene,
+    private readonly seed: string,
+    private readonly sessionState: SessionWorldState
+  ) {}
 
   get currentChunkX(): number {
     return this.activeChunkX;
@@ -39,6 +45,17 @@ export class ChunkManager {
     this.unloadDistantChunks();
   }
 
+  harvestFeature(tileX: number, tileY: number): boolean {
+    if (!this.sessionState.harvestFeature(tileX, tileY)) {
+      return false;
+    }
+
+    const chunkX = Math.floor(tileX / CHUNK_SIZE_TILES);
+    const chunkY = Math.floor(tileY / CHUNK_SIZE_TILES);
+    this.chunks.get(`${chunkX},${chunkY}`)?.refreshFeatures();
+    return true;
+  }
+
   destroy(): void {
     this.chunks.forEach((chunk) => chunk.destroy());
     this.chunks.clear();
@@ -50,7 +67,7 @@ export class ChunkManager {
         const key = `${x},${y}`;
 
         if (!this.chunks.has(key)) {
-          this.chunks.set(key, new WorldChunk(this.scene, this.seed, x, y));
+          this.chunks.set(key, new WorldChunk(this.scene, this.seed, this.sessionState, x, y));
         }
       }
     }

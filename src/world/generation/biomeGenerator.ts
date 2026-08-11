@@ -1,3 +1,4 @@
+import { BIOME_SIZE_SCALE } from '../worldConfig';
 import { coherentNoise } from './noise';
 
 export enum Biome {
@@ -30,11 +31,13 @@ export const BIOME_COLORS: Record<Biome, number> = {
   [Biome.Snow]: 0xaec2cf
 };
 
+const biomeNoiseScale = (baseScale: number): number => baseScale * (BIOME_SIZE_SCALE / 50);
+
 // Large climate wavelengths make each biome a region to explore instead of a small patch.
 export const climateAtTile = (seed: string, tileX: number, tileY: number): ClimateSample => ({
-  elevation: coherentNoise(seed, tileX, tileY, 512, 0x63d83595),
-  moisture: coherentNoise(seed, tileX, tileY, 416, 0xa511e9b3),
-  temperature: coherentNoise(seed, tileX, tileY, 640, 0x4f1bbcdc)
+  elevation: coherentNoise(seed, tileX, tileY, biomeNoiseScale(512), 0x63d83595),
+  moisture: coherentNoise(seed, tileX, tileY, biomeNoiseScale(416), 0xa511e9b3),
+  temperature: coherentNoise(seed, tileX, tileY, biomeNoiseScale(640), 0x4f1bbcdc)
 });
 
 export const biomeAtTile = (seed: string, tileX: number, tileY: number): Biome => {

@@ -1,9 +1,13 @@
 import Phaser from 'phaser';
-import { BIOME_COLORS, biomeAtTile, climateAtTile } from '../world/generation/biomeGenerator';
-import { featureAtTile } from '../world/generation/featureGenerator';
+import { Inventory } from '../player/Inventory';
 import { FacingDirection, getInteractionTarget } from '../player/interaction';
 import type { InteractionTarget } from '../player/interaction';
 import { ChunkManager } from '../world/ChunkManager';
+import { DropManager } from '../world/DropManager';
+import { BIOME_COLORS, biomeAtTile, climateAtTile } from '../world/generation/biomeGenerator';
+import { featureAtTile } from '../world/generation/featureGenerator';
+import { resourceForFeature, resourceLabel } from '../world/resources';
+import { SessionWorldState } from '../world/SessionWorldState';
 import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
 
 const PLAYER_SPEED = 220;
@@ -24,7 +28,11 @@ export class AdventureScene extends Phaser.Scene {
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private movementKeys!: MovementKeys;
   private chunkManager!: ChunkManager;
+  private dropManager!: DropManager;
+  private sessionWorldState!: SessionWorldState;
+  private inventory!: Inventory;
   private debugText!: Phaser.GameObjects.Text;
+  private inventoryText!: Phaser.GameObjects.Text;
   private interactionPrompt!: Phaser.GameObjects.Text;
   private minimapGraphics!: Phaser.GameObjects.Graphics;
   private isDebugVisible = false;
@@ -32,16 +40,16 @@ export class AdventureScene extends Phaser.Scene {
   private interactionTarget: InteractionTarget | null = null;
   private minimapTileX = Number.NaN;
   private minimapTileY = Number.NaN;
-  private interactionTileX = Number.NaN;
-  private interactionTileY = Number.NaN;
-  private interactionFacing: FacingDirection | null = null;
 
   constructor() {
     super('adventure');
   }
 
   create(): void {
-    this.chunkManager = new ChunkManager(this, WORLD_SEED);
+    this.sessionWorldState = new SessionWorldState();
+    this.inventory = new Inventory();
+    this.chunkManager = new ChunkManager(this, WORLD_SEED, this.sessionWorldState);
+    this.dropManager = new DropManager(this, this.sessionWorldState);
     this.player = this.add.rectangle(WORLD_TILE_SIZE / 2, WORLD_TILE_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE, 0x65d6ff);
     this.physics.add.existing(this.player);
     this.player.setDepth(10);
@@ -59,7 +67,6 @@ export class AdventureScene extends Phaser.Scene {
     this.input.keyboard!.on('keydown-F3', this.toggleDebug, this);
     this.input.keyboard!.on('keydown-E', this.tryInteract, this);
 
-
     this.debugText = this.add
       .text(0, 0, '', {
         fontFamily: 'monospace',
@@ -72,6 +79,19 @@ export class AdventureScene extends Phaser.Scene {
       .setDepth(110)
       .setScrollFactor(0)
       .setVisible(false);
+
+    this.inventoryText = this.add
+      .text(0, 0, '', {
+        fontFamily: 'monospace',
+        fontSize: '16px',
+        color: '#f3f6f0',
+        backgroundColor: '#102019cc',
+        padding: { x: 8, y: 6 }
+      })
+      .setOrigin(0, 1)
+      .setResolution(UI_TEXT_RESOLUTION)
+      .setDepth(110)
+      .setScrollFactor(0);
 
     this.interactionPrompt = this.add
       .text(0, 0, '', {
@@ -90,9 +110,10 @@ export class AdventureScene extends Phaser.Scene {
     this.minimapGraphics = this.add.graphics().setDepth(100).setScrollFactor(0);
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleShutdown, this);
+    this.updateInventoryText();
     this.updateHudLayout();
     this.updateMinimap(true);
-    this.updateInteractionTarget(true);
+    this.updateInteractionTarget();
   }
 
   update(): void {
@@ -171,10 +192,19 @@ export class AdventureScene extends Phaser.Scene {
     const camera = this.cameras.main;
     const hudScale = 1 / camera.zoom;
     const topLeft = this.screenToHudPoint(HUD_MARGIN, HUD_MARGIN);
+    const inventoryPosition = this.screenToHudPoint(HUD_MARGIN, camera.height - HUD_MARGIN);
     const promptPosition = this.screenToHudPoint(camera.width / 2, camera.height - HUD_MARGIN);
 
     this.debugText.setScale(hudScale).setPosition(topLeft.x, topLeft.y);
+    this.inventoryText.setScale(hudScale).setPosition(inventoryPosition.x, inventoryPosition.y);
     this.interactionPrompt.setScale(hudScale).setPosition(promptPosition.x, promptPosition.y);
+  }
+
+  private updateInventoryText(): void {
+    this.inventoryText.setText([
+      'Resources',
+      ...this.inventory.entries().map(([resource, amount]) => `${resourceLabel(resource)}: ${amount}`)
+    ]);
   }
 
   private updateMinimap(force = false): void {
@@ -234,34 +264,59 @@ export class AdventureScene extends Phaser.Scene {
     this.minimapGraphics.strokeCircle(center.x, center.y, this.screenToHudLength(4));
   }
 
-  private updateInteractionTarget(force = false): void {
-    const tileX = worldToTile(this.player.x);
-    const tileY = worldToTile(this.player.y);
+  private updateInteractionTarget(): void {
+    const nearbyDrop = this.dropManager.findNearest(this.player.x, this.player.y);
+    this.interactionTarget = getInteractionTarget(
+      WORLD_SEED,
+      this.player.x,
+      this.player.y,
+      (tileX, tileY) => !this.sessionWorldState.isFeatureHarvested(tileX, tileY)
+    );
 
-    if (!force && tileX === this.interactionTileX && tileY === this.interactionTileY && this.facing === this.interactionFacing) {
+    if (nearbyDrop) {
+      this.interactionPrompt.setText(`Press E to pick up ${resourceLabel(nearbyDrop.resource)}`);
+      this.interactionPrompt.setVisible(true);
       return;
     }
 
-    this.interactionTileX = tileX;
-    this.interactionTileY = tileY;
-    this.interactionFacing = this.facing;
-    this.interactionTarget = getInteractionTarget(WORLD_SEED, tileX, tileY, this.facing);
-    this.interactionPrompt.setVisible(Boolean(this.interactionTarget));
-
     if (this.interactionTarget) {
-      this.interactionPrompt.setText(`Press E to inspect ${this.interactionTarget.feature}`);
+      this.interactionPrompt.setText(`Press E to harvest ${this.interactionTarget.feature}`);
+      this.interactionPrompt.setVisible(true);
+      return;
     }
+
+    this.interactionPrompt.setVisible(false);
   }
 
   private tryInteract(): void {
-    if (!this.interactionTarget) {
+    const collectedDrop = this.dropManager.collectNearest(this.player.x, this.player.y);
+
+    if (collectedDrop) {
+      this.inventory.add(collectedDrop.resource, collectedDrop.amount);
+      this.updateInventoryText();
+      this.showWorldFeedback(
+        this.player.x,
+        this.player.y - 22,
+        `Collected ${resourceLabel(collectedDrop.resource)}`
+      );
+      this.updateInteractionTarget();
       return;
     }
 
-    const worldX = (this.interactionTarget.tileX + 0.5) * WORLD_TILE_SIZE;
-    const worldY = (this.interactionTarget.tileY + 0.5) * WORLD_TILE_SIZE;
+    if (!this.interactionTarget || !this.chunkManager.harvestFeature(this.interactionTarget.tileX, this.interactionTarget.tileY)) {
+      return;
+    }
+
+    const resource = resourceForFeature(this.interactionTarget.feature);
+    const drop = this.sessionWorldState.createDrop(this.interactionTarget.tileX, this.interactionTarget.tileY, resource);
+    this.dropManager.add(drop);
+    this.showWorldFeedback(drop.worldX, drop.worldY - 18, `Harvested ${this.interactionTarget.feature}`);
+    this.updateInteractionTarget();
+  }
+
+  private showWorldFeedback(worldX: number, worldY: number, message: string): void {
     const feedback = this.add
-      .text(worldX, worldY - 18, `Interacted with ${this.interactionTarget.feature}`, {
+      .text(worldX, worldY, message, {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '16px',
         color: '#ffffff',
@@ -298,8 +353,9 @@ export class AdventureScene extends Phaser.Scene {
     const tileX = worldToTile(this.player.x);
     const tileY = worldToTile(this.player.y);
     const climate = climateAtTile(WORLD_SEED, tileX, tileY);
-    const feature = featureAtTile(WORLD_SEED, tileX, tileY);
-    const target = this.interactionTarget ? `${this.interactionTarget.feature} (${this.facing})` : 'none';
+    const generatedFeature = featureAtTile(WORLD_SEED, tileX, tileY);
+    const feature = this.sessionWorldState.isFeatureHarvested(tileX, tileY) ? 'harvested' : (generatedFeature ?? 'none');
+    const target = this.interactionTarget ? this.interactionTarget.feature : 'none';
 
     this.debugText.setText([
       `World: ${Math.round(this.player.x)}, ${Math.round(this.player.y)}`,
@@ -308,9 +364,11 @@ export class AdventureScene extends Phaser.Scene {
       `Elevation: ${climate.elevation.toFixed(2)}`,
       `Moisture: ${climate.moisture.toFixed(2)}`,
       `Temperature: ${climate.temperature.toFixed(2)}`,
-      `Feature: ${feature ?? 'none'}`,
+      `Feature: ${feature}`,
       `Facing: ${this.facing}`,
       `Target: ${target}`,
+      `Harvested: ${this.sessionWorldState.harvestedFeatureCount}`,
+      `Drops: ${this.sessionWorldState.dropCount}`,
       `Seed: ${WORLD_SEED}`,
       `Chunk: ${this.chunkManager.currentChunkX}, ${this.chunkManager.currentChunkY}`,
       `Loaded chunks: ${this.chunkManager.loadedChunkCount}`,

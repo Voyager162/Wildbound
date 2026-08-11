@@ -1,4 +1,5 @@
 import { featureAtTile, TerrainFeatureType } from '../world/generation/featureGenerator';
+import { WORLD_TILE_SIZE } from '../world/worldConfig';
 
 export enum FacingDirection {
   Up = 'up',
@@ -13,51 +14,46 @@ export interface InteractionTarget {
   feature: TerrainFeatureType;
 }
 
-// A three-tile-deep, three-tile-wide directional interaction area is forgiving at the current camera scale.
-const INTERACTION_REACH_TILES = 3;
-const INTERACTION_HALF_WIDTH_TILES = 1;
+// Every feature uses the same circular interaction range, measured from its tile center.
+export const INTERACTION_RADIUS_PIXELS = 96;
+const INTERACTION_RADIUS_SQUARED = INTERACTION_RADIUS_PIXELS * INTERACTION_RADIUS_PIXELS;
+const CANDIDATE_TILE_RADIUS = Math.ceil(INTERACTION_RADIUS_PIXELS / WORLD_TILE_SIZE) + 1;
 
-const facingOffsets: Record<FacingDirection, { x: number; y: number }> = {
-  [FacingDirection.Up]: { x: 0, y: -1 },
-  [FacingDirection.Down]: { x: 0, y: 1 },
-  [FacingDirection.Left]: { x: -1, y: 0 },
-  [FacingDirection.Right]: { x: 1, y: 0 }
-};
-
-const perpendicularOffsets: Record<FacingDirection, { x: number; y: number }> = {
-  [FacingDirection.Up]: { x: 1, y: 0 },
-  [FacingDirection.Down]: { x: 1, y: 0 },
-  [FacingDirection.Left]: { x: 0, y: 1 },
-  [FacingDirection.Right]: { x: 0, y: 1 }
-};
-
-const lateralOffsets = [0, -1, 1];
+type FeatureAvailability = (tileX: number, tileY: number) => boolean;
+const featureIsAvailable: FeatureAvailability = () => true;
 
 // This returns world data only; the scene decides how prompts and feedback are rendered.
 export const getInteractionTarget = (
   seed: string,
-  playerTileX: number,
-  playerTileY: number,
-  facing: FacingDirection
+  playerWorldX: number,
+  playerWorldY: number,
+  isAvailable: FeatureAvailability = featureIsAvailable
 ): InteractionTarget | null => {
-  const forward = facingOffsets[facing];
-  const perpendicular = perpendicularOffsets[facing];
+  const playerTileX = Math.floor(playerWorldX / WORLD_TILE_SIZE);
+  const playerTileY = Math.floor(playerWorldY / WORLD_TILE_SIZE);
+  let closestTarget: InteractionTarget | null = null;
+  let closestDistanceSquared = Infinity;
 
-  for (let distance = 1; distance <= INTERACTION_REACH_TILES; distance += 1) {
-    for (const lateral of lateralOffsets) {
-      if (Math.abs(lateral) > INTERACTION_HALF_WIDTH_TILES) {
+  for (let tileY = playerTileY - CANDIDATE_TILE_RADIUS; tileY <= playerTileY + CANDIDATE_TILE_RADIUS; tileY += 1) {
+    for (let tileX = playerTileX - CANDIDATE_TILE_RADIUS; tileX <= playerTileX + CANDIDATE_TILE_RADIUS; tileX += 1) {
+      const feature = featureAtTile(seed, tileX, tileY);
+
+      if (!feature || !isAvailable(tileX, tileY)) {
         continue;
       }
 
-      const tileX = playerTileX + forward.x * distance + perpendicular.x * lateral;
-      const tileY = playerTileY + forward.y * distance + perpendicular.y * lateral;
-      const feature = featureAtTile(seed, tileX, tileY);
+      const featureWorldX = (tileX + 0.5) * WORLD_TILE_SIZE;
+      const featureWorldY = (tileY + 0.5) * WORLD_TILE_SIZE;
+      const distanceX = featureWorldX - playerWorldX;
+      const distanceY = featureWorldY - playerWorldY;
+      const distanceSquared = distanceX * distanceX + distanceY * distanceY;
 
-      if (feature) {
-        return { tileX, tileY, feature };
+      if (distanceSquared <= INTERACTION_RADIUS_SQUARED && distanceSquared < closestDistanceSquared) {
+        closestDistanceSquared = distanceSquared;
+        closestTarget = { tileX, tileY, feature };
       }
     }
   }
 
-  return null;
+  return closestTarget;
 };

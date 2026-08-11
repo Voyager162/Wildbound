@@ -17,26 +17,36 @@ export interface TerrainFeature {
   localTileY: number;
 }
 
+// Tweak these deterministic per-tile chances to control terrain-feature density by biome.
+export const FEATURE_DENSITIES = {
+  forestTree: 0.014,
+  desertCactus: 0.007,
+  rocky: 0.01,
+  swampReeds: 0.014,
+  snowyRock: 0.007,
+  icePatch: 0.014
+} as const;
+
 export const featureAtTile = (seed: string, tileX: number, tileY: number): TerrainFeatureType | null => {
   const placement = randomAtTile(seed, tileX, tileY, 0x77a5c3d1);
   const biome = biomeAtTile(seed, tileX, tileY);
 
   switch (biome) {
     case Biome.Forest:
-      return placement < 0.02 ? TerrainFeatureType.Tree : null;
+      return placement < FEATURE_DENSITIES.forestTree ? TerrainFeatureType.Tree : null;
     case Biome.Desert:
-      return placement < 0.01 ? TerrainFeatureType.Cactus : null;
+      return placement < FEATURE_DENSITIES.desertCactus ? TerrainFeatureType.Cactus : null;
     case Biome.Hills:
     case Biome.Mountains:
-      return placement < 0.015 ? TerrainFeatureType.Rock : null;
+      return placement < FEATURE_DENSITIES.rocky ? TerrainFeatureType.Rock : null;
     case Biome.Swamp:
-      return placement < 0.02 ? TerrainFeatureType.Reeds : null;
+      return placement < FEATURE_DENSITIES.swampReeds ? TerrainFeatureType.Reeds : null;
     case Biome.Snow:
-      if (placement < 0.01) {
+      if (placement < FEATURE_DENSITIES.snowyRock) {
         return TerrainFeatureType.SnowyRock;
       }
 
-      return placement < 0.02 ? TerrainFeatureType.IcePatch : null;
+      return placement < FEATURE_DENSITIES.icePatch ? TerrainFeatureType.IcePatch : null;
     default:
       return null;
   }
