@@ -9,7 +9,32 @@ export interface DroppedItem {
   worldY: number;
 }
 
-// Session-only changes layer over deterministic generation; persistence can replace this later.
+export interface SessionWorldStateData {
+  harvestedFeatureKeys: string[];
+  drops: DroppedItem[];
+  nextDropId: number;
+}
+
+const isResourceType = (value: unknown): value is ResourceType =>
+  typeof value === 'string' && Object.values(ResourceType).includes(value as ResourceType);
+
+const isDroppedItem = (value: unknown): value is DroppedItem => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const drop = value as Partial<DroppedItem>;
+  return typeof drop.id === 'string'
+    && isResourceType(drop.resource)
+    && typeof drop.amount === 'number'
+    && Number.isFinite(drop.amount)
+    && drop.amount > 0
+    && Number.isFinite(drop.worldX)
+    && Number.isFinite(drop.worldY);
+};
+
+// Runtime world changes layer over deterministic generation. This is intentionally compact so
+// save games only record changes, never every procedurally generated terrain tile.
 export class SessionWorldState {
   private readonly harvestedFeatureKeys = new Set<string>();
   private readonly drops = new Map<string, DroppedItem>();
@@ -31,22 +56,24 @@ export class SessionWorldState {
   }
 
   createDrop(tileX: number, tileY: number, resource: ResourceType, amount = 1): DroppedItem {
-    const id = `${tileX},${tileY}:${resource}:${this.nextDropId}`;
-    this.nextDropId += 1;
-    const drop: DroppedItem = {
-      id,
+    return this.createDropAt(
+      (tileX + 0.5) * WORLD_TILE_SIZE,
+      (tileY + 0.5) * WORLD_TILE_SIZE,
       resource,
-      amount,
-      worldX: (tileX + 0.5) * WORLD_TILE_SIZE,
-      worldY: (tileY + 0.5) * WORLD_TILE_SIZE
-    };
+      amount
+    );
+  }
 
+  createDropAt(worldX: number, worldY: number, resource: ResourceType, amount = 1): DroppedItem {
+    const id = `drop:${this.nextDropId}`;
+    this.nextDropId += 1;
+    const drop: DroppedItem = { id, resource, amount, worldX, worldY };
     this.drops.set(drop.id, drop);
     return drop;
   }
 
-  getDrops(): ReadonlyArray<DroppedItem> {
-    return Array.from(this.drops.values());
+  getDrops(): DroppedItem[] {
+    return Array.from(this.drops.values(), (drop) => ({ ...drop }));
   }
 
   removeDrop(id: string): DroppedItem | null {
@@ -56,7 +83,42 @@ export class SessionWorldState {
       this.drops.delete(id);
     }
 
-    return drop;
+    return drop ? { ...drop } : null;
+  }
+
+  toSaveData(): SessionWorldStateData {
+    return {
+      harvestedFeatureKeys: Array.from(this.harvestedFeatureKeys),
+      drops: this.getDrops(),
+      nextDropId: this.nextDropId
+    };
+  }
+
+  restore(data: unknown): void {
+    this.harvestedFeatureKeys.clear();
+    this.drops.clear();
+    this.nextDropId = 0;
+
+    if (!data || typeof data !== 'object') {
+      return;
+    }
+
+    const state = data as Partial<SessionWorldStateData>;
+    if (Array.isArray(state.harvestedFeatureKeys)) {
+      state.harvestedFeatureKeys.forEach((key) => {
+        if (typeof key === 'string') {
+          this.harvestedFeatureKeys.add(key);
+        }
+      });
+    }
+
+    if (Array.isArray(state.drops)) {
+      state.drops.filter(isDroppedItem).forEach((drop) => this.drops.set(drop.id, { ...drop }));
+    }
+
+    if (typeof state.nextDropId === 'number' && Number.isInteger(state.nextDropId) && state.nextDropId >= 0) {
+      this.nextDropId = state.nextDropId;
+    }
   }
 
   get harvestedFeatureCount(): number {

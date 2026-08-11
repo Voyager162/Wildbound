@@ -1,4 +1,4 @@
-import type { ForgeConfig } from '@electron-forge/shared-types';
+﻿import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { VitePlugin } from '@electron-forge/plugin-vite';
@@ -25,6 +25,11 @@ const config: ForgeConfig = {
           entry: 'src/electron/main.ts',
           config: 'vite.main.config.ts',
           target: 'main'
+        },
+        {
+          entry: 'src/electron/preload.ts',
+          config: 'vite.preload.config.ts',
+          target: 'preload'
         }
       ],
       renderer: [

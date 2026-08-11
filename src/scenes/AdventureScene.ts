@@ -1,62 +1,69 @@
-import Phaser from 'phaser';
+﻿import Phaser from 'phaser';
+import type { InventorySlot } from '../player/Inventory';
 import { Inventory, INVENTORY_SLOT_COUNT } from '../player/Inventory';
 import { FacingDirection, getInteractionTarget } from '../player/interaction';
 import { PLAYER_SPEED_SCALE } from '../player/playerConfig';
 import type { InteractionTarget } from '../player/interaction';
+import { isSaveGameData, type SaveGameData } from '../save/SaveGameData';
+import { InventoryOverlay } from '../ui/InventoryOverlay';
+import { MinimapOverlay } from '../ui/MinimapOverlay';
+import { MINIMAP_AREA_SCALE } from '../ui/uiConfig';
 import { ChunkManager } from '../world/ChunkManager';
+import { DropManager } from '../world/DropManager';
 import { BIOME_COLORS, biomeAtTile, climateAtTile } from '../world/generation/biomeGenerator';
 import { featureAtTile } from '../world/generation/featureGenerator';
-import { RESOURCE_COLORS, resourceForFeature, resourceLabel } from '../world/resources';
+import { resourceForFeature, resourceLabel } from '../world/resources';
 import { SessionWorldState } from '../world/SessionWorldState';
 import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
-import { MINIMAP_AREA_SCALE } from '../ui/uiConfig';
 
 const BASE_PLAYER_SPEED = 220;
 const PLAYER_SPEED = BASE_PLAYER_SPEED * (PLAYER_SPEED_SCALE / 50);
 const PLAYER_SIZE = 32;
 const HARVEST_DURATION_MS = 1000;
-// This is the world view visible on a 16:9 display, regardless of window size.
+const HARVEST_RING_RADIUS = 16;
 const CAMERA_WORLD_VIEW_WIDTH = 2560;
 const CAMERA_WORLD_VIEW_HEIGHT = 1440;
-const HUD_MARGIN = 8;
-const MINIMAP_RADIUS = 64;
-const MINIMAP_CELL_SIZE = 2;
+const MINIMAP_UPDATE_INTERVAL_MS = 250;
+const DEBUG_UPDATE_INTERVAL_MS = 250;
+const PICKUP_CHECK_INTERVAL_MS = 120;
+const SAVE_INTERVAL_MS = 900;
 const MINIMAP_TILES_PER_CELL = Math.max(1, Math.round(16 * (MINIMAP_AREA_SCALE / 50)));
-const UI_TEXT_RESOLUTION = Math.max(1, window.devicePixelRatio || 1);
-const INVENTORY_COLUMNS = 4;
-const INVENTORY_SLOT_SIZE = 62;
-const INVENTORY_SLOT_GAP = 6;
-const INVENTORY_PANEL_PADDING = 18;
-const INVENTORY_TITLE_HEIGHT = 36;
-const INVENTORY_ROWS = Math.ceil(INVENTORY_SLOT_COUNT / INVENTORY_COLUMNS);
-const INVENTORY_PANEL_WIDTH = INVENTORY_PANEL_PADDING * 2 + INVENTORY_COLUMNS * INVENTORY_SLOT_SIZE + (INVENTORY_COLUMNS - 1) * INVENTORY_SLOT_GAP;
-const INVENTORY_PANEL_HEIGHT = INVENTORY_PANEL_PADDING * 2 + INVENTORY_TITLE_HEIGHT + INVENTORY_ROWS * INVENTORY_SLOT_SIZE + (INVENTORY_ROWS - 1) * INVENTORY_SLOT_GAP;
 
 type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
 
 export class AdventureScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Rectangle;
+  private playerAvatar!: Phaser.GameObjects.Graphics;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private movementKeys!: MovementKeys;
   private chunkManager!: ChunkManager;
+  private dropManager!: DropManager;
   private sessionWorldState!: SessionWorldState;
   private inventory!: Inventory;
+  private inventoryOverlay!: InventoryOverlay;
+  private minimapOverlay!: MinimapOverlay;
   private debugElement!: HTMLPreElement;
-  private inventoryTitleText!: Phaser.GameObjects.Text;
-  private inventorySlotTexts: Phaser.GameObjects.Text[] = [];
-  private inventoryPanelGraphics!: Phaser.GameObjects.Graphics;
-  private interactionPrompt!: Phaser.GameObjects.Text;
-  private minimapGraphics!: Phaser.GameObjects.Graphics;
+  private interactionHighlight!: Phaser.GameObjects.Ellipse;
   private harvestProgressGraphics!: Phaser.GameObjects.Graphics;
   private isDebugVisible = false;
   private inventoryOpen = false;
+  private worldReady = false;
+  private worldSeed = WORLD_SEED;
   private facing = FacingDirection.Down;
   private interactionTarget: InteractionTarget | null = null;
   private harvestTarget: InteractionTarget | null = null;
   private harvestElapsedMs = 0;
   private harvestRequiresMouseRelease = false;
-  private minimapTileX = Number.NaN;
-  private minimapTileY = Number.NaN;
+  private lastInteractionTileX = Number.NaN;
+  private lastInteractionTileY = Number.NaN;
+  private lastMinimapUpdateMs = Number.NEGATIVE_INFINITY;
+  private lastDebugUpdateMs = Number.NEGATIVE_INFINITY;
+  private lastPickupCheckMs = Number.NEGATIVE_INFINITY;
+  private lastSaveAttemptMs = Number.NEGATIVE_INFINITY;
+  private walkElapsedMs = 0;
+  private lastAvatarState = '';
+  private saveDirty = false;
+  private savePending = false;
 
   constructor() {
     super('adventure');
@@ -65,14 +72,26 @@ export class AdventureScene extends Phaser.Scene {
   create(): void {
     this.sessionWorldState = new SessionWorldState();
     this.inventory = new Inventory();
-    this.chunkManager = new ChunkManager(this, WORLD_SEED, this.sessionWorldState);
-    this.player = this.add.rectangle(WORLD_TILE_SIZE / 2, WORLD_TILE_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE, 0x65d6ff);
-    this.physics.add.existing(this.player);
-    this.player.setDepth(10);
-    this.chunkManager.update(this.player.x, this.player.y);
+    this.player = this.add.rectangle(WORLD_TILE_SIZE / 2, WORLD_TILE_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE).setVisible(false);
+    this.playerAvatar = this.add.graphics().setDepth(10);
+    this.harvestProgressGraphics = this.add.graphics().setDepth(15);
+    this.interactionHighlight = this.add
+      .ellipse(0, 0, 88, 88, 0xf5d76e, 0.12)
+      .setStrokeStyle(3, 0xffec8b, 0.95)
+      .setDepth(0.5)
+      .setVisible(false);
+    this.tweens.add({
+      targets: this.interactionHighlight,
+      alpha: { from: 0.35, to: 0.92 },
+      scale: { from: 0.92, to: 1.08 },
+      duration: 650,
+      ease: 'Sine.easeInOut',
+      yoyo: true,
+      repeat: -1
+    });
+    this.drawPlayerAvatar(false);
 
     this.configureCamera();
-
     this.cursors = this.input.keyboard!.createCursorKeys();
     this.movementKeys = this.input.keyboard!.addKeys({
       up: Phaser.Input.Keyboard.KeyCodes.W,
@@ -83,76 +102,84 @@ export class AdventureScene extends Phaser.Scene {
     this.input.keyboard!.on('keydown-F3', this.toggleDebug, this);
     this.input.keyboard!.on('keydown-E', this.toggleInventory, this);
 
-    this.createDebugElement();
-
-    this.inventoryPanelGraphics = this.add.graphics().setDepth(120).setScrollFactor(0);
-    this.inventoryTitleText = this.add
-      .text(0, 0, 'Inventory - E to close', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '20px',
-        color: '#ffffff'
-      })
-      .setResolution(UI_TEXT_RESOLUTION)
-      .setDepth(121)
-      .setScrollFactor(0)
-      .setVisible(false);
-
-    for (let index = 0; index < INVENTORY_SLOT_COUNT; index += 1) {
-      this.inventorySlotTexts.push(
-        this.add
-          .text(0, 0, '', {
-            fontFamily: 'monospace',
-            fontSize: '12px',
-            color: '#ffffff',
-            align: 'center'
-          })
-          .setOrigin(0.5)
-          .setResolution(UI_TEXT_RESOLUTION)
-          .setDepth(121)
-          .setScrollFactor(0)
-          .setVisible(false)
-      );
+    const gameElement = document.getElementById('game');
+    if (!gameElement) {
+      throw new Error('Wildbound game container was not found.');
     }
 
-    this.interactionPrompt = this.add
-      .text(0, 0, '', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '18px',
-        color: '#ffffff',
-        backgroundColor: '#102019dd',
-        padding: { x: 10, y: 6 }
-      })
-      .setOrigin(0.5, 1)
-      .setResolution(UI_TEXT_RESOLUTION)
-      .setDepth(110)
-      .setScrollFactor(0)
-      .setVisible(false);
-
-    this.minimapGraphics = this.add.graphics().setDepth(100).setScrollFactor(0);
-    this.harvestProgressGraphics = this.add.graphics().setDepth(15);
+    this.createDebugElement(gameElement);
+    this.inventoryOverlay = new InventoryOverlay(
+      gameElement,
+      this.inventory,
+      () => this.markSaveDirty(),
+      (slot) => this.dropInventorySlot(slot)
+    );
+    this.minimapOverlay = new MinimapOverlay(gameElement);
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleShutdown, this);
-    this.updateHudLayout();
-    this.updateInventoryUi();
-    this.updateMinimap(true);
-    this.updateInteractionTarget();
+    window.addEventListener('beforeunload', this.handleBeforeUnload);
+    void this.loadSavedWorld();
   }
 
-  update(_time: number, delta: number): void {
-    const playerBody = this.player.body as Phaser.Physics.Arcade.Body;
+  update(time: number, delta: number): void {
+    if (!this.worldReady) {
+      return;
+    }
+
     const horizontal = Number(this.isDown('right')) - Number(this.isDown('left'));
     const vertical = Number(this.isDown('down')) - Number(this.isDown('up'));
+    const isMoving = horizontal !== 0 || vertical !== 0;
 
     this.updateFacing(horizontal, vertical);
-    const direction = new Phaser.Math.Vector2(horizontal, vertical).normalize().scale(PLAYER_SPEED);
-    playerBody.setVelocity(direction.x, direction.y);
+    if (isMoving) {
+      const length = Math.hypot(horizontal, vertical);
+      this.player.x += (horizontal / length) * PLAYER_SPEED * (delta / 1000);
+      this.player.y += (vertical / length) * PLAYER_SPEED * (delta / 1000);
+      this.markSaveDirty();
+    }
+
+    this.updatePlayerAvatar(delta, isMoving);
     this.chunkManager.update(this.player.x, this.player.y);
-    this.updateMinimap();
     this.updateInteractionTarget();
     this.updateHarvesting(delta);
+    this.updateMinimap(time);
+    this.collectNearbyDrops(time);
+    this.persistIfNeeded(time);
 
-    if (this.isDebugVisible) {
+    if (this.isDebugVisible && time - this.lastDebugUpdateMs >= DEBUG_UPDATE_INTERVAL_MS) {
+      this.lastDebugUpdateMs = time;
       this.updateDebugText();
+    }
+  }
+
+  private async loadSavedWorld(): Promise<void> {
+    let savedGame: SaveGameData | null = null;
+
+    try {
+      const loaded = await window.wildboundSave?.load();
+      savedGame = isSaveGameData(loaded) ? loaded : null;
+    } catch (error) {
+      console.warn('Wildbound could not load its local save.', error);
+    }
+
+    if (savedGame) {
+      this.worldSeed = savedGame.seed;
+      this.inventory.restore(savedGame.inventory);
+      this.sessionWorldState.restore(savedGame.world);
+      this.player.setPosition(savedGame.player.x, savedGame.player.y);
+    }
+
+    this.chunkManager = new ChunkManager(this, this.worldSeed, this.sessionWorldState);
+    this.dropManager = new DropManager(this, this.sessionWorldState);
+    this.worldReady = true;
+    this.chunkManager.update(this.player.x, this.player.y);
+    this.updatePlayerAvatar(0, false);
+    this.updateInteractionTarget(true);
+    this.updateMinimap(0, true);
+    this.updateDebugText();
+
+    if (!savedGame) {
+      this.markSaveDirty();
     }
   }
 
@@ -184,21 +211,11 @@ export class AdventureScene extends Phaser.Scene {
 
   private updateCameraZoom(): void {
     const camera = this.cameras.main;
-    const zoom = Math.min(
-      camera.width / CAMERA_WORLD_VIEW_WIDTH,
-      camera.height / CAMERA_WORLD_VIEW_HEIGHT
-    );
-
+    const zoom = Math.min(camera.width / CAMERA_WORLD_VIEW_WIDTH, camera.height / CAMERA_WORLD_VIEW_HEIGHT);
     camera.setZoom(Math.max(zoom, 0.1));
   }
 
-  private createDebugElement(): void {
-    const gameElement = document.getElementById('game');
-
-    if (!gameElement) {
-      throw new Error('Wildbound game container was not found.');
-    }
-
+  private createDebugElement(gameElement: HTMLElement): void {
     this.debugElement = document.createElement('pre');
     this.debugElement.className = 'debug-overlay';
     gameElement.append(this.debugElement);
@@ -208,178 +225,158 @@ export class AdventureScene extends Phaser.Scene {
     this.isDebugVisible = !this.isDebugVisible;
     this.debugElement.classList.toggle('is-visible', this.isDebugVisible);
 
-    if (this.isDebugVisible) {
+    if (this.isDebugVisible && this.worldReady) {
       this.updateDebugText();
     }
   }
 
   private toggleInventory(): void {
+    if (!this.worldReady) {
+      return;
+    }
+
     this.inventoryOpen = !this.inventoryOpen;
     this.cancelHarvesting();
-    this.updateInventoryUi();
+    this.inventoryOverlay.setOpen(this.inventoryOpen);
   }
 
   private handleResize(): void {
     this.updateCameraZoom();
-    this.updateHudLayout();
-    this.updateMinimap(true);
+    if (this.worldReady) {
+      this.updateMinimap(0, true);
+    }
   }
 
   private handleShutdown(): void {
     this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
+    window.removeEventListener('beforeunload', this.handleBeforeUnload);
     this.debugElement.remove();
+    this.inventoryOverlay.destroy();
+    this.minimapOverlay.destroy();
+    this.chunkManager?.destroy();
+    this.dropManager?.destroy();
   }
 
-  private updateHudLayout(): void {
-    const camera = this.cameras.main;
-    const hudScale = 1 / camera.zoom;
-    const promptPosition = this.screenToHudPoint(camera.width / 2, camera.height - HUD_MARGIN);
+  private readonly handleBeforeUnload = (): void => {
+    void this.persistSave();
+  };
 
-    this.interactionPrompt.setScale(hudScale).setPosition(promptPosition.x, promptPosition.y);
-    this.drawInventoryPanel();
+  private updatePlayerAvatar(delta: number, isMoving: boolean): void {
+    if (isMoving) {
+      this.walkElapsedMs += delta;
+    } else {
+      this.walkElapsedMs = 0;
+    }
+
+    this.playerAvatar.setPosition(this.player.x, this.player.y);
+    const walkFrame = isMoving ? Math.floor(this.walkElapsedMs / 115) % 2 : 0;
+    const state = `${this.facing}:${walkFrame}`;
+
+    if (state !== this.lastAvatarState) {
+      this.lastAvatarState = state;
+      this.drawPlayerAvatar(isMoving && walkFrame === 1);
+    }
   }
 
-  private updateInventoryUi(): void {
-    this.drawInventoryPanel();
+  private drawPlayerAvatar(stepForward: boolean): void {
+    const avatar = this.playerAvatar;
+    const legOffset = stepForward ? 3 : -3;
+    avatar.clear();
+    avatar.fillStyle(0x152129, 0.32);
+    avatar.fillEllipse(0, 14, 24, 8);
+
+    avatar.fillStyle(0x27394a, 1);
+    if (this.facing === FacingDirection.Left || this.facing === FacingDirection.Right) {
+      avatar.fillRoundedRect(-8, -5, 16, 15, 4);
+      avatar.fillStyle(0x1c2a37, 1);
+      avatar.fillRect(-7, 9, 5, 10 + legOffset);
+      avatar.fillRect(3, 9, 5, 10 - legOffset);
+    } else {
+      avatar.fillRoundedRect(-8, -6, 16, 16, 4);
+      avatar.fillStyle(0x1c2a37, 1);
+      avatar.fillRect(-7, 9, 5, 10 + legOffset);
+      avatar.fillRect(3, 9, 5, 10 - legOffset);
+    }
+
+    avatar.fillStyle(0x65a8d8, 1);
+    avatar.fillRoundedRect(-7, -5, 14, 13, 3);
+    avatar.fillStyle(0xe1ae86, 1);
+    avatar.fillCircle(0, -13, 8);
+    avatar.fillStyle(0x3a2720, 1);
+    avatar.fillRect(-7, -20, 14, 5);
+    avatar.fillCircle(-5, -17, 3);
+    avatar.fillCircle(5, -17, 3);
+
+    avatar.fillStyle(0xe1ae86, 1);
+    switch (this.facing) {
+      case FacingDirection.Down:
+        avatar.fillCircle(-3, -13, 1.2);
+        avatar.fillCircle(3, -13, 1.2);
+        avatar.lineStyle(1, 0x7b4e3b, 0.9);
+        avatar.lineBetween(-2, -8, 2, -8);
+        avatar.fillRoundedRect(-13, -3, 5, 12, 2);
+        avatar.fillRoundedRect(8, -3, 5, 12, 2);
+        break;
+      case FacingDirection.Up:
+        avatar.fillStyle(0x3a2720, 1);
+        avatar.fillCircle(0, -14, 7);
+        avatar.fillRoundedRect(-13, -3, 5, 12, 2);
+        avatar.fillRoundedRect(8, -3, 5, 12, 2);
+        break;
+      case FacingDirection.Left:
+        avatar.fillCircle(-5, -13, 1.3);
+        avatar.fillRoundedRect(-14, -3, 5, 12, 2);
+        avatar.fillRoundedRect(7, -3, 5, 12, 2);
+        break;
+      case FacingDirection.Right:
+        avatar.fillCircle(5, -13, 1.3);
+        avatar.fillRoundedRect(-12, -3, 5, 12, 2);
+        avatar.fillRoundedRect(9, -3, 5, 12, 2);
+        break;
+    }
   }
 
-  private drawInventoryPanel(): void {
-    this.inventoryPanelGraphics.clear();
-
-    if (!this.inventoryOpen) {
-      this.inventoryTitleText.setVisible(false);
-      this.inventorySlotTexts.forEach((slotText) => slotText.setVisible(false));
+  private updateMinimap(time: number, force = false): void {
+    if (!force && time - this.lastMinimapUpdateMs < MINIMAP_UPDATE_INTERVAL_MS) {
       return;
     }
 
-    const camera = this.cameras.main;
-    const hudScale = 1 / camera.zoom;
-    const left = (camera.width - INVENTORY_PANEL_WIDTH) / 2;
-    const top = (camera.height - INVENTORY_PANEL_HEIGHT) / 2;
-    const panelTopLeft = this.screenToHudPoint(left, top);
-    const hudPanelWidth = this.screenToHudLength(INVENTORY_PANEL_WIDTH);
-    const hudPanelHeight = this.screenToHudLength(INVENTORY_PANEL_HEIGHT);
-    const hudSlotSize = this.screenToHudLength(INVENTORY_SLOT_SIZE);
-    const hudSlotGap = this.screenToHudLength(INVENTORY_SLOT_GAP);
-    const hudPadding = this.screenToHudLength(INVENTORY_PANEL_PADDING);
-    const hudTitleHeight = this.screenToHudLength(INVENTORY_TITLE_HEIGHT);
-
-    this.inventoryPanelGraphics.fillStyle(0x102019, 0.96);
-    this.inventoryPanelGraphics.fillRoundedRect(panelTopLeft.x, panelTopLeft.y, hudPanelWidth, hudPanelHeight, this.screenToHudLength(10));
-    this.inventoryPanelGraphics.lineStyle(this.screenToHudLength(2), 0xe8f0f7, 0.9);
-    this.inventoryPanelGraphics.strokeRoundedRect(panelTopLeft.x, panelTopLeft.y, hudPanelWidth, hudPanelHeight, this.screenToHudLength(10));
-
-    const titlePosition = this.screenToHudPoint(left + INVENTORY_PANEL_PADDING, top + 10);
-    this.inventoryTitleText.setScale(hudScale).setPosition(titlePosition.x, titlePosition.y).setVisible(true);
-
-    const slots = this.inventory.getSlots();
-    slots.forEach((slot, index) => {
-      const column = index % INVENTORY_COLUMNS;
-      const row = Math.floor(index / INVENTORY_COLUMNS);
-      const slotX = panelTopLeft.x + hudPadding + column * (hudSlotSize + hudSlotGap);
-      const slotY = panelTopLeft.y + hudPadding + hudTitleHeight + row * (hudSlotSize + hudSlotGap);
-      const textPosition = this.screenToHudPoint(
-        left + INVENTORY_PANEL_PADDING + column * (INVENTORY_SLOT_SIZE + INVENTORY_SLOT_GAP) + INVENTORY_SLOT_SIZE / 2,
-        top + INVENTORY_PANEL_PADDING + INVENTORY_TITLE_HEIGHT + row * (INVENTORY_SLOT_SIZE + INVENTORY_SLOT_GAP) + INVENTORY_SLOT_SIZE / 2
-      );
-      const slotText = this.inventorySlotTexts[index];
-
-      this.inventoryPanelGraphics.fillStyle(0x263b2e, 1);
-      this.inventoryPanelGraphics.fillRoundedRect(slotX, slotY, hudSlotSize, hudSlotSize, this.screenToHudLength(4));
-      this.inventoryPanelGraphics.lineStyle(this.screenToHudLength(1), 0x78907f, 0.9);
-      this.inventoryPanelGraphics.strokeRoundedRect(slotX, slotY, hudSlotSize, hudSlotSize, this.screenToHudLength(4));
-
-      if (!slot) {
-        slotText.setVisible(false);
-        return;
-      }
-
-      this.inventoryPanelGraphics.fillStyle(RESOURCE_COLORS[slot.resource], 1);
-      this.inventoryPanelGraphics.fillCircle(slotX + hudSlotSize / 2, slotY + hudSlotSize * 0.32, this.screenToHudLength(11));
-      slotText
-        .setScale(hudScale)
-        .setPosition(textPosition.x, textPosition.y + this.screenToHudLength(9))
-        .setText(`${resourceLabel(slot.resource)}\n${slot.amount}`)
-        .setVisible(true);
-    });
+    this.lastMinimapUpdateMs = time;
+    this.minimapOverlay.draw(
+      this.worldSeed,
+      this.player.x / WORLD_TILE_SIZE,
+      this.player.y / WORLD_TILE_SIZE,
+      MINIMAP_TILES_PER_CELL
+    );
   }
 
-  private updateMinimap(force = false): void {
+  private updateInteractionTarget(force = false): void {
     const tileX = worldToTile(this.player.x);
     const tileY = worldToTile(this.player.y);
 
-    if (!force && tileX === this.minimapTileX && tileY === this.minimapTileY) {
+    if (!force && tileX === this.lastInteractionTileX && tileY === this.lastInteractionTileY) {
       return;
     }
 
-    this.minimapTileX = tileX;
-    this.minimapTileY = tileY;
-    this.drawMinimap(this.player.x / WORLD_TILE_SIZE, this.player.y / WORLD_TILE_SIZE);
-  }
-
-  private drawMinimap(playerTileX: number, playerTileY: number): void {
-    const center = this.screenToHudPoint(
-      this.cameras.main.width - HUD_MARGIN - MINIMAP_RADIUS,
-      HUD_MARGIN + MINIMAP_RADIUS
-    );
-    const hudRadius = this.screenToHudLength(MINIMAP_RADIUS);
-    const hudCellSize = this.screenToHudLength(MINIMAP_CELL_SIZE);
-    const cellsPerRadius = Math.ceil(MINIMAP_RADIUS / MINIMAP_CELL_SIZE) + 1;
-    const anchorTileX = Math.floor(playerTileX / MINIMAP_TILES_PER_CELL) * MINIMAP_TILES_PER_CELL;
-    const anchorTileY = Math.floor(playerTileY / MINIMAP_TILES_PER_CELL) * MINIMAP_TILES_PER_CELL;
-
-    this.minimapGraphics.clear();
-    this.minimapGraphics.fillStyle(0xe8f0f7, 0.95);
-    this.minimapGraphics.fillCircle(center.x, center.y, hudRadius + this.screenToHudLength(2));
-    this.minimapGraphics.fillStyle(0x102019, 0.94);
-    this.minimapGraphics.fillCircle(center.x, center.y, hudRadius);
-
-    for (let cellY = -cellsPerRadius; cellY <= cellsPerRadius; cellY += 1) {
-      for (let cellX = -cellsPerRadius; cellX <= cellsPerRadius; cellX += 1) {
-        const sampleTileX = anchorTileX + cellX * MINIMAP_TILES_PER_CELL;
-        const sampleTileY = anchorTileY + cellY * MINIMAP_TILES_PER_CELL;
-        const screenOffsetX = ((sampleTileX - playerTileX) / MINIMAP_TILES_PER_CELL) * MINIMAP_CELL_SIZE;
-        const screenOffsetY = ((sampleTileY - playerTileY) / MINIMAP_TILES_PER_CELL) * MINIMAP_CELL_SIZE;
-
-        if (screenOffsetX * screenOffsetX + screenOffsetY * screenOffsetY > (MINIMAP_RADIUS - 2) * (MINIMAP_RADIUS - 2)) {
-          continue;
-        }
-
-        this.minimapGraphics.fillStyle(BIOME_COLORS[biomeAtTile(WORLD_SEED, sampleTileX, sampleTileY)], 1);
-        this.minimapGraphics.fillRect(
-          center.x + this.screenToHudLength(screenOffsetX) - hudCellSize / 2,
-          center.y + this.screenToHudLength(screenOffsetY) - hudCellSize / 2,
-          hudCellSize,
-          hudCellSize
-        );
-      }
-    }
-
-    this.minimapGraphics.fillStyle(0x65d6ff, 1);
-    this.minimapGraphics.fillCircle(center.x, center.y, this.screenToHudLength(4));
-    this.minimapGraphics.lineStyle(this.screenToHudLength(1), 0xffffff, 1);
-    this.minimapGraphics.strokeCircle(center.x, center.y, this.screenToHudLength(4));
-  }
-
-  private updateInteractionTarget(): void {
+    this.lastInteractionTileX = tileX;
+    this.lastInteractionTileY = tileY;
     this.interactionTarget = getInteractionTarget(
-      WORLD_SEED,
+      this.worldSeed,
       this.player.x,
       this.player.y,
-      (tileX, tileY) => !this.sessionWorldState.isFeatureHarvested(tileX, tileY)
+      (candidateX, candidateY) => !this.sessionWorldState.isFeatureHarvested(candidateX, candidateY)
     );
 
-    if (this.harvestTarget) {
-      return;
-    }
-
     if (this.interactionTarget) {
-      this.interactionPrompt.setText(`Hold Left Click to harvest ${this.interactionTarget.feature}`);
-      this.interactionPrompt.setVisible(true);
-      return;
+      this.interactionHighlight
+        .setPosition(
+          (this.interactionTarget.tileX + 0.5) * WORLD_TILE_SIZE,
+          (this.interactionTarget.tileY + 0.5) * WORLD_TILE_SIZE
+        )
+        .setVisible(true);
+    } else {
+      this.interactionHighlight.setVisible(false);
     }
-
-    this.interactionPrompt.setVisible(false);
   }
 
   private updateHarvesting(delta: number): void {
@@ -405,8 +402,6 @@ export class AdventureScene extends Phaser.Scene {
     const progress = this.harvestElapsedMs / HARVEST_DURATION_MS;
     this.chunkManager.setHarvestAnimation(this.harvestTarget.tileX, this.harvestTarget.tileY, progress);
     this.drawHarvestProgress(this.harvestTarget, progress);
-    this.interactionPrompt.setText(`Harvesting ${this.harvestTarget.feature} ${Math.round(progress * 100)}%`);
-    this.interactionPrompt.setVisible(true);
 
     if (progress >= 1) {
       this.completeHarvest();
@@ -415,7 +410,6 @@ export class AdventureScene extends Phaser.Scene {
 
   private completeHarvest(): void {
     const target = this.harvestTarget;
-
     if (!target) {
       return;
     }
@@ -434,9 +428,9 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     this.inventory.add(resource, 1);
-    this.updateInventoryUi();
     this.showWorldFeedback(this.player.x, this.player.y - 28, `+ 1 ${resourceLabel(resource)}`);
-    this.updateInteractionTarget();
+    this.markSaveDirty();
+    this.updateInteractionTarget(true);
   }
 
   private cancelHarvesting(): void {
@@ -452,17 +446,72 @@ export class AdventureScene extends Phaser.Scene {
   private drawHarvestProgress(target: InteractionTarget, progress: number): void {
     const centerX = (target.tileX + 0.5) * WORLD_TILE_SIZE + 32;
     const centerY = (target.tileY + 0.5) * WORLD_TILE_SIZE - 32;
-    const radius = 16;
-
     this.harvestProgressGraphics.clear();
     this.harvestProgressGraphics.fillStyle(0x102019, 0.88);
-    this.harvestProgressGraphics.fillCircle(centerX, centerY, radius + 4);
+    this.harvestProgressGraphics.fillCircle(centerX, centerY, HARVEST_RING_RADIUS + 4);
     this.harvestProgressGraphics.lineStyle(4, 0x6f8492, 0.95);
-    this.harvestProgressGraphics.strokeCircle(centerX, centerY, radius);
+    this.harvestProgressGraphics.strokeCircle(centerX, centerY, HARVEST_RING_RADIUS);
     this.harvestProgressGraphics.lineStyle(4, 0xf2d36b, 1);
     this.harvestProgressGraphics.beginPath();
-    this.harvestProgressGraphics.arc(centerX, centerY, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress, false);
+    this.harvestProgressGraphics.arc(
+      centerX,
+      centerY,
+      HARVEST_RING_RADIUS,
+      -Math.PI / 2,
+      -Math.PI / 2 + Math.PI * 2 * progress,
+      false
+    );
     this.harvestProgressGraphics.strokePath();
+  }
+
+  private collectNearbyDrops(time: number): void {
+    if (time - this.lastPickupCheckMs < PICKUP_CHECK_INTERVAL_MS) {
+      return;
+    }
+
+    this.lastPickupCheckMs = time;
+    const drop = this.dropManager.findNearest(this.player.x, this.player.y);
+
+    if (!drop || !this.inventory.canAdd(drop.resource, drop.amount)) {
+      return;
+    }
+
+    const collected = this.dropManager.collect(drop.id);
+    if (collected) {
+      this.inventory.add(collected.resource, collected.amount);
+      this.showWorldFeedback(this.player.x, this.player.y - 28, `+ ${collected.amount} ${resourceLabel(collected.resource)}`);
+      this.markSaveDirty();
+    }
+  }
+
+  private dropInventorySlot(slot: InventorySlot): void {
+    if (!this.worldReady) {
+      return;
+    }
+
+    const direction = this.facingVector();
+    const drop = this.sessionWorldState.createDropAt(
+      this.player.x + direction.x * 68,
+      this.player.y + direction.y * 68,
+      slot.resource,
+      slot.amount
+    );
+    this.dropManager.add(drop);
+    this.showWorldFeedback(this.player.x, this.player.y - 28, `Dropped ${slot.amount} ${resourceLabel(slot.resource)}`);
+    this.markSaveDirty();
+  }
+
+  private facingVector(): Phaser.Math.Vector2 {
+    switch (this.facing) {
+      case FacingDirection.Up:
+        return new Phaser.Math.Vector2(0, -1);
+      case FacingDirection.Left:
+        return new Phaser.Math.Vector2(-1, 0);
+      case FacingDirection.Right:
+        return new Phaser.Math.Vector2(1, 0);
+      default:
+        return new Phaser.Math.Vector2(0, 1);
+    }
   }
 
   private showWorldFeedback(worldX: number, worldY: number, message: string): void {
@@ -491,45 +540,80 @@ export class AdventureScene extends Phaser.Scene {
     return first.tileX === second.tileX && first.tileY === second.tileY;
   }
 
-  private screenToHudPoint(screenX: number, screenY: number): Phaser.Math.Vector2 {
-    const camera = this.cameras.main;
-
-    return new Phaser.Math.Vector2(
-      (screenX - camera.width / 2) / camera.zoom + camera.width / 2,
-      (screenY - camera.height / 2) / camera.zoom + camera.height / 2
-    );
+  private markSaveDirty(): void {
+    this.saveDirty = true;
   }
 
-  private screenToHudLength(screenLength: number): number {
-    return screenLength / this.cameras.main.zoom;
+  private persistIfNeeded(time: number): void {
+    if (!this.saveDirty || this.savePending || time - this.lastSaveAttemptMs < SAVE_INTERVAL_MS) {
+      return;
+    }
+
+    this.lastSaveAttemptMs = time;
+    void this.persistSave();
+  }
+
+  private async persistSave(): Promise<void> {
+    if (!this.worldReady || this.savePending || !this.saveDirty) {
+      return;
+    }
+
+    const saveApi = window.wildboundSave;
+    if (!saveApi) {
+      return;
+    }
+
+    this.savePending = true;
+    this.saveDirty = false;
+    const saveData: SaveGameData = {
+      version: 1,
+      seed: this.worldSeed,
+      player: { x: this.player.x, y: this.player.y },
+      inventory: [...this.inventory.getSlots()],
+      world: this.sessionWorldState.toSaveData()
+    };
+
+    try {
+      await saveApi.save(saveData);
+    } catch (error) {
+      console.warn('Wildbound could not write its local save.', error);
+      this.saveDirty = true;
+    } finally {
+      this.savePending = false;
+    }
   }
 
   private updateDebugText(): void {
+    if (!this.worldReady) {
+      return;
+    }
+
     const tileX = worldToTile(this.player.x);
     const tileY = worldToTile(this.player.y);
-    const climate = climateAtTile(WORLD_SEED, tileX, tileY);
-    const generatedFeature = featureAtTile(WORLD_SEED, tileX, tileY);
+    const climate = climateAtTile(this.worldSeed, tileX, tileY);
+    const generatedFeature = featureAtTile(this.worldSeed, tileX, tileY);
     const feature = this.sessionWorldState.isFeatureHarvested(tileX, tileY) ? 'harvested' : (generatedFeature ?? 'none');
     const target = this.interactionTarget ? this.interactionTarget.feature : 'none';
     const usedInventorySlots = this.inventory.getSlots().filter((slot) => slot !== null).length;
 
     this.debugElement.textContent = [
-      'WILDBOUND DEBUG',
-      `World      ${Math.round(this.player.x)}, ${Math.round(this.player.y)}`,
-      `Tile       ${tileX}, ${tileY} (${WORLD_TILE_SIZE}px)`,
-      `Biome      ${biomeAtTile(WORLD_SEED, tileX, tileY)}`,
-      `Elevation  ${climate.elevation.toFixed(2)}`,
-      `Moisture   ${climate.moisture.toFixed(2)}`,
-      `Temp       ${climate.temperature.toFixed(2)}`,
-      `Feature    ${feature}`,
-      `Facing     ${this.facing}`,
-      `Target     ${target}`,
-      `Harvested  ${this.sessionWorldState.harvestedFeatureCount}`,
-      `Inventory  ${usedInventorySlots}/${INVENTORY_SLOT_COUNT} slots`,
-      `Seed       ${WORLD_SEED}`,
-      `Chunk      ${this.chunkManager.currentChunkX}, ${this.chunkManager.currentChunkY}`,
-      `Loaded     ${this.chunkManager.loadedChunkCount} chunks`,
-      `FPS        ${this.game.loop.actualFps.toFixed(0)}`
+      'WILDBOUND // SYSTEM STATUS',
+      `World       ${Math.round(this.player.x)}, ${Math.round(this.player.y)}`,
+      `Tile        ${tileX}, ${tileY} (${WORLD_TILE_SIZE}px)` ,
+      `Biome       ${biomeAtTile(this.worldSeed, tileX, tileY)}`,
+      `Elevation   ${climate.elevation.toFixed(2)}`,
+      `Moisture    ${climate.moisture.toFixed(2)}`,
+      `Temperature ${climate.temperature.toFixed(2)}`,
+      `Feature     ${feature}`,
+      `Target      ${target}`,
+      `Facing      ${this.facing}`,
+      `Harvested   ${this.sessionWorldState.harvestedFeatureCount}`,
+      `Drops       ${this.sessionWorldState.dropCount}`,
+      `Inventory   ${usedInventorySlots}/${INVENTORY_SLOT_COUNT} slots`,
+      `Seed        ${this.worldSeed}`,
+      `Chunk       ${this.chunkManager.currentChunkX}, ${this.chunkManager.currentChunkY}`,
+      `Loaded      ${this.chunkManager.loadedChunkCount} chunks`,
+      `FPS         ${this.game.loop.actualFps.toFixed(0)}`
     ].join('\n');
   }
 }

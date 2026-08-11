@@ -1,4 +1,12 @@
+﻿const seedCache = new Map<string, number>();
+
 export const seedFromString = (seed: string): number => {
+  const cached = seedCache.get(seed);
+
+  if (cached !== undefined) {
+    return cached;
+  }
+
   let hash = 2166136261;
 
   for (let index = 0; index < seed.length; index += 1) {
@@ -6,7 +14,9 @@ export const seedFromString = (seed: string): number => {
     hash = Math.imul(hash, 16777619);
   }
 
-  return hash >>> 0;
+  const result = hash >>> 0;
+  seedCache.set(seed, result);
+  return result;
 };
 
 const hashGridPoint = (gridX: number, gridY: number, seed: number): number => {

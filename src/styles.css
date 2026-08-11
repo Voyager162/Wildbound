@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   font-family: system-ui, sans-serif;
   color: #e8f0f7;
   background: #101820;
@@ -24,10 +24,11 @@ body {
 
 #game {
   position: relative;
+  overflow: hidden;
   background: #101820;
 }
 
-#game canvas {
+#game canvas:not(.minimap-overlay) {
   display: block;
 }
 
@@ -35,21 +36,291 @@ body {
   position: absolute;
   top: 8px;
   left: 8px;
-  z-index: 20;
+  z-index: 40;
   display: none;
   margin: 0;
-  padding: 10px 12px;
-  border: 1px solid rgba(175, 225, 195, 0.7);
-  border-radius: 8px;
-  background: linear-gradient(135deg, rgba(10, 29, 23, 0.94), rgba(18, 46, 35, 0.91));
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.34);
-  color: #ddf8e5;
-  font: 13px/1.46 ui-monospace, SFMono-Regular, Consolas, monospace;
-  letter-spacing: 0.01em;
+  min-width: 228px;
+  padding: 12px 14px;
+  border: 1px solid rgba(169, 225, 195, 0.84);
+  border-top: 3px solid #8ee6b0;
+  border-radius: 6px;
+  outline: 1px solid rgba(2, 12, 9, 0.82);
+  background: rgba(8, 26, 19, 0.97);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.46), inset 0 0 20px rgba(74, 149, 103, 0.12);
+  color: #e4ffeb;
+  font: 600 13px/1.55 "Cascadia Mono", "Consolas", monospace;
+  letter-spacing: 0;
+  text-rendering: geometricPrecision;
   pointer-events: none;
   white-space: pre;
 }
 
 .debug-overlay.is-visible {
   display: block;
+}
+
+.minimap-overlay {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 30;
+  display: block;
+  width: 144px;
+  height: 144px;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.42));
+  pointer-events: none;
+}
+
+.inventory-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 35;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(2, 12, 9, 0);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease, background-color 150ms ease;
+}
+
+.inventory-overlay.is-open {
+  background: rgba(2, 12, 9, 0.42);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.inventory-panel {
+  width: min(360px, calc(100vw - 40px));
+  padding: 16px;
+  border: 2px solid #91b99d;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #193628, #0d2118);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.48), inset 0 0 0 1px rgba(225, 255, 234, 0.12);
+  opacity: 0;
+  transform: translateY(10px) scale(0.94);
+  transition: opacity 160ms ease, transform 180ms cubic-bezier(0.18, 0.78, 0.3, 1.18);
+}
+
+.inventory-overlay.is-open .inventory-panel {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.inventory-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 2px 14px;
+  color: #effff2;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.inventory-title span {
+  color: #b2cfbb;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.inventory-slot {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 1;
+  border: 1px solid #678572;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #2d4938, #1a3024);
+  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.2);
+  cursor: grab;
+  touch-action: none;
+}
+
+.inventory-slot:hover {
+  border-color: #d8edbf;
+  background: linear-gradient(135deg, #3a5b45, #213d2c);
+}
+
+.inventory-slot:active {
+  cursor: grabbing;
+}
+
+.inventory-slot__amount {
+  position: absolute;
+  right: 6px;
+  bottom: 3px;
+  color: #ffffff;
+  font: 800 15px/1 "Cascadia Mono", Consolas, monospace;
+  text-shadow: 1px 1px 0 #07110b, -1px -1px 0 #07110b;
+}
+
+.resource-icon {
+  position: relative;
+  display: block;
+  width: 34px;
+  height: 34px;
+  filter: drop-shadow(0 2px 1px rgba(0, 0, 0, 0.32));
+}
+
+.resource-icon__detail {
+  position: absolute;
+  display: block;
+}
+
+.resource-icon--wood {
+  width: 36px;
+  height: 16px;
+  border: 3px solid #5f351d;
+  border-radius: 9px;
+  background: linear-gradient(90deg, #7d4324, #ca8a4f 46%, #80502c);
+}
+
+.resource-icon--wood .resource-icon__detail {
+  top: 2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #efd09b;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px #a56536;
+}
+
+.resource-icon--stone {
+  width: 31px;
+  height: 31px;
+  border: 2px solid #59636c;
+  background: linear-gradient(135deg, #d5e0e4, #89959d 60%, #59636c);
+  clip-path: polygon(50% 0, 91% 27%, 78% 86%, 31% 100%, 0 56%, 15% 16%);
+}
+
+.resource-icon--stone .resource-icon__detail {
+  top: 7px;
+  left: 13px;
+  width: 3px;
+  height: 17px;
+  background: rgba(71, 80, 87, 0.72);
+  transform: rotate(26deg);
+}
+
+.resource-icon--fiber {
+  width: 36px;
+  height: 36px;
+}
+
+.resource-icon--fiber::before,
+.resource-icon--fiber::after,
+.resource-icon--fiber .resource-icon__detail {
+  position: absolute;
+  bottom: 2px;
+  display: block;
+  width: 5px;
+  height: 31px;
+  border-radius: 90% 10% 0 0;
+  background: linear-gradient(90deg, #557c2f, #b9de6b);
+  content: "";
+}
+
+.resource-icon--fiber::before {
+  left: 7px;
+  transform: rotate(-18deg);
+}
+
+.resource-icon--fiber::after {
+  right: 6px;
+  transform: rotate(18deg);
+}
+
+.resource-icon--fiber .resource-icon__detail {
+  left: 16px;
+  transform: rotate(3deg);
+}
+
+.resource-icon--cactus {
+  width: 17px;
+  height: 34px;
+  border: 2px solid #24613b;
+  border-radius: 9px;
+  background: linear-gradient(90deg, #2f864b, #75c76c, #2d7a44);
+}
+
+.resource-icon--cactus::before,
+.resource-icon--cactus::after {
+  position: absolute;
+  display: block;
+  width: 12px;
+  height: 8px;
+  border: 2px solid #24613b;
+  background: #58aa57;
+  content: "";
+}
+
+.resource-icon--cactus::before {
+  top: 10px;
+  left: -11px;
+  border-radius: 7px 0 0 7px;
+}
+
+.resource-icon--cactus::after {
+  top: 16px;
+  right: -11px;
+  border-radius: 0 7px 7px 0;
+}
+
+.resource-icon--ice-shard {
+  width: 28px;
+  height: 35px;
+  border: 2px solid #77bfd5;
+  background: linear-gradient(135deg, #edfeff, #83d5e9 52%, #3d8eb7);
+  clip-path: polygon(50% 0, 100% 40%, 65% 100%, 23% 84%, 0 42%);
+}
+
+.resource-icon--ice-shard .resource-icon__detail {
+  top: 6px;
+  left: 12px;
+  width: 3px;
+  height: 22px;
+  background: rgba(255, 255, 255, 0.72);
+  transform: rotate(25deg);
+}
+
+.inventory-drag-ghost {
+  position: fixed;
+  z-index: 100;
+  display: flex;
+  align-items: end;
+  gap: 4px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 5px;
+  border: 1px solid #e4f6c5;
+  border-radius: 8px;
+  background: rgba(17, 44, 29, 0.96);
+  color: white;
+  font: 800 14px/1 "Cascadia Mono", Consolas, monospace;
+  pointer-events: none;
+}
+
+.inventory-drag-ghost .resource-icon {
+  transform: scale(0.78);
+  transform-origin: bottom left;
+}
+
+@media (max-width: 500px) {
+  .minimap-overlay {
+    width: 112px;
+    height: 112px;
+  }
+
+  .debug-overlay {
+    font-size: 11px;
+  }
 }

@@ -1,39 +1,55 @@
 import Phaser from 'phaser';
-import { generateChunkFeatures, TerrainFeatureType } from './generation/featureGenerator';
+import { generateChunkFeatures, type TerrainFeature, TerrainFeatureType } from './generation/featureGenerator';
 import { randomAtTile } from './generation/noise';
 import { terrainAtTile, TERRAIN_COLORS } from './generation/terrainGenerator';
 import { SessionWorldState } from './SessionWorldState';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 
-// Rendering uses 8px cells, while movement, chunks, and features keep the 32px logical tile grid.
+// Terrain is baked into one texture per chunk. The 8px visual cells retain the detailed look
+// while keeping the renderer to a single terrain draw call for the whole chunk.
 const VISUAL_TERRAIN_CELL_SIZE = 8;
 const VISUAL_CELLS_PER_TILE = WORLD_TILE_SIZE / VISUAL_TERRAIN_CELL_SIZE;
 
 export class WorldChunk {
   readonly key: string;
-  private readonly terrainGraphics: Phaser.GameObjects.Graphics;
+  private readonly textureKey: string;
+  private readonly terrainImage: Phaser.GameObjects.Image;
   private readonly featureGraphics: Phaser.GameObjects.Graphics;
+  private readonly features: TerrainFeature[];
   private harvestingTileKey: string | null = null;
   private harvestOffset = 0;
 
   constructor(
-    scene: Phaser.Scene,
+    private readonly scene: Phaser.Scene,
     private readonly seed: string,
     private readonly sessionState: SessionWorldState,
     readonly x: number,
     readonly y: number
   ) {
     this.key = `${x},${y}`;
-    this.terrainGraphics = scene.add.graphics();
+    this.textureKey = `terrain:${seed}:${x}:${y}`;
+    const terrainTexture = scene.textures.createCanvas(this.textureKey, CHUNK_SIZE_PIXELS, CHUNK_SIZE_PIXELS);
+    if (!terrainTexture) {
+      throw new Error('Wildbound could not create a terrain texture.');
+    }
+    this.terrainImage = scene.add.image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.textureKey).setOrigin(0);
     this.featureGraphics = scene.add.graphics().setDepth(1);
+    this.features = generateChunkFeatures(seed, x, y);
 
-    this.drawTerrain();
+    this.drawTerrain(terrainTexture);
     this.refreshFeatures();
   }
 
   setHarvestAnimation(tileX: number, tileY: number, progress: number): void {
-    this.harvestingTileKey = this.tileKey(tileX, tileY);
-    this.harvestOffset = Math.sin(progress * Math.PI * 10) * 6;
+    const tileKey = this.tileKey(tileX, tileY);
+    const offset = Math.sin(progress * Math.PI * 10) * 6;
+
+    if (this.harvestingTileKey === tileKey && Math.abs(offset - this.harvestOffset) < 0.8) {
+      return;
+    }
+
+    this.harvestingTileKey = tileKey;
+    this.harvestOffset = offset;
     this.refreshFeatures();
   }
 
@@ -50,10 +66,9 @@ export class WorldChunk {
   refreshFeatures(): void {
     const worldX = this.x * CHUNK_SIZE_PIXELS;
     const worldY = this.y * CHUNK_SIZE_PIXELS;
-    const features = generateChunkFeatures(this.seed, this.x, this.y);
 
     this.featureGraphics.clear();
-    features.forEach((feature) => {
+    this.features.forEach((feature) => {
       const worldTileX = this.x * CHUNK_SIZE_TILES + feature.localTileX;
       const worldTileY = this.y * CHUNK_SIZE_TILES + feature.localTileY;
 
@@ -70,13 +85,13 @@ export class WorldChunk {
   }
 
   destroy(): void {
-    this.terrainGraphics.destroy();
+    this.terrainImage.destroy();
     this.featureGraphics.destroy();
+    this.scene.textures.remove(this.textureKey);
   }
 
-  private drawTerrain(): void {
-    const worldX = this.x * CHUNK_SIZE_PIXELS;
-    const worldY = this.y * CHUNK_SIZE_PIXELS;
+  private drawTerrain(texture: Phaser.Textures.CanvasTexture): void {
+    const context = texture.getContext();
 
     for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
@@ -94,10 +109,11 @@ export class WorldChunk {
               worldTileY * VISUAL_CELLS_PER_TILE + visualY,
               0x1f4a7c15
             );
-            this.terrainGraphics.fillStyle(this.shadeColor(TERRAIN_COLORS[terrain], (variation - 0.5) * 0.06), 1);
-            this.terrainGraphics.fillRect(
-              worldX + localX * WORLD_TILE_SIZE + visualX * VISUAL_TERRAIN_CELL_SIZE,
-              worldY + localY * WORLD_TILE_SIZE + visualY * VISUAL_TERRAIN_CELL_SIZE,
+
+            context.fillStyle = this.colorToCss(this.shadeColor(TERRAIN_COLORS[terrain], (variation - 0.5) * 0.06));
+            context.fillRect(
+              localX * WORLD_TILE_SIZE + visualX * VISUAL_TERRAIN_CELL_SIZE,
+              localY * WORLD_TILE_SIZE + visualY * VISUAL_TERRAIN_CELL_SIZE,
               VISUAL_TERRAIN_CELL_SIZE,
               VISUAL_TERRAIN_CELL_SIZE
             );
@@ -106,8 +122,14 @@ export class WorldChunk {
       }
     }
 
-    this.terrainGraphics.lineStyle(1, 0x182c23, 0.1);
-    this.terrainGraphics.strokeRect(worldX, worldY, CHUNK_SIZE_PIXELS, CHUNK_SIZE_PIXELS);
+    context.strokeStyle = 'rgba(24, 44, 35, 0.18)';
+    context.lineWidth = 1;
+    context.strokeRect(0.5, 0.5, CHUNK_SIZE_PIXELS - 1, CHUNK_SIZE_PIXELS - 1);
+    texture.refresh();
+  }
+
+  private colorToCss(color: number): string {
+    return `#${color.toString(16).padStart(6, '0')}`;
   }
 
   private shadeColor(color: number, amount: number): number {
@@ -209,6 +231,7 @@ export class WorldChunk {
         break;
     }
   }
+
   private tileKey(tileX: number, tileY: number): string {
     return `${tileX},${tileY}`;
   }

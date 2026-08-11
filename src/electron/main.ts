@@ -1,10 +1,57 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import squirrelStartup from 'electron-squirrel-startup';
+
+const SAVE_FILE_NAME = 'wildbound-save.json';
+const MAX_SAVE_BYTES = 2 * 1024 * 1024;
+
+app.setName('Wildbound');
 
 if (squirrelStartup) {
   app.quit();
 }
+
+const getSavePath = (): string => path.join(app.getPath('userData'), SAVE_FILE_NAME);
+
+const isSerializableSave = (value: unknown): boolean => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  try {
+    return JSON.stringify(value).length <= MAX_SAVE_BYTES;
+  } catch {
+    return false;
+  }
+};
+
+const registerSaveHandlers = (): void => {
+  ipcMain.handle('wildbound:load-save', async (): Promise<unknown | null> => {
+    try {
+      const contents = await readFile(getSavePath(), 'utf8');
+      return JSON.parse(contents) as unknown;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return null;
+      }
+
+      console.warn('Wildbound could not load its save file.', error);
+      return null;
+    }
+  });
+
+  ipcMain.handle('wildbound:save', async (_event, saveData: unknown): Promise<void> => {
+    if (!isSerializableSave(saveData)) {
+      throw new Error('Wildbound rejected an invalid save payload.');
+    }
+
+    const savePath = getSavePath();
+    const temporaryPath = `${savePath}.tmp`;
+    await writeFile(temporaryPath, JSON.stringify(saveData), 'utf8');
+    await rename(temporaryPath, savePath);
+  });
+};
 
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
@@ -16,6 +63,7 @@ const createWindow = (): void => {
     useContentSize: true,
     backgroundColor: '#101820',
     webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true
@@ -30,7 +78,7 @@ const createWindow = (): void => {
     }
   });
 
-  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+  if (MAIN_WINDOW_VITE_DEV_SERVER_URL && !app.isPackaged) {
     void mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
   } else {
     void mainWindow.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
@@ -38,6 +86,7 @@ const createWindow = (): void => {
 };
 
 app.whenReady().then(() => {
+  registerSaveHandlers();
   createWindow();
 
   app.on('activate', () => {
