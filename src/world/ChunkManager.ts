@@ -45,6 +45,18 @@ export class ChunkManager {
     this.unloadDistantChunks();
   }
 
+  setHarvestAnimation(tileX: number, tileY: number, progress: number): void {
+    const chunkX = Math.floor(tileX / CHUNK_SIZE_TILES);
+    const chunkY = Math.floor(tileY / CHUNK_SIZE_TILES);
+    this.chunks.get(`${chunkX},${chunkY}`)?.setHarvestAnimation(tileX, tileY, progress);
+  }
+
+  clearHarvestAnimation(tileX: number, tileY: number): void {
+    const chunkX = Math.floor(tileX / CHUNK_SIZE_TILES);
+    const chunkY = Math.floor(tileY / CHUNK_SIZE_TILES);
+    this.chunks.get(`${chunkX},${chunkY}`)?.clearHarvestAnimation();
+  }
+
   harvestFeature(tileX: number, tileY: number): boolean {
     if (!this.sessionState.harvestFeature(tileX, tileY)) {
       return false;

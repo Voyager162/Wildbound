@@ -8,6 +8,14 @@ export enum ResourceType {
   IceShard = 'ice shard'
 }
 
+export const RESOURCE_COLORS: Record<ResourceType, number> = {
+  [ResourceType.Wood]: 0xa66d3b,
+  [ResourceType.Stone]: 0x9aa2aa,
+  [ResourceType.Fiber]: 0x8fc45b,
+  [ResourceType.Cactus]: 0x55aa5b,
+  [ResourceType.IceShard]: 0xaee7f5
+};
+
 export const RESOURCE_TYPES = [
   ResourceType.Wood,
   ResourceType.Stone,

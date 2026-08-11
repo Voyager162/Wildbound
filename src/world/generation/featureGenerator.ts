@@ -19,12 +19,12 @@ export interface TerrainFeature {
 
 // Tweak these deterministic per-tile chances to control terrain-feature density by biome.
 export const FEATURE_DENSITIES = {
-  forestTree: 0.014,
-  desertCactus: 0.007,
-  rocky: 0.01,
-  swampReeds: 0.014,
-  snowyRock: 0.007,
-  icePatch: 0.014
+  forestTree: 0.01,
+  desertCactus: 0.005,
+  rocky: 0.007,
+  swampReeds: 0.01,
+  snowyRock: 0.005,
+  icePatch: 0.01
 } as const;
 
 export const featureAtTile = (seed: string, tileX: number, tileY: number): TerrainFeatureType | null => {

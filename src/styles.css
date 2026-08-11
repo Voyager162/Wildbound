@@ -23,9 +23,33 @@ body {
 }
 
 #game {
+  position: relative;
   background: #101820;
 }
 
 #game canvas {
+  display: block;
+}
+
+.debug-overlay {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 20;
+  display: none;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(175, 225, 195, 0.7);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(10, 29, 23, 0.94), rgba(18, 46, 35, 0.91));
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.34);
+  color: #ddf8e5;
+  font: 13px/1.46 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0.01em;
+  pointer-events: none;
+  white-space: pre;
+}
+
+.debug-overlay.is-visible {
   display: block;
 }

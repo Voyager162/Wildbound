@@ -1,18 +1,11 @@
 import Phaser from 'phaser';
-import { ResourceType } from './resources';
+import { RESOURCE_COLORS } from './resources';
 import { SessionWorldState } from './SessionWorldState';
 import type { DroppedItem } from './SessionWorldState';
 
 export const PICKUP_RADIUS_PIXELS = 48;
 const PICKUP_RADIUS_SQUARED = PICKUP_RADIUS_PIXELS * PICKUP_RADIUS_PIXELS;
 
-const DROP_COLORS: Record<ResourceType, number> = {
-  [ResourceType.Wood]: 0xa66d3b,
-  [ResourceType.Stone]: 0x9aa2aa,
-  [ResourceType.Fiber]: 0x8fc45b,
-  [ResourceType.Cactus]: 0x55aa5b,
-  [ResourceType.IceShard]: 0xaee7f5
-};
 
 export class DropManager {
   private readonly dropGraphics = new Map<string, Phaser.GameObjects.Graphics>();
@@ -45,12 +38,16 @@ export class DropManager {
 
   collectNearest(worldX: number, worldY: number): DroppedItem | null {
     const drop = this.findNearest(worldX, worldY);
+    return drop ? this.collect(drop.id) : null;
+  }
+
+  collect(id: string): DroppedItem | null {
+    const drop = this.sessionState.removeDrop(id);
 
     if (!drop) {
       return null;
     }
 
-    this.sessionState.removeDrop(drop.id);
     this.dropGraphics.get(drop.id)?.destroy();
     this.dropGraphics.delete(drop.id);
     return drop;
@@ -63,7 +60,7 @@ export class DropManager {
 
   private renderDrop(drop: DroppedItem): void {
     const graphics = this.scene.add.graphics().setDepth(9);
-    graphics.fillStyle(DROP_COLORS[drop.resource], 1);
+    graphics.fillStyle(RESOURCE_COLORS[drop.resource], 1);
     graphics.fillCircle(drop.worldX, drop.worldY, 5);
     graphics.lineStyle(1, 0xffffff, 0.85);
     graphics.strokeCircle(drop.worldX, drop.worldY, 5);

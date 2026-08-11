@@ -1,25 +1,36 @@
 import Phaser from 'phaser';
-import { Inventory } from '../player/Inventory';
+import { Inventory, INVENTORY_SLOT_COUNT } from '../player/Inventory';
 import { FacingDirection, getInteractionTarget } from '../player/interaction';
+import { PLAYER_SPEED_SCALE } from '../player/playerConfig';
 import type { InteractionTarget } from '../player/interaction';
 import { ChunkManager } from '../world/ChunkManager';
-import { DropManager } from '../world/DropManager';
 import { BIOME_COLORS, biomeAtTile, climateAtTile } from '../world/generation/biomeGenerator';
 import { featureAtTile } from '../world/generation/featureGenerator';
-import { resourceForFeature, resourceLabel } from '../world/resources';
+import { RESOURCE_COLORS, resourceForFeature, resourceLabel } from '../world/resources';
 import { SessionWorldState } from '../world/SessionWorldState';
 import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
+import { MINIMAP_AREA_SCALE } from '../ui/uiConfig';
 
-const PLAYER_SPEED = 220;
+const BASE_PLAYER_SPEED = 220;
+const PLAYER_SPEED = BASE_PLAYER_SPEED * (PLAYER_SPEED_SCALE / 50);
 const PLAYER_SIZE = 32;
+const HARVEST_DURATION_MS = 1000;
 // This is the world view visible on a 16:9 display, regardless of window size.
 const CAMERA_WORLD_VIEW_WIDTH = 2560;
 const CAMERA_WORLD_VIEW_HEIGHT = 1440;
 const HUD_MARGIN = 8;
 const MINIMAP_RADIUS = 64;
 const MINIMAP_CELL_SIZE = 2;
-const MINIMAP_TILES_PER_CELL = 16;
+const MINIMAP_TILES_PER_CELL = Math.max(1, Math.round(16 * (MINIMAP_AREA_SCALE / 50)));
 const UI_TEXT_RESOLUTION = Math.max(1, window.devicePixelRatio || 1);
+const INVENTORY_COLUMNS = 4;
+const INVENTORY_SLOT_SIZE = 62;
+const INVENTORY_SLOT_GAP = 6;
+const INVENTORY_PANEL_PADDING = 18;
+const INVENTORY_TITLE_HEIGHT = 36;
+const INVENTORY_ROWS = Math.ceil(INVENTORY_SLOT_COUNT / INVENTORY_COLUMNS);
+const INVENTORY_PANEL_WIDTH = INVENTORY_PANEL_PADDING * 2 + INVENTORY_COLUMNS * INVENTORY_SLOT_SIZE + (INVENTORY_COLUMNS - 1) * INVENTORY_SLOT_GAP;
+const INVENTORY_PANEL_HEIGHT = INVENTORY_PANEL_PADDING * 2 + INVENTORY_TITLE_HEIGHT + INVENTORY_ROWS * INVENTORY_SLOT_SIZE + (INVENTORY_ROWS - 1) * INVENTORY_SLOT_GAP;
 
 type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
 
@@ -28,16 +39,22 @@ export class AdventureScene extends Phaser.Scene {
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private movementKeys!: MovementKeys;
   private chunkManager!: ChunkManager;
-  private dropManager!: DropManager;
   private sessionWorldState!: SessionWorldState;
   private inventory!: Inventory;
-  private debugText!: Phaser.GameObjects.Text;
-  private inventoryText!: Phaser.GameObjects.Text;
+  private debugElement!: HTMLPreElement;
+  private inventoryTitleText!: Phaser.GameObjects.Text;
+  private inventorySlotTexts: Phaser.GameObjects.Text[] = [];
+  private inventoryPanelGraphics!: Phaser.GameObjects.Graphics;
   private interactionPrompt!: Phaser.GameObjects.Text;
   private minimapGraphics!: Phaser.GameObjects.Graphics;
+  private harvestProgressGraphics!: Phaser.GameObjects.Graphics;
   private isDebugVisible = false;
+  private inventoryOpen = false;
   private facing = FacingDirection.Down;
   private interactionTarget: InteractionTarget | null = null;
+  private harvestTarget: InteractionTarget | null = null;
+  private harvestElapsedMs = 0;
+  private harvestRequiresMouseRelease = false;
   private minimapTileX = Number.NaN;
   private minimapTileY = Number.NaN;
 
@@ -49,7 +66,6 @@ export class AdventureScene extends Phaser.Scene {
     this.sessionWorldState = new SessionWorldState();
     this.inventory = new Inventory();
     this.chunkManager = new ChunkManager(this, WORLD_SEED, this.sessionWorldState);
-    this.dropManager = new DropManager(this, this.sessionWorldState);
     this.player = this.add.rectangle(WORLD_TILE_SIZE / 2, WORLD_TILE_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE, 0x65d6ff);
     this.physics.add.existing(this.player);
     this.player.setDepth(10);
@@ -65,33 +81,38 @@ export class AdventureScene extends Phaser.Scene {
       right: Phaser.Input.Keyboard.KeyCodes.D
     }) as MovementKeys;
     this.input.keyboard!.on('keydown-F3', this.toggleDebug, this);
-    this.input.keyboard!.on('keydown-E', this.tryInteract, this);
+    this.input.keyboard!.on('keydown-E', this.toggleInventory, this);
 
-    this.debugText = this.add
-      .text(0, 0, '', {
-        fontFamily: 'monospace',
-        fontSize: '16px',
-        color: '#cfe8d8',
-        backgroundColor: '#102019cc',
-        padding: { x: 8, y: 6 }
+    this.createDebugElement();
+
+    this.inventoryPanelGraphics = this.add.graphics().setDepth(120).setScrollFactor(0);
+    this.inventoryTitleText = this.add
+      .text(0, 0, 'Inventory - E to close', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '20px',
+        color: '#ffffff'
       })
       .setResolution(UI_TEXT_RESOLUTION)
-      .setDepth(110)
+      .setDepth(121)
       .setScrollFactor(0)
       .setVisible(false);
 
-    this.inventoryText = this.add
-      .text(0, 0, '', {
-        fontFamily: 'monospace',
-        fontSize: '16px',
-        color: '#f3f6f0',
-        backgroundColor: '#102019cc',
-        padding: { x: 8, y: 6 }
-      })
-      .setOrigin(0, 1)
-      .setResolution(UI_TEXT_RESOLUTION)
-      .setDepth(110)
-      .setScrollFactor(0);
+    for (let index = 0; index < INVENTORY_SLOT_COUNT; index += 1) {
+      this.inventorySlotTexts.push(
+        this.add
+          .text(0, 0, '', {
+            fontFamily: 'monospace',
+            fontSize: '12px',
+            color: '#ffffff',
+            align: 'center'
+          })
+          .setOrigin(0.5)
+          .setResolution(UI_TEXT_RESOLUTION)
+          .setDepth(121)
+          .setScrollFactor(0)
+          .setVisible(false)
+      );
+    }
 
     this.interactionPrompt = this.add
       .text(0, 0, '', {
@@ -108,15 +129,16 @@ export class AdventureScene extends Phaser.Scene {
       .setVisible(false);
 
     this.minimapGraphics = this.add.graphics().setDepth(100).setScrollFactor(0);
+    this.harvestProgressGraphics = this.add.graphics().setDepth(15);
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleShutdown, this);
-    this.updateInventoryText();
     this.updateHudLayout();
+    this.updateInventoryUi();
     this.updateMinimap(true);
     this.updateInteractionTarget();
   }
 
-  update(): void {
+  update(_time: number, delta: number): void {
     const playerBody = this.player.body as Phaser.Physics.Arcade.Body;
     const horizontal = Number(this.isDown('right')) - Number(this.isDown('left'));
     const vertical = Number(this.isDown('down')) - Number(this.isDown('up'));
@@ -127,6 +149,7 @@ export class AdventureScene extends Phaser.Scene {
     this.chunkManager.update(this.player.x, this.player.y);
     this.updateMinimap();
     this.updateInteractionTarget();
+    this.updateHarvesting(delta);
 
     if (this.isDebugVisible) {
       this.updateDebugText();
@@ -169,13 +192,31 @@ export class AdventureScene extends Phaser.Scene {
     camera.setZoom(Math.max(zoom, 0.1));
   }
 
+  private createDebugElement(): void {
+    const gameElement = document.getElementById('game');
+
+    if (!gameElement) {
+      throw new Error('Wildbound game container was not found.');
+    }
+
+    this.debugElement = document.createElement('pre');
+    this.debugElement.className = 'debug-overlay';
+    gameElement.append(this.debugElement);
+  }
+
   private toggleDebug(): void {
     this.isDebugVisible = !this.isDebugVisible;
-    this.debugText.setVisible(this.isDebugVisible);
+    this.debugElement.classList.toggle('is-visible', this.isDebugVisible);
 
     if (this.isDebugVisible) {
       this.updateDebugText();
     }
+  }
+
+  private toggleInventory(): void {
+    this.inventoryOpen = !this.inventoryOpen;
+    this.cancelHarvesting();
+    this.updateInventoryUi();
   }
 
   private handleResize(): void {
@@ -186,25 +227,81 @@ export class AdventureScene extends Phaser.Scene {
 
   private handleShutdown(): void {
     this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
+    this.debugElement.remove();
   }
 
   private updateHudLayout(): void {
     const camera = this.cameras.main;
     const hudScale = 1 / camera.zoom;
-    const topLeft = this.screenToHudPoint(HUD_MARGIN, HUD_MARGIN);
-    const inventoryPosition = this.screenToHudPoint(HUD_MARGIN, camera.height - HUD_MARGIN);
     const promptPosition = this.screenToHudPoint(camera.width / 2, camera.height - HUD_MARGIN);
 
-    this.debugText.setScale(hudScale).setPosition(topLeft.x, topLeft.y);
-    this.inventoryText.setScale(hudScale).setPosition(inventoryPosition.x, inventoryPosition.y);
     this.interactionPrompt.setScale(hudScale).setPosition(promptPosition.x, promptPosition.y);
+    this.drawInventoryPanel();
   }
 
-  private updateInventoryText(): void {
-    this.inventoryText.setText([
-      'Resources',
-      ...this.inventory.entries().map(([resource, amount]) => `${resourceLabel(resource)}: ${amount}`)
-    ]);
+  private updateInventoryUi(): void {
+    this.drawInventoryPanel();
+  }
+
+  private drawInventoryPanel(): void {
+    this.inventoryPanelGraphics.clear();
+
+    if (!this.inventoryOpen) {
+      this.inventoryTitleText.setVisible(false);
+      this.inventorySlotTexts.forEach((slotText) => slotText.setVisible(false));
+      return;
+    }
+
+    const camera = this.cameras.main;
+    const hudScale = 1 / camera.zoom;
+    const left = (camera.width - INVENTORY_PANEL_WIDTH) / 2;
+    const top = (camera.height - INVENTORY_PANEL_HEIGHT) / 2;
+    const panelTopLeft = this.screenToHudPoint(left, top);
+    const hudPanelWidth = this.screenToHudLength(INVENTORY_PANEL_WIDTH);
+    const hudPanelHeight = this.screenToHudLength(INVENTORY_PANEL_HEIGHT);
+    const hudSlotSize = this.screenToHudLength(INVENTORY_SLOT_SIZE);
+    const hudSlotGap = this.screenToHudLength(INVENTORY_SLOT_GAP);
+    const hudPadding = this.screenToHudLength(INVENTORY_PANEL_PADDING);
+    const hudTitleHeight = this.screenToHudLength(INVENTORY_TITLE_HEIGHT);
+
+    this.inventoryPanelGraphics.fillStyle(0x102019, 0.96);
+    this.inventoryPanelGraphics.fillRoundedRect(panelTopLeft.x, panelTopLeft.y, hudPanelWidth, hudPanelHeight, this.screenToHudLength(10));
+    this.inventoryPanelGraphics.lineStyle(this.screenToHudLength(2), 0xe8f0f7, 0.9);
+    this.inventoryPanelGraphics.strokeRoundedRect(panelTopLeft.x, panelTopLeft.y, hudPanelWidth, hudPanelHeight, this.screenToHudLength(10));
+
+    const titlePosition = this.screenToHudPoint(left + INVENTORY_PANEL_PADDING, top + 10);
+    this.inventoryTitleText.setScale(hudScale).setPosition(titlePosition.x, titlePosition.y).setVisible(true);
+
+    const slots = this.inventory.getSlots();
+    slots.forEach((slot, index) => {
+      const column = index % INVENTORY_COLUMNS;
+      const row = Math.floor(index / INVENTORY_COLUMNS);
+      const slotX = panelTopLeft.x + hudPadding + column * (hudSlotSize + hudSlotGap);
+      const slotY = panelTopLeft.y + hudPadding + hudTitleHeight + row * (hudSlotSize + hudSlotGap);
+      const textPosition = this.screenToHudPoint(
+        left + INVENTORY_PANEL_PADDING + column * (INVENTORY_SLOT_SIZE + INVENTORY_SLOT_GAP) + INVENTORY_SLOT_SIZE / 2,
+        top + INVENTORY_PANEL_PADDING + INVENTORY_TITLE_HEIGHT + row * (INVENTORY_SLOT_SIZE + INVENTORY_SLOT_GAP) + INVENTORY_SLOT_SIZE / 2
+      );
+      const slotText = this.inventorySlotTexts[index];
+
+      this.inventoryPanelGraphics.fillStyle(0x263b2e, 1);
+      this.inventoryPanelGraphics.fillRoundedRect(slotX, slotY, hudSlotSize, hudSlotSize, this.screenToHudLength(4));
+      this.inventoryPanelGraphics.lineStyle(this.screenToHudLength(1), 0x78907f, 0.9);
+      this.inventoryPanelGraphics.strokeRoundedRect(slotX, slotY, hudSlotSize, hudSlotSize, this.screenToHudLength(4));
+
+      if (!slot) {
+        slotText.setVisible(false);
+        return;
+      }
+
+      this.inventoryPanelGraphics.fillStyle(RESOURCE_COLORS[slot.resource], 1);
+      this.inventoryPanelGraphics.fillCircle(slotX + hudSlotSize / 2, slotY + hudSlotSize * 0.32, this.screenToHudLength(11));
+      slotText
+        .setScale(hudScale)
+        .setPosition(textPosition.x, textPosition.y + this.screenToHudLength(9))
+        .setText(`${resourceLabel(slot.resource)}\n${slot.amount}`)
+        .setVisible(true);
+    });
   }
 
   private updateMinimap(force = false): void {
@@ -265,7 +362,6 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private updateInteractionTarget(): void {
-    const nearbyDrop = this.dropManager.findNearest(this.player.x, this.player.y);
     this.interactionTarget = getInteractionTarget(
       WORLD_SEED,
       this.player.x,
@@ -273,14 +369,12 @@ export class AdventureScene extends Phaser.Scene {
       (tileX, tileY) => !this.sessionWorldState.isFeatureHarvested(tileX, tileY)
     );
 
-    if (nearbyDrop) {
-      this.interactionPrompt.setText(`Press E to pick up ${resourceLabel(nearbyDrop.resource)}`);
-      this.interactionPrompt.setVisible(true);
+    if (this.harvestTarget) {
       return;
     }
 
     if (this.interactionTarget) {
-      this.interactionPrompt.setText(`Press E to harvest ${this.interactionTarget.feature}`);
+      this.interactionPrompt.setText(`Hold Left Click to harvest ${this.interactionTarget.feature}`);
       this.interactionPrompt.setVisible(true);
       return;
     }
@@ -288,30 +382,87 @@ export class AdventureScene extends Phaser.Scene {
     this.interactionPrompt.setVisible(false);
   }
 
-  private tryInteract(): void {
-    const collectedDrop = this.dropManager.collectNearest(this.player.x, this.player.y);
+  private updateHarvesting(delta: number): void {
+    if (this.harvestRequiresMouseRelease) {
+      if (!this.input.activePointer.leftButtonDown()) {
+        this.harvestRequiresMouseRelease = false;
+      }
 
-    if (collectedDrop) {
-      this.inventory.add(collectedDrop.resource, collectedDrop.amount);
-      this.updateInventoryText();
-      this.showWorldFeedback(
-        this.player.x,
-        this.player.y - 22,
-        `Collected ${resourceLabel(collectedDrop.resource)}`
-      );
-      this.updateInteractionTarget();
       return;
     }
 
-    if (!this.interactionTarget || !this.chunkManager.harvestFeature(this.interactionTarget.tileX, this.interactionTarget.tileY)) {
+    if (this.inventoryOpen || !this.input.activePointer.leftButtonDown() || !this.interactionTarget) {
+      this.cancelHarvesting();
       return;
     }
 
-    const resource = resourceForFeature(this.interactionTarget.feature);
-    const drop = this.sessionWorldState.createDrop(this.interactionTarget.tileX, this.interactionTarget.tileY, resource);
-    this.dropManager.add(drop);
-    this.showWorldFeedback(drop.worldX, drop.worldY - 18, `Harvested ${this.interactionTarget.feature}`);
+    if (!this.harvestTarget || !this.sameTarget(this.harvestTarget, this.interactionTarget)) {
+      this.cancelHarvesting();
+      this.harvestTarget = { ...this.interactionTarget };
+    }
+
+    this.harvestElapsedMs = Math.min(this.harvestElapsedMs + delta, HARVEST_DURATION_MS);
+    const progress = this.harvestElapsedMs / HARVEST_DURATION_MS;
+    this.chunkManager.setHarvestAnimation(this.harvestTarget.tileX, this.harvestTarget.tileY, progress);
+    this.drawHarvestProgress(this.harvestTarget, progress);
+    this.interactionPrompt.setText(`Harvesting ${this.harvestTarget.feature} ${Math.round(progress * 100)}%`);
+    this.interactionPrompt.setVisible(true);
+
+    if (progress >= 1) {
+      this.completeHarvest();
+    }
+  }
+
+  private completeHarvest(): void {
+    const target = this.harvestTarget;
+
+    if (!target) {
+      return;
+    }
+
+    this.cancelHarvesting();
+    this.harvestRequiresMouseRelease = true;
+    const resource = resourceForFeature(target.feature);
+
+    if (!this.inventory.canAdd(resource, 1)) {
+      this.showWorldFeedback(this.player.x, this.player.y - 28, 'Inventory full');
+      return;
+    }
+
+    if (!this.chunkManager.harvestFeature(target.tileX, target.tileY)) {
+      return;
+    }
+
+    this.inventory.add(resource, 1);
+    this.updateInventoryUi();
+    this.showWorldFeedback(this.player.x, this.player.y - 28, `+ 1 ${resourceLabel(resource)}`);
     this.updateInteractionTarget();
+  }
+
+  private cancelHarvesting(): void {
+    if (this.harvestTarget) {
+      this.chunkManager.clearHarvestAnimation(this.harvestTarget.tileX, this.harvestTarget.tileY);
+    }
+
+    this.harvestTarget = null;
+    this.harvestElapsedMs = 0;
+    this.harvestProgressGraphics.clear();
+  }
+
+  private drawHarvestProgress(target: InteractionTarget, progress: number): void {
+    const centerX = (target.tileX + 0.5) * WORLD_TILE_SIZE + 32;
+    const centerY = (target.tileY + 0.5) * WORLD_TILE_SIZE - 32;
+    const radius = 16;
+
+    this.harvestProgressGraphics.clear();
+    this.harvestProgressGraphics.fillStyle(0x102019, 0.88);
+    this.harvestProgressGraphics.fillCircle(centerX, centerY, radius + 4);
+    this.harvestProgressGraphics.lineStyle(4, 0x6f8492, 0.95);
+    this.harvestProgressGraphics.strokeCircle(centerX, centerY, radius);
+    this.harvestProgressGraphics.lineStyle(4, 0xf2d36b, 1);
+    this.harvestProgressGraphics.beginPath();
+    this.harvestProgressGraphics.arc(centerX, centerY, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress, false);
+    this.harvestProgressGraphics.strokePath();
   }
 
   private showWorldFeedback(worldX: number, worldY: number, message: string): void {
@@ -336,6 +487,10 @@ export class AdventureScene extends Phaser.Scene {
     });
   }
 
+  private sameTarget(first: InteractionTarget, second: InteractionTarget): boolean {
+    return first.tileX === second.tileX && first.tileY === second.tileY;
+  }
+
   private screenToHudPoint(screenX: number, screenY: number): Phaser.Math.Vector2 {
     const camera = this.cameras.main;
 
@@ -356,23 +511,25 @@ export class AdventureScene extends Phaser.Scene {
     const generatedFeature = featureAtTile(WORLD_SEED, tileX, tileY);
     const feature = this.sessionWorldState.isFeatureHarvested(tileX, tileY) ? 'harvested' : (generatedFeature ?? 'none');
     const target = this.interactionTarget ? this.interactionTarget.feature : 'none';
+    const usedInventorySlots = this.inventory.getSlots().filter((slot) => slot !== null).length;
 
-    this.debugText.setText([
-      `World: ${Math.round(this.player.x)}, ${Math.round(this.player.y)}`,
-      `Tile: ${tileX}, ${tileY} (${WORLD_TILE_SIZE}px)`,
-      `Biome: ${biomeAtTile(WORLD_SEED, tileX, tileY)}`,
-      `Elevation: ${climate.elevation.toFixed(2)}`,
-      `Moisture: ${climate.moisture.toFixed(2)}`,
-      `Temperature: ${climate.temperature.toFixed(2)}`,
-      `Feature: ${feature}`,
-      `Facing: ${this.facing}`,
-      `Target: ${target}`,
-      `Harvested: ${this.sessionWorldState.harvestedFeatureCount}`,
-      `Drops: ${this.sessionWorldState.dropCount}`,
-      `Seed: ${WORLD_SEED}`,
-      `Chunk: ${this.chunkManager.currentChunkX}, ${this.chunkManager.currentChunkY}`,
-      `Loaded chunks: ${this.chunkManager.loadedChunkCount}`,
-      `FPS: ${this.game.loop.actualFps.toFixed(0)}`
-    ]);
+    this.debugElement.textContent = [
+      'WILDBOUND DEBUG',
+      `World      ${Math.round(this.player.x)}, ${Math.round(this.player.y)}`,
+      `Tile       ${tileX}, ${tileY} (${WORLD_TILE_SIZE}px)`,
+      `Biome      ${biomeAtTile(WORLD_SEED, tileX, tileY)}`,
+      `Elevation  ${climate.elevation.toFixed(2)}`,
+      `Moisture   ${climate.moisture.toFixed(2)}`,
+      `Temp       ${climate.temperature.toFixed(2)}`,
+      `Feature    ${feature}`,
+      `Facing     ${this.facing}`,
+      `Target     ${target}`,
+      `Harvested  ${this.sessionWorldState.harvestedFeatureCount}`,
+      `Inventory  ${usedInventorySlots}/${INVENTORY_SLOT_COUNT} slots`,
+      `Seed       ${WORLD_SEED}`,
+      `Chunk      ${this.chunkManager.currentChunkX}, ${this.chunkManager.currentChunkY}`,
+      `Loaded     ${this.chunkManager.loadedChunkCount} chunks`,
+      `FPS        ${this.game.loop.actualFps.toFixed(0)}`
+    ].join('\n');
   }
 }
