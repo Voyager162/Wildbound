@@ -2,14 +2,11 @@ import Phaser from 'phaser';
 import { AdventureScene } from './scenes/AdventureScene';
 import './styles.css';
 
-const GAME_WIDTH = 960;
-const GAME_HEIGHT = 540;
-
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
   parent: 'game',
-  width: GAME_WIDTH,
-  height: GAME_HEIGHT,
+  width: 960,
+  height: 540,
   backgroundColor: '#17222e',
   physics: {
     default: 'arcade',
@@ -18,7 +15,7 @@ const config: Phaser.Types.Core.GameConfig = {
     }
   },
   scale: {
-    mode: Phaser.Scale.FIT,
+    mode: Phaser.Scale.RESIZE,
     autoCenter: Phaser.Scale.CENTER_BOTH
   },
   scene: [AdventureScene]

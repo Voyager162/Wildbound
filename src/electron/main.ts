@@ -14,6 +14,7 @@ const createWindow = (): void => {
     minWidth: 640,
     minHeight: 360,
     useContentSize: true,
+    backgroundColor: '#101820',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -22,6 +23,12 @@ const createWindow = (): void => {
   });
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && input.key === 'F11') {
+      mainWindow.setFullScreen(!mainWindow.isFullScreen());
+      event.preventDefault();
+    }
+  });
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     void mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);

@@ -1,7 +1,11 @@
 import Phaser from 'phaser';
 import { generateChunkFeatures, TerrainFeatureType } from './generation/featureGenerator';
+import { randomAtTile } from './generation/noise';
 import { generateChunkTerrain, TERRAIN_COLORS } from './generation/terrainGenerator';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
+
+const VISUAL_TERRAIN_CELL_SIZE = 16;
+const VISUAL_CELLS_PER_TILE = WORLD_TILE_SIZE / VISUAL_TERRAIN_CELL_SIZE;
 
 export class WorldChunk {
   readonly key: string;
@@ -19,13 +23,27 @@ export class WorldChunk {
     for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
         const tileIndex = localY * CHUNK_SIZE_TILES + localX;
-        this.graphics.fillStyle(TERRAIN_COLORS[terrain[tileIndex]], 1);
-        this.graphics.fillRect(
-          worldX + localX * WORLD_TILE_SIZE,
-          worldY + localY * WORLD_TILE_SIZE,
-          WORLD_TILE_SIZE,
-          WORLD_TILE_SIZE
-        );
+        const baseColor = TERRAIN_COLORS[terrain[tileIndex]];
+        const worldTileX = x * CHUNK_SIZE_TILES + localX;
+        const worldTileY = y * CHUNK_SIZE_TILES + localY;
+
+        for (let visualY = 0; visualY < VISUAL_CELLS_PER_TILE; visualY += 1) {
+          for (let visualX = 0; visualX < VISUAL_CELLS_PER_TILE; visualX += 1) {
+            const variation = randomAtTile(
+              seed,
+              worldTileX * VISUAL_CELLS_PER_TILE + visualX,
+              worldTileY * VISUAL_CELLS_PER_TILE + visualY,
+              0x1f4a7c15
+            );
+            this.graphics.fillStyle(this.shadeColor(baseColor, (variation - 0.5) * 0.14), 1);
+            this.graphics.fillRect(
+              worldX + localX * WORLD_TILE_SIZE + visualX * VISUAL_TERRAIN_CELL_SIZE,
+              worldY + localY * WORLD_TILE_SIZE + visualY * VISUAL_TERRAIN_CELL_SIZE,
+              VISUAL_TERRAIN_CELL_SIZE,
+              VISUAL_TERRAIN_CELL_SIZE
+            );
+          }
+        }
       }
     }
 
@@ -43,6 +61,15 @@ export class WorldChunk {
 
   destroy(): void {
     this.graphics.destroy();
+  }
+
+  private shadeColor(color: number, amount: number): number {
+    const adjust = (channel: number): number => Phaser.Math.Clamp(Math.round(channel * (1 + amount)), 0, 255);
+    const red = adjust((color >> 16) & 0xff);
+    const green = adjust((color >> 8) & 0xff);
+    const blue = adjust(color & 0xff);
+
+    return (red << 16) | (green << 8) | blue;
   }
 
   private drawFeature(type: TerrainFeatureType, tileX: number, tileY: number): void {
