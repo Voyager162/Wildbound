@@ -6,14 +6,19 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 
 const config: ForgeConfig = {
   packagerConfig: {
-    asar: true
+    asar: true,
+    icon: 'assets/wildbound',
+    extraResource: ['assets/wildbound.ico']
   },
   makers: [
     new MakerSquirrel(
       {
         name: 'Wildbound',
         authors: 'Wildbound contributors',
-        description: 'Wildbound is a desktop-first 2D adventure game.'
+        description: 'Wildbound is a desktop-first 2D adventure game.',
+        setupExe: 'Wildbound Setup.exe',
+        setupIcon: 'assets/wildbound.ico',
+        noMsi: true
       },
       ['win32']
     )

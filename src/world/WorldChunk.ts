@@ -1,21 +1,29 @@
-import Phaser from 'phaser';
+﻿import Phaser from 'phaser';
 import { generateChunkFeatures, type TerrainFeature, TerrainFeatureType } from './generation/featureGenerator';
 import { randomAtTile } from './generation/noise';
-import { terrainAtTile, TERRAIN_COLORS } from './generation/terrainGenerator';
+import { surfaceAtTile, TerrainType, type TerrainSurface } from './generation/terrainGenerator';
 import { SessionWorldState } from './SessionWorldState';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 
-// Terrain is baked into one texture per chunk. The 8px visual cells retain the detailed look
-// while keeping the renderer to a single terrain draw call for the whole chunk.
+// Terrain is baked into one texture per chunk. The 8px visual cells retain detail while
+// keeping the renderer to a single terrain draw call for each static chunk.
 const VISUAL_TERRAIN_CELL_SIZE = 8;
 const VISUAL_CELLS_PER_TILE = WORLD_TILE_SIZE / VISUAL_TERRAIN_CELL_SIZE;
+
+interface WaterRipple {
+  worldX: number;
+  worldY: number;
+  width: number;
+}
 
 export class WorldChunk {
   readonly key: string;
   private readonly textureKey: string;
   private readonly terrainImage: Phaser.GameObjects.Image;
+  private readonly waterGraphics: Phaser.GameObjects.Graphics;
   private readonly featureGraphics: Phaser.GameObjects.Graphics;
   private readonly features: TerrainFeature[];
+  private hasWater = false;
   private harvestingTileKey: string | null = null;
   private harvestOffset = 0;
 
@@ -32,7 +40,9 @@ export class WorldChunk {
     if (!terrainTexture) {
       throw new Error('Wildbound could not create a terrain texture.');
     }
+
     this.terrainImage = scene.add.image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.textureKey).setOrigin(0);
+    this.waterGraphics = scene.add.graphics().setDepth(0.25);
     this.featureGraphics = scene.add.graphics().setDepth(1);
     this.features = generateChunkFeatures(seed, x, y);
 
@@ -63,6 +73,16 @@ export class WorldChunk {
     this.refreshFeatures();
   }
 
+  updateWaterAnimation(time: number): void {
+    if (!this.hasWater) {
+      return;
+    }
+
+    const phase = time / 1000 + this.x * 0.73 + this.y * 0.41;
+    this.waterGraphics.setAlpha(0.46 + (Math.sin(phase * 1.9) + 1) * 0.14);
+    this.waterGraphics.setPosition(Math.sin(phase * 1.3) * 0.8, Math.cos(phase * 1.1) * 0.45);
+  }
+
   refreshFeatures(): void {
     const worldX = this.x * CHUNK_SIZE_PIXELS;
     const worldY = this.y * CHUNK_SIZE_PIXELS;
@@ -86,12 +106,16 @@ export class WorldChunk {
 
   destroy(): void {
     this.terrainImage.destroy();
+    this.waterGraphics.destroy();
     this.featureGraphics.destroy();
     this.scene.textures.remove(this.textureKey);
   }
 
   private drawTerrain(texture: Phaser.Textures.CanvasTexture): void {
     const context = texture.getContext();
+    const worldX = this.x * CHUNK_SIZE_PIXELS;
+    const worldY = this.y * CHUNK_SIZE_PIXELS;
+    const ripples: WaterRipple[] = [];
 
     for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
@@ -102,43 +126,126 @@ export class WorldChunk {
           for (let visualX = 0; visualX < VISUAL_CELLS_PER_TILE; visualX += 1) {
             const sampleTileX = worldTileX + (visualX + 0.5) / VISUAL_CELLS_PER_TILE;
             const sampleTileY = worldTileY + (visualY + 0.5) / VISUAL_CELLS_PER_TILE;
-            const terrain = terrainAtTile(this.seed, sampleTileX, sampleTileY);
+            const surface = surfaceAtTile(this.seed, sampleTileX, sampleTileY);
             const variation = randomAtTile(
               this.seed,
               worldTileX * VISUAL_CELLS_PER_TILE + visualX,
               worldTileY * VISUAL_CELLS_PER_TILE + visualY,
               0x1f4a7c15
             );
+            const cellX = localX * WORLD_TILE_SIZE + visualX * VISUAL_TERRAIN_CELL_SIZE;
+            const cellY = localY * WORLD_TILE_SIZE + visualY * VISUAL_TERRAIN_CELL_SIZE;
 
-            context.fillStyle = this.colorToCss(this.shadeColor(TERRAIN_COLORS[terrain], (variation - 0.5) * 0.06));
-            context.fillRect(
-              localX * WORLD_TILE_SIZE + visualX * VISUAL_TERRAIN_CELL_SIZE,
-              localY * WORLD_TILE_SIZE + visualY * VISUAL_TERRAIN_CELL_SIZE,
-              VISUAL_TERRAIN_CELL_SIZE,
-              VISUAL_TERRAIN_CELL_SIZE
-            );
+            context.fillStyle = this.colorToCss(surface.color);
+            context.fillRect(cellX, cellY, VISUAL_TERRAIN_CELL_SIZE, VISUAL_TERRAIN_CELL_SIZE);
+            this.drawTerrainDetail(context, surface, variation, cellX, cellY);
+
+            if (surface.isWater) {
+              this.hasWater = true;
+              if (variation > 0.987 && ripples.length < 36) {
+                ripples.push({
+                  worldX: worldX + cellX + 1,
+                  worldY: worldY + cellY + 4,
+                  width: 3 + Math.floor(variation * 5)
+                });
+              }
+            }
           }
         }
       }
     }
 
-    context.strokeStyle = 'rgba(24, 44, 35, 0.18)';
+    context.strokeStyle = 'rgba(24, 44, 35, 0.16)';
     context.lineWidth = 1;
     context.strokeRect(0.5, 0.5, CHUNK_SIZE_PIXELS - 1, CHUNK_SIZE_PIXELS - 1);
     texture.refresh();
+
+    this.waterGraphics.clear();
+    if (ripples.length > 0) {
+      this.waterGraphics.lineStyle(1.5, 0xd8fbff, 0.72);
+      ripples.forEach((ripple) => this.waterGraphics.lineBetween(ripple.worldX, ripple.worldY, ripple.worldX + ripple.width, ripple.worldY));
+    }
+  }
+
+  private drawTerrainDetail(
+    context: CanvasRenderingContext2D,
+    surface: TerrainSurface,
+    variation: number,
+    cellX: number,
+    cellY: number
+  ): void {
+    switch (surface.terrain) {
+      case TerrainType.Grass:
+        if (!surface.isWater && variation > 0.945) {
+          context.fillStyle = variation > 0.98 ? '#9fcd61' : '#356f3c';
+          context.fillRect(cellX + 2, cellY + 3, 1, 4);
+          context.fillRect(cellX + 4, cellY + 1, 1, 6);
+          context.fillRect(cellX + 6, cellY + 4, 1, 3);
+        }
+        break;
+      case TerrainType.Forest:
+        if (variation > 0.89) {
+          context.fillStyle = variation > 0.96 ? '#6ea758' : '#24583a';
+          context.fillRect(cellX + 1, cellY + 1, 3, 3);
+          context.fillRect(cellX + 4, cellY + 3, 3, 3);
+        }
+        break;
+      case TerrainType.Desert:
+        if (variation > 0.87) {
+          context.fillStyle = variation > 0.965 ? '#86633d' : '#e5c979';
+          context.fillRect(cellX + 1, cellY + 3, 6, 1);
+          if (variation > 0.965) {
+            context.fillRect(cellX + 3, cellY + 1, 2, 5);
+          }
+        }
+        break;
+      case TerrainType.Swamp:
+        if (!surface.isWater && variation > 0.88) {
+          context.fillStyle = variation > 0.965 ? '#503d2c' : '#78944c';
+          context.fillRect(cellX + 2, cellY + 2, 3, 2);
+          context.fillRect(cellX + 5, cellY + 4, 2, 2);
+        }
+        break;
+      case TerrainType.Dirt:
+        if (variation > 0.86) {
+          context.fillStyle = variation > 0.95 ? '#b7a074' : '#665943';
+          context.fillRect(cellX + 1, cellY + 5, 6, 1);
+          if (variation > 0.95) {
+            context.fillRect(cellX + 4, cellY + 2, 3, 1);
+          }
+        }
+        break;
+      case TerrainType.Mountain:
+        if (variation > 0.8) {
+          context.fillStyle = variation > 0.94 ? '#b6c1c1' : '#3f4b54';
+          context.beginPath();
+          context.moveTo(cellX + 1, cellY + 7);
+          context.lineTo(cellX + 4, cellY + 1);
+          context.lineTo(cellX + 7, cellY + 7);
+          context.fill();
+        }
+        break;
+      case TerrainType.Snow:
+        if (variation > 0.87) {
+          context.fillStyle = variation > 0.96 ? '#91d2e2' : '#ffffff';
+          context.fillRect(cellX + 1, cellY + 2, 5, 1);
+          context.fillRect(cellX + 3, cellY + 1, 1, 4);
+        }
+        break;
+      case TerrainType.Sand:
+        if (!surface.isWater && variation > 0.88) {
+          context.fillStyle = variation > 0.97 ? '#ae8951' : '#f0d98e';
+          context.fillRect(cellX + 1, cellY + 3, 6, 1);
+        }
+        break;
+      case TerrainType.Water:
+        // Animated water highlights are rendered in waterGraphics after the texture is baked.
+        break;
+    }
   }
 
   private colorToCss(color: number): string {
     return `#${color.toString(16).padStart(6, '0')}`;
-  }
-
-  private shadeColor(color: number, amount: number): number {
-    const adjust = (channel: number): number => Phaser.Math.Clamp(Math.round(channel * (1 + amount)), 0, 255);
-    const red = adjust((color >> 16) & 0xff);
-    const green = adjust((color >> 8) & 0xff);
-    const blue = adjust(color & 0xff);
-
-    return (red << 16) | (green << 8) | blue;
   }
 
   private drawFeature(type: TerrainFeatureType, tileX: number, tileY: number, animationOffset: number): void {

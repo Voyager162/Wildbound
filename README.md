@@ -4,18 +4,30 @@ Wildbound is a desktop-first 2D adventure game foundation built with TypeScript,
 
 Current release: `1.4.0` - Performance, Inventory, Player, and Persistence Polish.
 
+## Windows installation
+
+The Windows release asset is `Wildbound Setup.exe`.
+
+1. Download and run `Wildbound Setup.exe`.
+2. Let setup finish and close.
+3. Launch Wildbound normally from the Start menu or desktop shortcut.
+
+Setup, the installed executable, shortcuts, and the application window use the replaceable Wildbound icon at `assets/wildbound.ico`.
+
 ## Current state
 
 - Phaser runs in a secure Electron renderer. Packaged builds load local files and need no web server or internet connection.
-- The code-generated player moves with WASD or the arrow keys, visibly faces each direction, and has directional walking animation.
-- Player movement is delta-time based at 220 pixels per second with the default speed setting. Holding the left mouse button for one real-time second harvests a highlighted nearby feature.
+- The code-generated player moves with WASD or the arrow keys, visually faces all eight movement directions, and has directional walking and swimming animation.
+- Player movement is delta-time based. Entering traversable ocean, shore, or swamp water enables swimming mode at 42% of walking speed.
+- Holding the left mouse button for one real-time second harvests a highlighted nearby feature.
 - A smooth-follow camera maintains a large 2560 x 1440 world view on 16:9 displays in both windowed and fullscreen modes.
-- F3 toggles a crisp, screen-space debug panel with world/tile coordinates, climate values, feature/target details, seed, chunk position, inventory usage, and FPS.
+- F3 toggles a crisp, screen-space debug panel with world/tile coordinates, climate values, movement mode, seed, chunk position, inventory usage, and FPS.
 - A circular, top-right minimap samples stable world coordinates and keeps the player marker centered.
 - Elevation, moisture, and temperature noise deterministically classify ocean, beach, plains, forest, desert, swamp, hills, mountains, and snow biomes.
-- Terrain renders through deterministic 8 x 8 pixel visual cells. Static terrain is baked into one texture per loaded chunk for efficient rendering.
+- Terrain uses smoothly blended coastline/elevation bands, detailed grass/vegetation/sand/mud/ice/rock marks, rolling hill contours, mountain formations, and subtle animated water glints. These details are baked once into chunk textures.
 - Sparse code-generated trees, cacti, rocks, reeds, snowy rocks, and ice patches highlight when interactable and shake during harvesting.
-- Press `E` to open or close a 16-slot inventory. Resources stack to 10, can be dragged between slots, and can be dragged outside the inventory to drop them into the world. Nearby drops are collected automatically when there is capacity.
+- Press `E` to open or close the 16-slot inventory. When a dropped item is in range, `E` picks it up instead; the drop receives a subtle world-space highlight.
+- Resources stack to 10, can be dragged between slots, and can be dragged outside the inventory to drop them into the world. Inventory items animate on hover, press, and drag.
 - The game automatically persists the seed, player position, inventory, harvested features, and dropped world items. Procedural terrain itself is regenerated from the saved seed.
 
 ## Save location
@@ -29,7 +41,7 @@ This file stores only player/world changes over the deterministic generated worl
 ## Tuning controls
 
 - `src/world/worldConfig.ts`: `BIOME_SIZE_SCALE` is a 1-100 biome-size control; higher values create larger regions. Current value: `20`.
-- `src/player/playerConfig.ts`: `PLAYER_SPEED_SCALE` is a 1-100 movement-speed control. Current value: `50`, which keeps 220 pixels per second.
+- `src/player/playerConfig.ts`: `PLAYER_SPEED_SCALE` is a 1-100 movement-speed control. Current value: `50`, which keeps 220 pixels per second on land.
 - `src/ui/uiConfig.ts`: `MINIMAP_AREA_SCALE` is a 1-100 minimap-coverage control. Current value: `50`, which preserves the previous coverage.
 - `src/world/generation/featureGenerator.ts`: `FEATURE_DENSITIES` controls deterministic feature density by biome.
 
@@ -66,10 +78,10 @@ Create a packaged Windows application:
 & "C:\Program Files\nodejs\npm.cmd" run package
 ```
 
-Create the Windows installer and release artifacts:
+Create the Windows installer:
 
 ```powershell
 & "C:\Program Files\nodejs\npm.cmd" run make:win
 ```
 
-The installer is written to `out/make/squirrel.windows/x64/`.
+The installer is written to `out/make/squirrel.windows/x64/Wildbound Setup.exe`.

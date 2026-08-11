@@ -1,18 +1,25 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+﻿import { app, BrowserWindow, ipcMain } from 'electron';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import squirrelStartup from 'electron-squirrel-startup';
 
 const SAVE_FILE_NAME = 'wildbound-save.json';
 const MAX_SAVE_BYTES = 2 * 1024 * 1024;
+const launchedByInstaller = process.argv.includes('--squirrel-firstrun');
 
 app.setName('Wildbound');
+app.setAppUserModelId('com.wildbound.desktop');
 
-if (squirrelStartup) {
+const shouldExitForSquirrel = squirrelStartup || launchedByInstaller;
+if (shouldExitForSquirrel) {
   app.quit();
 }
 
 const getSavePath = (): string => path.join(app.getPath('userData'), SAVE_FILE_NAME);
+
+const getApplicationIconPath = (): string => app.isPackaged
+  ? path.join(process.resourcesPath, 'wildbound.ico')
+  : path.join(app.getAppPath(), 'assets', 'wildbound.ico');
 
 const isSerializableSave = (value: unknown): boolean => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -56,6 +63,7 @@ const registerSaveHandlers = (): void => {
 const createWindow = (): void => {
   const mainWindow = new BrowserWindow({
     title: 'Wildbound',
+    icon: getApplicationIconPath(),
     width: 960,
     height: 540,
     minWidth: 640,
@@ -85,19 +93,21 @@ const createWindow = (): void => {
   }
 };
 
-app.whenReady().then(() => {
-  registerSaveHandlers();
-  createWindow();
+if (!shouldExitForSquirrel) {
+  app.whenReady().then(() => {
+    registerSaveHandlers();
+    createWindow();
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
+  });
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+      app.quit();
     }
   });
-});
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
+}

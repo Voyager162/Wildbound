@@ -1,11 +1,15 @@
-import { featureAtTile, TerrainFeatureType } from '../world/generation/featureGenerator';
+﻿import { featureAtTile, TerrainFeatureType } from '../world/generation/featureGenerator';
 import { WORLD_TILE_SIZE } from '../world/worldConfig';
 
 export enum FacingDirection {
   Up = 'up',
+  UpRight = 'up-right',
+  Right = 'right',
+  DownRight = 'down-right',
   Down = 'down',
+  DownLeft = 'down-left',
   Left = 'left',
-  Right = 'right'
+  UpLeft = 'up-left'
 }
 
 export interface InteractionTarget {
@@ -22,7 +26,7 @@ const CANDIDATE_TILE_RADIUS = Math.ceil(INTERACTION_RADIUS_PIXELS / WORLD_TILE_S
 type FeatureAvailability = (tileX: number, tileY: number) => boolean;
 const featureIsAvailable: FeatureAvailability = () => true;
 
-// This returns world data only; the scene decides how prompts and feedback are rendered.
+// This returns world data only; the scene decides how highlights and feedback are rendered.
 export const getInteractionTarget = (
   seed: string,
   playerWorldX: number,

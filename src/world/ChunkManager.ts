@@ -1,4 +1,4 @@
-import Phaser from 'phaser';
+﻿import Phaser from 'phaser';
 import { SessionWorldState } from './SessionWorldState';
 import { WorldChunk } from './WorldChunk';
 import {
@@ -12,6 +12,7 @@ export class ChunkManager {
   private readonly chunks = new Map<string, WorldChunk>();
   private activeChunkX = Number.NaN;
   private activeChunkY = Number.NaN;
+  private lastWaterAnimationTime = Number.NEGATIVE_INFINITY;
 
   constructor(
     private readonly scene: Phaser.Scene,
@@ -43,6 +44,15 @@ export class ChunkManager {
     this.activeChunkY = nextChunkY;
     this.loadNearbyChunks();
     this.unloadDistantChunks();
+  }
+
+  updateWaterAnimation(time: number): void {
+    if (time - this.lastWaterAnimationTime < 50) {
+      return;
+    }
+
+    this.lastWaterAnimationTime = time;
+    this.chunks.forEach((chunk) => chunk.updateWaterAnimation(time));
   }
 
   setHarvestAnimation(tileX: number, tileY: number, progress: number): void {
