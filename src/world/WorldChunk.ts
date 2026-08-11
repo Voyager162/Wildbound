@@ -1,10 +1,11 @@
 import Phaser from 'phaser';
 import { generateChunkFeatures, TerrainFeatureType } from './generation/featureGenerator';
 import { randomAtTile } from './generation/noise';
-import { generateChunkTerrain, TERRAIN_COLORS } from './generation/terrainGenerator';
+import { terrainAtTile, TERRAIN_COLORS } from './generation/terrainGenerator';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 
-const VISUAL_TERRAIN_CELL_SIZE = 16;
+// Rendering uses 8px cells, while movement, chunks, and features keep the 32px logical tile grid.
+const VISUAL_TERRAIN_CELL_SIZE = 8;
 const VISUAL_CELLS_PER_TILE = WORLD_TILE_SIZE / VISUAL_TERRAIN_CELL_SIZE;
 
 export class WorldChunk {
@@ -15,27 +16,28 @@ export class WorldChunk {
     this.key = `${x},${y}`;
     this.graphics = scene.add.graphics();
 
-    const terrain = generateChunkTerrain(seed, x, y);
     const features = generateChunkFeatures(seed, x, y);
     const worldX = x * CHUNK_SIZE_PIXELS;
     const worldY = y * CHUNK_SIZE_PIXELS;
 
     for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
-        const tileIndex = localY * CHUNK_SIZE_TILES + localX;
-        const baseColor = TERRAIN_COLORS[terrain[tileIndex]];
         const worldTileX = x * CHUNK_SIZE_TILES + localX;
         const worldTileY = y * CHUNK_SIZE_TILES + localY;
 
         for (let visualY = 0; visualY < VISUAL_CELLS_PER_TILE; visualY += 1) {
           for (let visualX = 0; visualX < VISUAL_CELLS_PER_TILE; visualX += 1) {
+            // Sample each cell at its world-space center for 8px biome boundaries and deterministic detail.
+            const sampleTileX = worldTileX + (visualX + 0.5) / VISUAL_CELLS_PER_TILE;
+            const sampleTileY = worldTileY + (visualY + 0.5) / VISUAL_CELLS_PER_TILE;
+            const terrain = terrainAtTile(seed, sampleTileX, sampleTileY);
             const variation = randomAtTile(
               seed,
               worldTileX * VISUAL_CELLS_PER_TILE + visualX,
               worldTileY * VISUAL_CELLS_PER_TILE + visualY,
               0x1f4a7c15
             );
-            this.graphics.fillStyle(this.shadeColor(baseColor, (variation - 0.5) * 0.14), 1);
+            this.graphics.fillStyle(this.shadeColor(TERRAIN_COLORS[terrain], (variation - 0.5) * 0.06), 1);
             this.graphics.fillRect(
               worldX + localX * WORLD_TILE_SIZE + visualX * VISUAL_TERRAIN_CELL_SIZE,
               worldY + localY * WORLD_TILE_SIZE + visualY * VISUAL_TERRAIN_CELL_SIZE,

@@ -8,11 +8,14 @@ import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
 
 const PLAYER_SPEED = 220;
 const PLAYER_SIZE = 32;
-const CAMERA_ZOOM = 0.75;
-const HUD_MARGIN = 16;
+// This is the world view visible on a 16:9 display, regardless of window size.
+const CAMERA_WORLD_VIEW_WIDTH = 2560;
+const CAMERA_WORLD_VIEW_HEIGHT = 1440;
+const HUD_MARGIN = 8;
 const MINIMAP_RADIUS = 64;
 const MINIMAP_CELL_SIZE = 2;
 const MINIMAP_TILES_PER_CELL = 16;
+const UI_TEXT_RESOLUTION = Math.max(1, window.devicePixelRatio || 1);
 
 type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
 
@@ -21,7 +24,6 @@ export class AdventureScene extends Phaser.Scene {
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private movementKeys!: MovementKeys;
   private chunkManager!: ChunkManager;
-  private helpText!: Phaser.GameObjects.Text;
   private debugText!: Phaser.GameObjects.Text;
   private interactionPrompt!: Phaser.GameObjects.Text;
   private minimapGraphics!: Phaser.GameObjects.Graphics;
@@ -57,14 +59,6 @@ export class AdventureScene extends Phaser.Scene {
     this.input.keyboard!.on('keydown-F3', this.toggleDebug, this);
     this.input.keyboard!.on('keydown-E', this.tryInteract, this);
 
-    this.helpText = this.add
-      .text(0, 0, 'Move with WASD or arrow keys - F3: Debug', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '18px',
-        color: '#e8f0f7'
-      })
-      .setDepth(110)
-      .setScrollFactor(0);
 
     this.debugText = this.add
       .text(0, 0, '', {
@@ -74,6 +68,7 @@ export class AdventureScene extends Phaser.Scene {
         backgroundColor: '#102019cc',
         padding: { x: 8, y: 6 }
       })
+      .setResolution(UI_TEXT_RESOLUTION)
       .setDepth(110)
       .setScrollFactor(0)
       .setVisible(false);
@@ -87,6 +82,7 @@ export class AdventureScene extends Phaser.Scene {
         padding: { x: 10, y: 6 }
       })
       .setOrigin(0.5, 1)
+      .setResolution(UI_TEXT_RESOLUTION)
       .setDepth(110)
       .setScrollFactor(0)
       .setVisible(false);
@@ -137,14 +133,23 @@ export class AdventureScene extends Phaser.Scene {
     const camera = this.cameras.main;
     camera.removeBounds();
     camera.setBackgroundColor('#16261f');
-    camera.setZoom(CAMERA_ZOOM);
     camera.setRoundPixels(true);
+    this.updateCameraZoom();
     camera.startFollow(this.player, true, 0.1, 0.1);
+  }
+
+  private updateCameraZoom(): void {
+    const camera = this.cameras.main;
+    const zoom = Math.min(
+      camera.width / CAMERA_WORLD_VIEW_WIDTH,
+      camera.height / CAMERA_WORLD_VIEW_HEIGHT
+    );
+
+    camera.setZoom(Math.max(zoom, 0.1));
   }
 
   private toggleDebug(): void {
     this.isDebugVisible = !this.isDebugVisible;
-    this.helpText.setVisible(!this.isDebugVisible);
     this.debugText.setVisible(this.isDebugVisible);
 
     if (this.isDebugVisible) {
@@ -153,6 +158,7 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private handleResize(): void {
+    this.updateCameraZoom();
     this.updateHudLayout();
     this.updateMinimap(true);
   }
@@ -162,11 +168,13 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private updateHudLayout(): void {
+    const camera = this.cameras.main;
+    const hudScale = 1 / camera.zoom;
     const topLeft = this.screenToHudPoint(HUD_MARGIN, HUD_MARGIN);
-    const promptPosition = this.screenToHudPoint(this.cameras.main.width / 2, this.cameras.main.height - HUD_MARGIN);
-    this.helpText.setPosition(topLeft.x, topLeft.y);
-    this.debugText.setPosition(topLeft.x, topLeft.y);
-    this.interactionPrompt.setPosition(promptPosition.x, promptPosition.y);
+    const promptPosition = this.screenToHudPoint(camera.width / 2, camera.height - HUD_MARGIN);
+
+    this.debugText.setScale(hudScale).setPosition(topLeft.x, topLeft.y);
+    this.interactionPrompt.setScale(hudScale).setPosition(promptPosition.x, promptPosition.y);
   }
 
   private updateMinimap(force = false): void {

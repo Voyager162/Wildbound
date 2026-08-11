@@ -23,20 +23,20 @@ export const featureAtTile = (seed: string, tileX: number, tileY: number): Terra
 
   switch (biome) {
     case Biome.Forest:
-      return placement < 0.045 ? TerrainFeatureType.Tree : null;
+      return placement < 0.02 ? TerrainFeatureType.Tree : null;
     case Biome.Desert:
-      return placement < 0.025 ? TerrainFeatureType.Cactus : null;
+      return placement < 0.01 ? TerrainFeatureType.Cactus : null;
     case Biome.Hills:
     case Biome.Mountains:
-      return placement < 0.035 ? TerrainFeatureType.Rock : null;
+      return placement < 0.015 ? TerrainFeatureType.Rock : null;
     case Biome.Swamp:
-      return placement < 0.055 ? TerrainFeatureType.Reeds : null;
+      return placement < 0.02 ? TerrainFeatureType.Reeds : null;
     case Biome.Snow:
-      if (placement < 0.028) {
+      if (placement < 0.01) {
         return TerrainFeatureType.SnowyRock;
       }
 
-      return placement < 0.05 ? TerrainFeatureType.IcePatch : null;
+      return placement < 0.02 ? TerrainFeatureType.IcePatch : null;
     default:
       return null;
   }
