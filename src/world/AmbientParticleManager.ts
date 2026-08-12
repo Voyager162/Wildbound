@@ -1,10 +1,12 @@
 import Phaser from 'phaser';
 import {
+  AMBIENT_BIOME_TUNING,
   AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
   AMBIENT_PARTICLE_MAX_COUNT,
   AMBIENT_PARTICLE_RADIUS_CELLS_X,
   AMBIENT_PARTICLE_RADIUS_CELLS_Y,
-  NIGHT_AMBIENT_LIGHT_MAX_COUNT
+  NIGHT_AMBIENT_LIGHT_MAX_COUNT,
+  NIGHT_AMBIENT_LIGHT_RETENTION_CELLS
 } from './explorationConfig';
 import { biomeAtTile, Biome } from './generation/biomeGenerator';
 import { randomAtTile } from './generation/noise';
@@ -23,6 +25,10 @@ export interface NightAmbientLight {
 }
 
 interface AmbientParticle {
+  id: string;
+  cellX: number;
+  cellY: number;
+  lightPriority: number;
   baseX: number;
   baseY: number;
   phase: number;
@@ -41,7 +47,7 @@ export class AmbientParticleManager {
   private lastAnchorCellX = Number.NaN;
   private lastAnchorCellY = Number.NaN;
   private particles: AmbientParticle[] = [];
-  private lightParticles: AmbientParticle[] = [];
+  private readonly lightParticles = new Map<string, AmbientParticle>();
   private nightLights: NightAmbientLight[] = [];
 
   constructor(private readonly scene: Phaser.Scene, private readonly seed: string) {
@@ -55,12 +61,7 @@ export class AmbientParticleManager {
       this.lastAnchorCellX = anchorCellX;
       this.lastAnchorCellY = anchorCellY;
       this.particles = this.createParticles(anchorCellX, anchorCellY);
-      // Keep a deterministic, fixed subset while the visible particle field is active. The old
-      // per-tick sort used an animated priority, so the strongest lights could swap places while
-      // the player walked. A source only changes when it naturally enters/leaves the streamed area.
-      this.lightParticles = this.particles
-        .filter((particle) => particle.nightLightIntensity > 0)
-        .slice(0, NIGHT_AMBIENT_LIGHT_MAX_COUNT);
+      this.refreshStableLightPool(anchorCellX, anchorCellY);
     }
 
     const timeSeconds = time / 1000;
@@ -76,7 +77,7 @@ export class AmbientParticleManager {
     // Particle rendering is deliberately throttled, but each light is evaluated from its analytic
     // motion curve at the exact frame time. This preserves smooth drifting without increasing the
     // draw cost of the foreground particle Graphics layer.
-    this.nightLights = this.lightParticles.map((particle) => {
+    this.nightLights = Array.from(this.lightParticles.values(), (particle) => {
       const state = this.particleState(particle, timeSeconds);
       const pulse = 0.72 + (Math.sin(state.cycle * 1.9 + particle.phase * 0.44) + 1) * 0.14;
       return {
@@ -93,7 +94,7 @@ export class AmbientParticleManager {
   destroy(): void {
     this.graphics.destroy();
     this.particles = [];
-    this.lightParticles = [];
+    this.lightParticles.clear();
     this.nightLights = [];
   }
 
@@ -104,13 +105,13 @@ export class AmbientParticleManager {
     for (let cellY = anchorCellY - AMBIENT_PARTICLE_RADIUS_CELLS_Y; cellY <= anchorCellY + AMBIENT_PARTICLE_RADIUS_CELLS_Y; cellY += 1) {
       for (let cellX = anchorCellX - AMBIENT_PARTICLE_RADIUS_CELLS_X; cellX <= anchorCellX + AMBIENT_PARTICLE_RADIUS_CELLS_X; cellX += 1) {
         const placement = randomAtTile(this.seed, cellX, cellY, 0x7c43a5d1);
-        if (placement < 0.2) {
-          continue;
-        }
-
         const centerWorldX = (cellX + 0.5) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS;
         const centerWorldY = (cellY + 0.5) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS;
         const biome = biomeAtTile(this.seed, centerWorldX / WORLD_TILE_SIZE, centerWorldY / WORLD_TILE_SIZE);
+        if (placement > AMBIENT_BIOME_TUNING[biome].particleSpawnChance) {
+          continue;
+        }
+
         const kind = this.kindForBiome(biome, randomAtTile(this.seed, cellX, cellY, 0x3bc6d2a7));
         if (!kind) {
           continue;
@@ -119,6 +120,7 @@ export class AmbientParticleManager {
         const variation = randomAtTile(this.seed, cellX, cellY, 0xa54cd63b);
         const nightLight = this.nightLightFor(biome, kind, variation);
         candidates.push({
+          ...this.particleIdentity(cellX, cellY, 'base', 0x1d82f961),
           baseX: (cellX + 0.12 + randomAtTile(this.seed, cellX, cellY, 0x2ebf9541) * 0.76) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
           baseY: (cellY + 0.1 + randomAtTile(this.seed, cellX, cellY, 0x9f8c1ad5) * 0.8) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
           phase: randomAtTile(this.seed, cellX, cellY, 0x64e19f25) * Math.PI * 2,
@@ -127,7 +129,7 @@ export class AmbientParticleManager {
           color: this.colorForKind(kind, variation),
           kind,
           windStrength: 18 + randomAtTile(this.seed, cellX, cellY, 0x4d81e8b7) * 32,
-          ...nightLight,
+          ...this.tuneNightLight(biome, cellX, cellY, 0x6b73c12d, nightLight),
           priority: randomAtTile(this.seed, cellX, cellY, 0x1d82f961)
         });
 
@@ -137,6 +139,7 @@ export class AmbientParticleManager {
           const highlandVariation = randomAtTile(this.seed, cellX, cellY, 0x6be71af3);
           const highlandKind = highlandVariation > 0.62 ? 'ice-crystal' : 'snow';
           candidates.push({
+            ...this.particleIdentity(cellX, cellY, 'highland', 0x139dd507),
             baseX: (cellX + 0.08 + randomAtTile(this.seed, cellX, cellY, 0x66c6b921) * 0.86) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
             baseY: (cellY + 0.06 + randomAtTile(this.seed, cellX, cellY, 0x8aa751ef) * 0.86) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
             phase: randomAtTile(this.seed, cellX, cellY, 0x2b5297d1) * Math.PI * 2,
@@ -145,7 +148,7 @@ export class AmbientParticleManager {
             color: highlandVariation > 0.58 ? 0xd8fbff : 0x9fe8fb,
             kind: highlandKind,
             windStrength: 24 + highlandVariation * 42,
-            ...this.nightLightFor(biome, highlandKind, highlandVariation),
+            ...this.tuneNightLight(biome, cellX, cellY, 0x71a4d0e1, this.nightLightFor(biome, highlandKind, highlandVariation)),
             priority: 0.5 + randomAtTile(this.seed, cellX, cellY, 0x139dd507) * 0.5
           });
         }
@@ -155,6 +158,7 @@ export class AmbientParticleManager {
         if (biome === Biome.Desert && variation > 0.1) {
           const sandVariation = randomAtTile(this.seed, cellX, cellY, 0x3a84f1c9);
           candidates.push({
+            ...this.particleIdentity(cellX, cellY, 'sand', 0x5b6fd841),
             baseX: (cellX + 0.04 + randomAtTile(this.seed, cellX, cellY, 0x246f3b81) * 0.92) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
             baseY: (cellY + 0.18 + randomAtTile(this.seed, cellX, cellY, 0x664da8c7) * 0.64) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
             phase: randomAtTile(this.seed, cellX, cellY, 0x7a5237bd) * Math.PI * 2,
@@ -163,7 +167,7 @@ export class AmbientParticleManager {
             color: sandVariation > 0.54 ? 0xf1cf83 : 0xc8914c,
             kind: 'sand',
             windStrength: 44 + sandVariation * 54,
-            ...this.nightLightFor(biome, 'sand', sandVariation),
+            ...this.tuneNightLight(biome, cellX, cellY, 0x3cd11895, this.nightLightFor(biome, 'sand', sandVariation)),
             priority: 0.55 + randomAtTile(this.seed, cellX, cellY, 0x5b6fd841) * 0.45
           });
         }
@@ -172,6 +176,7 @@ export class AmbientParticleManager {
         if (biome === Biome.Swamp && variation > 0.46) {
           const sporeVariation = randomAtTile(this.seed, cellX, cellY, 0x17d9a3e5);
           candidates.push({
+            ...this.particleIdentity(cellX, cellY, 'spore', 0x6c318f59),
             baseX: (cellX + 0.14 + randomAtTile(this.seed, cellX, cellY, 0x4f3d6657) * 0.72) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
             baseY: (cellY + 0.06 + randomAtTile(this.seed, cellX, cellY, 0x2e8bc4d1) * 0.84) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
             phase: randomAtTile(this.seed, cellX, cellY, 0x1d5ab743) * Math.PI * 2,
@@ -180,7 +185,7 @@ export class AmbientParticleManager {
             color: sporeVariation > 0.56 ? 0xb8e584 : 0x83c889,
             kind: 'spore',
             windStrength: 11 + sporeVariation * 18,
-            ...this.nightLightFor(biome, 'spore', sporeVariation),
+            ...this.tuneNightLight(biome, cellX, cellY, 0x57b59a29, this.nightLightFor(biome, 'spore', sporeVariation)),
             priority: 0.45 + randomAtTile(this.seed, cellX, cellY, 0x6c318f59) * 0.42
           });
         }
@@ -191,6 +196,7 @@ export class AmbientParticleManager {
         if ((biome === Biome.Forest || biome === Biome.Swamp) && variation > 0.16) {
           const fireflyVariation = randomAtTile(this.seed, cellX, cellY, 0x4619d5af);
           candidates.push({
+            ...this.particleIdentity(cellX, cellY, 'firefly', 0x6492b31b),
             baseX: (cellX + 0.14 + randomAtTile(this.seed, cellX, cellY, 0x7b14c0e1) * 0.72) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
             baseY: (cellY + 0.12 + randomAtTile(this.seed, cellX, cellY, 0x9bd1f743) * 0.68) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
             phase: randomAtTile(this.seed, cellX, cellY, 0xf20db7c1) * Math.PI * 2,
@@ -199,7 +205,7 @@ export class AmbientParticleManager {
             color: fireflyVariation > 0.5 ? 0xb8ee63 : 0xffe66e,
             kind: 'firefly',
             windStrength: 8 + fireflyVariation * 16,
-            ...this.nightLightFor(biome, 'firefly', fireflyVariation),
+            ...this.tuneNightLight(biome, cellX, cellY, 0x3e4db809, this.nightLightFor(biome, 'firefly', fireflyVariation)),
             priority: 0.72 + randomAtTile(this.seed, cellX, cellY, 0x6492b31b) * 0.28
           });
         }
@@ -211,6 +217,61 @@ export class AmbientParticleManager {
       .slice(0, AMBIENT_PARTICLE_MAX_COUNT)
       .forEach(({ priority: _priority, ...particle }) => particles.push(particle));
     return particles;
+  }
+
+  private refreshStableLightPool(anchorCellX: number, anchorCellY: number): void {
+    const retainRadiusX = AMBIENT_PARTICLE_RADIUS_CELLS_X + NIGHT_AMBIENT_LIGHT_RETENTION_CELLS;
+    const retainRadiusY = AMBIENT_PARTICLE_RADIUS_CELLS_Y + NIGHT_AMBIENT_LIGHT_RETENTION_CELLS;
+    this.lightParticles.forEach((particle, id) => {
+      if (Math.abs(particle.cellX - anchorCellX) > retainRadiusX || Math.abs(particle.cellY - anchorCellY) > retainRadiusY) {
+        this.lightParticles.delete(id);
+      }
+    });
+
+    if (this.lightParticles.size >= NIGHT_AMBIENT_LIGHT_MAX_COUNT) {
+      return;
+    }
+
+    this.particles
+      .filter((particle) => particle.nightLightIntensity > 0 && !this.lightParticles.has(particle.id))
+      .sort((first, second) => second.lightPriority - first.lightPriority)
+      .some((particle) => {
+        this.lightParticles.set(particle.id, particle);
+        return this.lightParticles.size >= NIGHT_AMBIENT_LIGHT_MAX_COUNT;
+      });
+  }
+
+  private particleIdentity(
+    cellX: number,
+    cellY: number,
+    variant: string,
+    prioritySalt: number
+  ): Pick<AmbientParticle, 'id' | 'cellX' | 'cellY' | 'lightPriority'> {
+    return {
+      id: `${cellX},${cellY}:${variant}`,
+      cellX,
+      cellY,
+      lightPriority: randomAtTile(this.seed, cellX, cellY, prioritySalt)
+    };
+  }
+
+  private tuneNightLight(
+    biome: Biome,
+    cellX: number,
+    cellY: number,
+    sourceSalt: number,
+    light: Pick<AmbientParticle, 'nightLightColor' | 'nightLightRadius' | 'nightLightIntensity'>
+  ): Pick<AmbientParticle, 'nightLightColor' | 'nightLightRadius' | 'nightLightIntensity'> {
+    const tuning = AMBIENT_BIOME_TUNING[biome];
+    if (randomAtTile(this.seed, cellX, cellY, sourceSalt) > tuning.lightSpawnChance) {
+      return { ...light, nightLightRadius: 0, nightLightIntensity: 0 };
+    }
+
+    return {
+      nightLightColor: light.nightLightColor,
+      nightLightRadius: light.nightLightRadius * tuning.glowRadiusMultiplier,
+      nightLightIntensity: light.nightLightIntensity * tuning.glowIntensityMultiplier
+    };
   }
 
   private particleState(particle: AmbientParticle, timeSeconds: number): { x: number; y: number; cycle: number; alpha: number } {

@@ -1,3 +1,5 @@
+import { Biome } from './generation/biomeGenerator';
+
 // Exploration progression is stored in coarse regions rather than individual tiles so a long-lived
 // world remains compact enough for the desktop save file.
 // Fine cells preserve the curved reveal boundary of the player's map rather than turning
@@ -30,6 +32,32 @@ export const NIGHT_AMBIENT_LIGHT_INTENSITY_MULTIPLIER = 2.35;
 // Glow is intentionally rendered at CSS resolution: it is a soft field, and this avoids a
 // high-DPI full-screen canvas becoming the expensive part of night exploration.
 export const NIGHT_AMBIENT_LIGHT_RENDER_SCALE = 1;
+
+// Per-biome ambience controls. `particleSpawnChance` governs visible ambient particles per
+// deterministic cell; `lightSpawnChance` governs what share become nighttime light sources.
+// The glow multipliers are applied on top of the two global master multipliers above, so each
+// biome can have its own atmosphere without losing one convenient whole-game brightness control.
+export interface AmbientBiomeTuning {
+  particleSpawnChance: number;
+  lightSpawnChance: number;
+  glowIntensityMultiplier: number;
+  glowRadiusMultiplier: number;
+}
+
+export const AMBIENT_BIOME_TUNING: Readonly<Record<Biome, AmbientBiomeTuning>> = {
+  [Biome.Ocean]: { particleSpawnChance: 0.72, lightSpawnChance: 0.48, glowIntensityMultiplier: 0.8, glowRadiusMultiplier: 0.9 },
+  [Biome.Beach]: { particleSpawnChance: 0.7, lightSpawnChance: 0.5, glowIntensityMultiplier: 0.86, glowRadiusMultiplier: 0.94 },
+  [Biome.Plains]: { particleSpawnChance: 0.8, lightSpawnChance: 0.64, glowIntensityMultiplier: 1, glowRadiusMultiplier: 1 },
+  [Biome.Forest]: { particleSpawnChance: 0.9, lightSpawnChance: 0.94, glowIntensityMultiplier: 1.24, glowRadiusMultiplier: 1.2 },
+  [Biome.Desert]: { particleSpawnChance: 0.74, lightSpawnChance: 0.68, glowIntensityMultiplier: 1.05, glowRadiusMultiplier: 1.1 },
+  [Biome.Swamp]: { particleSpawnChance: 0.9, lightSpawnChance: 0.96, glowIntensityMultiplier: 1.32, glowRadiusMultiplier: 1.28 },
+  [Biome.Hills]: { particleSpawnChance: 0.75, lightSpawnChance: 0.58, glowIntensityMultiplier: 0.94, glowRadiusMultiplier: 0.96 },
+  [Biome.Mountains]: { particleSpawnChance: 0.86, lightSpawnChance: 0.82, glowIntensityMultiplier: 1.14, glowRadiusMultiplier: 1.14 },
+  [Biome.Snow]: { particleSpawnChance: 0.88, lightSpawnChance: 0.84, glowIntensityMultiplier: 1.12, glowRadiusMultiplier: 1.12 }
+};
+// Light sources are retained beyond the visible particle window before being replaced. This is
+// intentionally larger than the camera view so a moving player never sees a light pop out.
+export const NIGHT_AMBIENT_LIGHT_RETENTION_CELLS = 3;
 
 // Animated environmental details are deliberately throttled. Chunks retain their baked terrain and
 // feature textures; these values govern only lightweight Graphics overlays.
