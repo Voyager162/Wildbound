@@ -1,5 +1,10 @@
 import Phaser from 'phaser';
 import type { NightAmbientLight } from '../world/AmbientParticleManager';
+import {
+  NIGHT_AMBIENT_LIGHT_INTENSITY_MULTIPLIER,
+  NIGHT_AMBIENT_LIGHT_RADIUS_MULTIPLIER,
+  NIGHT_AMBIENT_LIGHT_RENDER_SCALE
+} from '../world/explorationConfig';
 
 const colorChannels = (color: number): readonly [number, number, number] => [
   (color >> 16) & 0xff,
@@ -29,7 +34,7 @@ export class NightAmbientOverlay {
   }
 
   update(nightAmount: number, camera: Phaser.Cameras.Scene2D.Camera, lights: readonly NightAmbientLight[]): void {
-    const deviceScale = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const deviceScale = NIGHT_AMBIENT_LIGHT_RENDER_SCALE;
     const cssWidth = Math.max(1, this.parent.clientWidth);
     const cssHeight = Math.max(1, this.parent.clientHeight);
     const nextPixelWidth = Math.round(cssWidth * deviceScale);
@@ -50,22 +55,28 @@ export class NightAmbientOverlay {
 
     context.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
     context.globalCompositeOperation = 'lighter';
-    const nightStrength = Math.pow(nightAmount, 0.78);
+    const nightStrength = Math.pow(nightAmount, 0.72);
+    // Phaser rounds the rendered camera when roundPixels is enabled. Projecting with the same
+    // scroll removes the sub-pixel disagreement that made DOM lights slide and snap over a moving
+    // world, especially at the game's low exploration zoom.
+    const scrollX = camera.roundPixels ? Math.round(camera.scrollX) : camera.scrollX;
+    const scrollY = camera.roundPixels ? Math.round(camera.scrollY) : camera.scrollY;
 
     lights.forEach((light) => {
-      const screenX = (light.worldX - camera.scrollX) * camera.zoom + camera.x;
-      const screenY = (light.worldY - camera.scrollY) * camera.zoom + camera.y;
-      const radius = Math.max(11, light.radius * camera.zoom);
+      const screenX = (light.worldX - scrollX) * camera.zoom + camera.x;
+      const screenY = (light.worldY - scrollY) * camera.zoom + camera.y;
+      const radius = Math.max(14, light.radius * camera.zoom * NIGHT_AMBIENT_LIGHT_RADIUS_MULTIPLIER);
       if (screenX < -radius || screenX > cssWidth + radius || screenY < -radius || screenY > cssHeight + radius) {
         return;
       }
 
       const [red, green, blue] = colorChannels(light.color);
-      const alpha = Math.min(0.92, light.intensity * nightStrength);
+      const alpha = Math.min(0.98, light.intensity * nightStrength * NIGHT_AMBIENT_LIGHT_INTENSITY_MULTIPLIER);
       const glow = context.createRadialGradient(screenX, screenY, 0, screenX, screenY, radius);
-      glow.addColorStop(0, `rgba(${red}, ${green}, ${blue}, ${(alpha * 0.52).toFixed(3)})`);
-      glow.addColorStop(0.2, `rgba(${red}, ${green}, ${blue}, ${(alpha * 0.2).toFixed(3)})`);
-      glow.addColorStop(0.58, `rgba(${red}, ${green}, ${blue}, ${(alpha * 0.055).toFixed(3)})`);
+      glow.addColorStop(0, `rgba(${red}, ${green}, ${blue}, ${(alpha * 0.94).toFixed(3)})`);
+      glow.addColorStop(0.1, `rgba(${red}, ${green}, ${blue}, ${(alpha * 0.66).toFixed(3)})`);
+      glow.addColorStop(0.32, `rgba(${red}, ${green}, ${blue}, ${(alpha * 0.27).toFixed(3)})`);
+      glow.addColorStop(0.66, `rgba(${red}, ${green}, ${blue}, ${(alpha * 0.075).toFixed(3)})`);
       glow.addColorStop(1, `rgba(${red}, ${green}, ${blue}, 0)`);
       context.fillStyle = glow;
       context.beginPath();

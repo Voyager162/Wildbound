@@ -122,8 +122,8 @@ export class ChunkManager {
     }
   }
 
-  getNightAmbientLights(): readonly NightAmbientLight[] {
-    return this.ambientParticleManager.getNightLights();
+  getNightAmbientLights(time: number): readonly NightAmbientLight[] {
+    return this.ambientParticleManager.getNightLights(time);
   }
 
   getTopographyAt(worldX: number, worldY: number): TopographySample {

@@ -22,8 +22,14 @@ export const DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS = 40;
 // Night uses a deep tint, then this bounded glow budget lets biome-specific particles become
 // small local sources of color instead of simply disappearing under the darkness.
 export const DAY_NIGHT_MAX_DARKNESS_ALPHA = 0.74;
-export const NIGHT_AMBIENT_LIGHT_UPDATE_INTERVAL_MS = 50;
-export const NIGHT_AMBIENT_LIGHT_MAX_COUNT = 24;
+// The glow layer follows the camera every rendered frame. These knobs control its visual budget
+// rather than a timer, keeping moving lights locked to their world particles.
+export const NIGHT_AMBIENT_LIGHT_MAX_COUNT = 36;
+export const NIGHT_AMBIENT_LIGHT_RADIUS_MULTIPLIER = 1.9;
+export const NIGHT_AMBIENT_LIGHT_INTENSITY_MULTIPLIER = 2.35;
+// Glow is intentionally rendered at CSS resolution: it is a soft field, and this avoids a
+// high-DPI full-screen canvas becoming the expensive part of night exploration.
+export const NIGHT_AMBIENT_LIGHT_RENDER_SCALE = 1;
 
 // Animated environmental details are deliberately throttled. Chunks retain their baked terrain and
 // feature textures; these values govern only lightweight Graphics overlays.

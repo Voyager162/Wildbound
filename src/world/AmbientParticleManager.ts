@@ -41,6 +41,7 @@ export class AmbientParticleManager {
   private lastAnchorCellX = Number.NaN;
   private lastAnchorCellY = Number.NaN;
   private particles: AmbientParticle[] = [];
+  private lightParticles: AmbientParticle[] = [];
   private nightLights: NightAmbientLight[] = [];
 
   constructor(private readonly scene: Phaser.Scene, private readonly seed: string) {
@@ -54,39 +55,45 @@ export class AmbientParticleManager {
       this.lastAnchorCellX = anchorCellX;
       this.lastAnchorCellY = anchorCellY;
       this.particles = this.createParticles(anchorCellX, anchorCellY);
+      // Keep a deterministic, fixed subset while the visible particle field is active. The old
+      // per-tick sort used an animated priority, so the strongest lights could swap places while
+      // the player walked. A source only changes when it naturally enters/leaves the streamed area.
+      this.lightParticles = this.particles
+        .filter((particle) => particle.nightLightIntensity > 0)
+        .slice(0, NIGHT_AMBIENT_LIGHT_MAX_COUNT);
     }
 
     const timeSeconds = time / 1000;
     this.graphics.clear();
-    const lightCandidates: Array<NightAmbientLight & { priority: number }> = [];
     this.particles.forEach((particle) => {
       const state = this.particleState(particle, timeSeconds);
       this.drawParticle(particle, state, nightAmount);
-      if (nightAmount > 0.035 && particle.nightLightIntensity > 0) {
-        const pulse = 0.72 + (Math.sin(state.cycle * 1.9 + particle.phase * 0.44) + 1) * 0.14;
-        lightCandidates.push({
-          worldX: state.x,
-          worldY: state.y,
-          radius: particle.nightLightRadius * (0.9 + pulse * 0.12),
-          color: particle.nightLightColor,
-          intensity: particle.nightLightIntensity * pulse,
-          priority: particle.nightLightIntensity * 2 + Math.sin(state.cycle * 0.63 + particle.phase) * 0.18
-        });
-      }
     });
-    this.nightLights = lightCandidates
-      .sort((first, second) => second.priority - first.priority)
-      .slice(0, NIGHT_AMBIENT_LIGHT_MAX_COUNT)
-      .map(({ priority: _priority, ...light }) => light);
   }
 
-  getNightLights(): readonly NightAmbientLight[] {
+  getNightLights(time: number): readonly NightAmbientLight[] {
+    const timeSeconds = time / 1000;
+    // Particle rendering is deliberately throttled, but each light is evaluated from its analytic
+    // motion curve at the exact frame time. This preserves smooth drifting without increasing the
+    // draw cost of the foreground particle Graphics layer.
+    this.nightLights = this.lightParticles.map((particle) => {
+      const state = this.particleState(particle, timeSeconds);
+      const pulse = 0.72 + (Math.sin(state.cycle * 1.9 + particle.phase * 0.44) + 1) * 0.14;
+      return {
+        worldX: state.x,
+        worldY: state.y,
+        radius: particle.nightLightRadius * (0.9 + pulse * 0.12),
+        color: particle.nightLightColor,
+        intensity: particle.nightLightIntensity * pulse
+      };
+    });
     return this.nightLights;
   }
 
   destroy(): void {
     this.graphics.destroy();
     this.particles = [];
+    this.lightParticles = [];
     this.nightLights = [];
   }
 
