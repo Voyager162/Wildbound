@@ -1,4 +1,5 @@
 import { ResourceType } from './resources';
+import { EXPLORATION_SAVE_REGION_SIZE_TILES } from './explorationConfig';
 import { WORLD_TILE_SIZE } from './worldConfig';
 
 export interface DroppedItem {
@@ -16,6 +17,7 @@ export interface SessionWorldStateData {
   // Exploration is deliberately coarse: each key represents a fixed map region, not a tile.
   // This keeps a long-running save compact while still making every journey permanent.
   exploredRegionKeys?: string[];
+  explorationRegionSizeTiles?: number;
   worldTimeMs?: number;
 }
 
@@ -112,8 +114,16 @@ export class SessionWorldState {
     }
 
     let revealedNewRegion = false;
+    // A radial stamp mirrors the circular local map instead of exposing a blocky square of
+    // saved regions. Fine regions keep the permanent map edge smooth as the player travels.
+    const revealRadiusSquared = radius * radius + 0.35;
     for (let y = regionY - radius; y <= regionY + radius; y += 1) {
       for (let x = regionX - radius; x <= regionX + radius; x += 1) {
+        const deltaX = x - regionX;
+        const deltaY = y - regionY;
+        if (deltaX * deltaX + deltaY * deltaY > revealRadiusSquared) {
+          continue;
+        }
         revealedNewRegion = this.revealRegion(x, y) || revealedNewRegion;
       }
     }
@@ -159,6 +169,7 @@ export class SessionWorldState {
       drops: this.getDrops(),
       nextDropId: this.nextDropId,
       exploredRegionKeys: Array.from(this.exploredRegionKeys),
+      explorationRegionSizeTiles: EXPLORATION_SAVE_REGION_SIZE_TILES,
       worldTimeMs: this.savedWorldTimeMs ?? undefined
     };
   }
@@ -192,6 +203,13 @@ export class SessionWorldState {
     }
 
     if (Array.isArray(state.exploredRegionKeys)) {
+      const savedSize = typeof state.explorationRegionSizeTiles === 'number'
+        && Number.isInteger(state.explorationRegionSizeTiles)
+        && state.explorationRegionSizeTiles >= EXPLORATION_SAVE_REGION_SIZE_TILES
+        && state.explorationRegionSizeTiles <= 256
+        ? state.explorationRegionSizeTiles
+        : 16;
+      const cellsPerSavedRegion = Math.max(1, Math.round(savedSize / EXPLORATION_SAVE_REGION_SIZE_TILES));
       state.exploredRegionKeys.forEach((key) => {
         if (typeof key !== 'string') {
           return;
@@ -199,7 +217,14 @@ export class SessionWorldState {
 
         const [regionX, regionY] = this.parseRegionKey(key);
         if (regionX !== null && regionY !== null) {
-          this.exploredRegionKeys.add(this.regionKey(regionX, regionY));
+          for (let cellY = 0; cellY < cellsPerSavedRegion; cellY += 1) {
+            for (let cellX = 0; cellX < cellsPerSavedRegion; cellX += 1) {
+              this.exploredRegionKeys.add(this.regionKey(
+                regionX * cellsPerSavedRegion + cellX,
+                regionY * cellsPerSavedRegion + cellY
+              ));
+            }
+          }
         }
       });
     }

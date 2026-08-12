@@ -11,7 +11,7 @@ import { WORLD_TILE_SIZE } from './worldConfig';
 
 // Every biome gets a distinct moving foreground layer. These are world-space effects rather
 // than screen overlays, so a gust crossing the forest still feels anchored to the world.
-type ParticleKind = 'leaf' | 'pollen' | 'dust' | 'mist' | 'snow' | 'firefly' | 'spray';
+type ParticleKind = 'leaf' | 'pollen' | 'dust' | 'mist' | 'snow' | 'firefly' | 'spray' | 'ice-crystal';
 
 interface AmbientParticle {
   baseX: number;
@@ -84,6 +84,23 @@ export class AmbientParticleManager {
           windStrength: 18 + randomAtTile(this.seed, cellX, cellY, 0x4d81e8b7) * 32,
           priority: randomAtTile(this.seed, cellX, cellY, 0x1d82f961)
         });
+
+        // Cold highlands get an additional drifting mote layer so snowfields and mountain
+        // passes feel active even when their terrain features are sparse.
+        if ((biome === Biome.Snow || biome === Biome.Mountains) && variation > 0.22) {
+          const highlandVariation = randomAtTile(this.seed, cellX, cellY, 0x6be71af3);
+          candidates.push({
+            baseX: (cellX + 0.08 + randomAtTile(this.seed, cellX, cellY, 0x66c6b921) * 0.86) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
+            baseY: (cellY + 0.06 + randomAtTile(this.seed, cellX, cellY, 0x8aa751ef) * 0.86) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
+            phase: randomAtTile(this.seed, cellX, cellY, 0x2b5297d1) * Math.PI * 2,
+            driftSpeed: 0.38 + highlandVariation * 0.7,
+            size: 2.4 + highlandVariation * 3.8,
+            color: highlandVariation > 0.58 ? 0xd8fbff : 0x9fe8fb,
+            kind: highlandVariation > 0.62 ? 'ice-crystal' : 'snow',
+            windStrength: 24 + highlandVariation * 42,
+            priority: 0.5 + randomAtTile(this.seed, cellX, cellY, 0x139dd507) * 0.5
+          });
+        }
       }
     }
 
@@ -125,6 +142,14 @@ export class AmbientParticleManager {
         graphics.lineBetween(x - particle.size, y, x + particle.size, y);
         graphics.lineBetween(x, y - particle.size, x, y + particle.size);
         break;
+      case 'ice-crystal':
+        graphics.fillStyle(0x9eeeff, alpha * 0.45);
+        graphics.fillCircle(x, y, particle.size * 2.3);
+        graphics.fillStyle(0xf1ffff, Math.min(1, alpha + 0.32));
+        graphics.fillTriangle(x, y - particle.size * 1.4, x + particle.size, y + particle.size, x - particle.size, y + particle.size);
+        graphics.lineStyle(0.85, 0x8bd8ec, alpha * 0.9);
+        graphics.lineBetween(x - particle.size * 1.7, y, x + particle.size * 1.7, y);
+        break;
       case 'pollen':
         graphics.fillCircle(x, y, particle.size * 0.92);
         graphics.fillStyle(0xfff6aa, alpha * 0.5);
@@ -161,9 +186,9 @@ export class AmbientParticleManager {
       case Biome.Hills:
         return variation > 0.5 ? 'dust' : 'pollen';
       case Biome.Mountains:
-        return variation > 0.42 ? 'snow' : 'mist';
+        return variation > 0.68 ? 'ice-crystal' : variation > 0.2 ? 'snow' : 'mist';
       case Biome.Snow:
-        return 'snow';
+        return variation > 0.72 ? 'ice-crystal' : 'snow';
     }
   }
 
@@ -183,6 +208,8 @@ export class AmbientParticleManager {
         return variation > 0.58 ? 0xa9ec5a : 0xf1e567;
       case 'spray':
         return 0xc4f4f2;
+      case 'ice-crystal':
+        return variation > 0.55 ? 0x9ce9ff : 0xd8fbff;
     }
   }
 }

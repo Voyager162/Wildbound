@@ -268,15 +268,20 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private updateSwimmingState(force = false): void {
-    const tileX = worldToTile(this.player.x);
-    const tileY = worldToTile(this.player.y);
-    if (!force && tileX === this.lastSwimmingTileX && tileY === this.lastSwimmingTileY) {
+    // Sample the player's actual feet rather than a floored tile corner. Terrain is rendered
+    // at sub-tile resolution, so this keeps the swim state precisely on the visible waterline.
+    const sampleTileX = this.player.x / WORLD_TILE_SIZE;
+    const sampleTileY = (this.player.y + 9) / WORLD_TILE_SIZE;
+    const tileX = Math.floor(sampleTileX);
+    const tileY = Math.floor(sampleTileY);
+    const waterAtFeet = isTraversableWaterAt(this.worldSeed, sampleTileX, sampleTileY);
+    if (!force && tileX === this.lastSwimmingTileX && tileY === this.lastSwimmingTileY && waterAtFeet === this.isSwimming) {
       return;
     }
 
     this.lastSwimmingTileX = tileX;
     this.lastSwimmingTileY = tileY;
-    this.isSwimming = isTraversableWaterAt(this.worldSeed, tileX, tileY);
+    this.isSwimming = waterAtFeet;
   }
 
   private movePlayer(deltaX: number, deltaY: number): void {

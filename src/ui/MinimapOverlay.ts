@@ -1,4 +1,4 @@
-import { minimapColorAtTile } from '../world/generation/biomeGenerator';
+import { surfaceAtTile } from '../world/generation/terrainGenerator';
 import { MINIMAP_BORDER_SMOOTHNESS_SCALE } from './uiConfig';
 
 const MINIMAP_SIZE = 144;
@@ -294,13 +294,15 @@ export class MinimapOverlay {
   }
 
   private colorForWorldSample(seed: string, tileX: number, tileY: number): number {
-    const key = `${seed}:${Math.round(tileX * 2)},${Math.round(tileY * 2)}`;
+    const key = `${seed}:${Math.round(tileX * 4)},${Math.round(tileY * 4)}`;
     const cached = this.colorCache.get(key);
     if (cached !== undefined) {
       return cached;
     }
 
-    const color = minimapColorAtTile(seed, tileX, tileY);
+    // The minimap and the permanent chart both use the real continuous terrain palette.
+    // This makes every discovered contour transfer exactly from the circular local map.
+    const color = surfaceAtTile(seed, tileX, tileY).color;
     this.colorCache.set(key, color);
     if (this.colorCache.size > COLOR_CACHE_LIMIT) {
       this.colorCache.clear();

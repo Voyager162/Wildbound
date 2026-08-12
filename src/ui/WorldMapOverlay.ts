@@ -79,6 +79,7 @@ interface NormalizedRequest {
 interface RenderJob {
   request: NormalizedRequest;
   geometry: MapGeometry;
+  regions: ExploredMapRegion[];
   nextRegionIndex: number;
   discoveredBiomes: Set<Biome>;
 }
@@ -106,17 +107,18 @@ const MAX_RENDER_DEVICE_SCALE = 2;
 const MAX_CANVAS_PIXELS = 1_600_000;
 const MIN_VIEWPORT_SIZE = 48;
 const MAP_INNER_PADDING = 14;
-const MIN_WORLD_PADDING_TILES = 24;
-const WORLD_PADDING_RATIO = 0.1;
 const MAX_REGION_INPUT = 60_000;
 const MAX_LANDMARK_INPUT = 1_500;
 const MAX_ABSOLUTE_TILE_COORDINATE = 10_000_000;
 const MAX_REGION_SIZE_TILES = 4_096;
-const COLOR_CACHE_LIMIT = 90_000;
+const COLOR_CACHE_LIMIT = 360_000;
 const RENDER_TIME_BUDGET_MS = 3.5;
 // Samples use the exact continuous terrain palette from world chunks rather than a
 // single biome swatch for each fog-of-war region.
-const TERRAIN_SAMPLE_STEP_PIXELS = 2;
+const TERRAIN_SAMPLE_STEP_PIXELS = 1;
+const DEFAULT_TILES_PER_CSS_PIXEL = 0.32;
+const MIN_TILES_PER_CSS_PIXEL = 0.045;
+const MAX_TILES_PER_CSS_PIXEL = 8;
 const MAX_LANDMARK_LABELS = 16;
 const MAX_LANDMARK_LABEL_LENGTH = 32;
 const DEFAULT_LANDMARK_COLOR = 0xf6ca63;
@@ -174,6 +176,10 @@ export class WorldMapOverlay {
   private renderJob: RenderJob | null = null;
   private renderFrameId: number | null = null;
   private layoutFrameId: number | null = null;
+  private mapCenterTileX: number | null = null;
+  private mapCenterTileY: number | null = null;
+  private tilesPerCssPixel = DEFAULT_TILES_PER_CSS_PIXEL;
+  private dragStart: { clientX: number; clientY: number; centerTileX: number; centerTileY: number } | null = null;
 
   constructor(parent: HTMLElement) {
     this.element = document.createElement('div');
@@ -198,7 +204,7 @@ export class WorldMapOverlay {
 
     const controls = document.createElement('p');
     controls.className = 'world-map-controls';
-    controls.textContent = 'F to close | Cyan ring: you | Diamond: discovered landmark';
+    controls.textContent = 'Drag to pan | Scroll to zoom | F to close | Cyan ring: you | Diamond: discovered landmark';
 
     this.viewport = document.createElement('div');
     this.viewport.className = 'world-map-viewport';
@@ -217,6 +223,11 @@ export class WorldMapOverlay {
     emptyCopy.textContent = 'Travel into the wild to permanently reveal terrain, biomes, and landmarks.';
     this.emptyState.append(emptyHeading, emptyCopy);
     this.viewport.append(this.terrainCanvas, this.annotationCanvas, this.emptyState);
+    this.viewport.addEventListener('wheel', this.handleWheel, { passive: false });
+    this.viewport.addEventListener('pointerdown', this.handlePointerDown);
+    this.viewport.addEventListener('pointermove', this.handlePointerMove);
+    this.viewport.addEventListener('pointerup', this.handlePointerUp);
+    this.viewport.addEventListener('pointercancel', this.handlePointerUp);
 
     const legend = document.createElement('section');
     legend.className = 'world-map-legend';
@@ -280,6 +291,10 @@ export class WorldMapOverlay {
     }
 
     const normalized = this.normalizeRequest(request);
+    if (this.mapCenterTileX === null || this.mapCenterTileY === null) {
+      this.mapCenterTileX = normalized.playerTileX;
+      this.mapCenterTileY = normalized.playerTileY;
+    }
     const contentChanged = normalized.contentSignature !== this.latestRequest?.contentSignature;
     this.latestRequest = normalized;
     this.updateStatus(normalized);
@@ -314,6 +329,11 @@ export class WorldMapOverlay {
     }
 
     this.resizeObserver?.disconnect();
+    this.viewport.removeEventListener('wheel', this.handleWheel);
+    this.viewport.removeEventListener('pointerdown', this.handlePointerDown);
+    this.viewport.removeEventListener('pointermove', this.handlePointerMove);
+    this.viewport.removeEventListener('pointerup', this.handlePointerUp);
+    this.viewport.removeEventListener('pointercancel', this.handlePointerUp);
     if (!this.resizeObserver) {
       window.removeEventListener('resize', this.handleResize);
     }
@@ -445,7 +465,7 @@ export class WorldMapOverlay {
     this.renderedGeometry = null;
     this.clearAnnotations(dimensions);
 
-    const geometry = this.createGeometry(request.regions, dimensions);
+    const geometry = this.createGeometry(request, dimensions);
     if (!geometry) {
       this.renderJob = null;
       this.drawBlankMap(dimensions);
@@ -461,44 +481,21 @@ export class WorldMapOverlay {
     this.renderJob = {
       request,
       geometry,
+      regions: request.regions.filter((region) => this.regionIntersectsGeometry(region, geometry)),
       nextRegionIndex: 0,
       discoveredBiomes: new Set<Biome>()
     };
     this.scheduleRenderFrame();
   }
 
-  private createGeometry(regions: readonly ExploredMapRegion[], dimensions: CanvasDimensions): MapGeometry | null {
-    if (regions.length === 0) {
+  private createGeometry(request: NormalizedRequest, dimensions: CanvasDimensions): MapGeometry | null {
+    if (request.regions.length === 0 || this.mapCenterTileX === null || this.mapCenterTileY === null) {
       return null;
     }
-
-    let minTileX = Number.POSITIVE_INFINITY;
-    let minTileY = Number.POSITIVE_INFINITY;
-    let maxTileX = Number.NEGATIVE_INFINITY;
-    let maxTileY = Number.NEGATIVE_INFINITY;
-
-    regions.forEach((region) => {
-      minTileX = Math.min(minTileX, region.tileX);
-      minTileY = Math.min(minTileY, region.tileY);
-      maxTileX = Math.max(maxTileX, region.tileX + region.sizeTiles);
-      maxTileY = Math.max(maxTileY, region.tileY + region.sizeTiles);
-    });
-
-    const rawWidth = Math.max(1, maxTileX - minTileX);
-    const rawHeight = Math.max(1, maxTileY - minTileY);
-    const paddingX = Math.max(MIN_WORLD_PADDING_TILES, rawWidth * WORLD_PADDING_RATIO);
-    const paddingY = Math.max(MIN_WORLD_PADDING_TILES, rawHeight * WORLD_PADDING_RATIO);
-    const paddedWidth = rawWidth + paddingX * 2;
-    const paddedHeight = rawHeight + paddingY * 2;
     const left = MAP_INNER_PADDING;
     const top = MAP_INNER_PADDING;
     const width = Math.max(1, dimensions.cssWidth - MAP_INNER_PADDING * 2);
     const height = Math.max(1, dimensions.cssHeight - MAP_INNER_PADDING * 2);
-    const tilesPerCssPixel = Math.max(paddedWidth / width, paddedHeight / height);
-    const worldWidth = width * tilesPerCssPixel;
-    const worldHeight = height * tilesPerCssPixel;
-    const centerTileX = (minTileX + maxTileX) / 2;
-    const centerTileY = (minTileY + maxTileY) / 2;
 
     return {
       ...dimensions,
@@ -506,9 +503,9 @@ export class WorldMapOverlay {
       top,
       width,
       height,
-      minTileX: centerTileX - worldWidth / 2,
-      minTileY: centerTileY - worldHeight / 2,
-      tilesPerCssPixel
+      minTileX: this.mapCenterTileX - width * this.tilesPerCssPixel / 2,
+      minTileY: this.mapCenterTileY - height * this.tilesPerCssPixel / 2,
+      tilesPerCssPixel: this.tilesPerCssPixel
     };
   }
 
@@ -527,14 +524,14 @@ export class WorldMapOverlay {
 
     const startedAt = performance.now();
     while (
-      job.nextRegionIndex < job.request.regions.length
+      job.nextRegionIndex < job.regions.length
       && performance.now() - startedAt < RENDER_TIME_BUDGET_MS
     ) {
-      this.paintExploredRegion(job.geometry, job.request.seed, job.request.regions[job.nextRegionIndex], job.discoveredBiomes);
+      this.paintExploredRegion(job.geometry, job.request.seed, job.regions[job.nextRegionIndex], job.discoveredBiomes);
       job.nextRegionIndex += 1;
     }
 
-    if (job.nextRegionIndex < job.request.regions.length) {
+    if (job.nextRegionIndex < job.regions.length) {
       this.scheduleRenderFrame();
       return;
     }
@@ -585,8 +582,8 @@ export class WorldMapOverlay {
   }
 
   private terrainSampleAt(seed: string, tileX: number, tileY: number): TerrainMapSample {
-    const sampleTileX = Math.round(tileX * 2) / 2;
-    const sampleTileY = Math.round(tileY * 2) / 2;
+    const sampleTileX = Math.round(tileX * 4) / 4;
+    const sampleTileY = Math.round(tileY * 4) / 4;
     const key = `${seed}:${sampleTileX},${sampleTileY}`;
     const cached = this.colorCache.get(key);
     if (cached) {
@@ -832,6 +829,69 @@ export class WorldMapOverlay {
     const bottomRight = this.projectTile(geometry, region.tileX + region.sizeTiles, region.tileY + region.sizeTiles);
     return { left: topLeft.x, top: topLeft.y, right: bottomRight.x, bottom: bottomRight.y };
   }
+
+  private regionIntersectsGeometry(region: ExploredMapRegion, geometry: MapGeometry): boolean {
+    const maxTileX = geometry.minTileX + geometry.width * geometry.tilesPerCssPixel;
+    const maxTileY = geometry.minTileY + geometry.height * geometry.tilesPerCssPixel;
+    return region.tileX < maxTileX
+      && region.tileX + region.sizeTiles > geometry.minTileX
+      && region.tileY < maxTileY
+      && region.tileY + region.sizeTiles > geometry.minTileY;
+  }
+
+  private readonly handleWheel = (event: WheelEvent): void => {
+    if (!this.open || !this.latestRequest || !this.canvasDimensions) {
+      return;
+    }
+
+    event.preventDefault();
+    const geometry = this.createGeometry(this.latestRequest, this.canvasDimensions);
+    if (!geometry) {
+      return;
+    }
+
+    const rect = this.viewport.getBoundingClientRect();
+    const x = clamp(event.clientX - rect.left, geometry.left, geometry.left + geometry.width);
+    const y = clamp(event.clientY - rect.top, geometry.top, geometry.top + geometry.height);
+    const focusTileX = geometry.minTileX + (x - geometry.left) * geometry.tilesPerCssPixel;
+    const focusTileY = geometry.minTileY + (y - geometry.top) * geometry.tilesPerCssPixel;
+    const zoomMultiplier = event.deltaY < 0 ? 0.82 : 1.22;
+    this.tilesPerCssPixel = clamp(this.tilesPerCssPixel * zoomMultiplier, MIN_TILES_PER_CSS_PIXEL, MAX_TILES_PER_CSS_PIXEL);
+    this.mapCenterTileX = focusTileX - (x - geometry.left - geometry.width / 2) * this.tilesPerCssPixel;
+    this.mapCenterTileY = focusTileY - (y - geometry.top - geometry.height / 2) * this.tilesPerCssPixel;
+    this.startRenderJob();
+  };
+
+  private readonly handlePointerDown = (event: PointerEvent): void => {
+    if (!this.open || this.mapCenterTileX === null || this.mapCenterTileY === null) {
+      return;
+    }
+
+    this.dragStart = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      centerTileX: this.mapCenterTileX,
+      centerTileY: this.mapCenterTileY
+    };
+    this.viewport.setPointerCapture?.(event.pointerId);
+    this.viewport.classList.add('is-dragging');
+  };
+
+  private readonly handlePointerMove = (event: PointerEvent): void => {
+    if (!this.dragStart || !this.open) {
+      return;
+    }
+
+    this.mapCenterTileX = this.dragStart.centerTileX - (event.clientX - this.dragStart.clientX) * this.tilesPerCssPixel;
+    this.mapCenterTileY = this.dragStart.centerTileY - (event.clientY - this.dragStart.clientY) * this.tilesPerCssPixel;
+    this.startRenderJob();
+  };
+
+  private readonly handlePointerUp = (event: PointerEvent): void => {
+    this.dragStart = null;
+    this.viewport.releasePointerCapture?.(event.pointerId);
+    this.viewport.classList.remove('is-dragging');
+  };
 
   private projectTile(geometry: MapGeometry, tileX: number, tileY: number): { x: number; y: number } {
     return {

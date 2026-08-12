@@ -137,14 +137,19 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
   const deepWater = 0x1f5d91;
   const shallowWater = 0x3c94b0;
   const beachSand = 0xdbc37f;
-  if (biome === Biome.Ocean) {
-    color = blendColor(deepWater, shallowWater, smoothRange(0.08, OCEAN_ELEVATION_MAX, climate.elevation));
-    isWater = true;
-    isShallowWater = climate.elevation > OCEAN_ELEVATION_MAX - 0.08;
-  } else if (biome === Biome.Beach) {
-    color = blendColor(beachSand, regionalLandColor, smoothRange(OCEAN_ELEVATION_MAX + 0.025, BEACH_ELEVATION_MAX, climate.elevation));
-    isWater = false;
-    isShallowWater = false;
+  if (biome === Biome.Ocean || biome === Biome.Beach) {
+    const waterColor = blendColor(deepWater, shallowWater, smoothRange(0.08, OCEAN_ELEVATION_MAX + 0.035, climate.elevation));
+    const shoreLandColor = blendColor(
+      beachSand,
+      regionalLandColor,
+      smoothRange(OCEAN_ELEVATION_MAX + 0.02, BEACH_ELEVATION_MAX, climate.elevation)
+    );
+    // The visible shoreline intentionally spans both sides of the gameplay water threshold.
+    // That removes one-sided hard seams while swimming still begins only once the player crosses
+    // the exact ocean surface boundary below.
+    color = blendColor(waterColor, shoreLandColor, smoothRange(OCEAN_ELEVATION_MAX - 0.065, OCEAN_ELEVATION_MAX + 0.055, climate.elevation));
+    isWater = biome === Biome.Ocean;
+    isShallowWater = isWater && climate.elevation > OCEAN_ELEVATION_MAX - 0.08;
   } else if (biome === Biome.Swamp && swampPool > 0.64) {
     // Swamp pools are shallow swim-water; surrounding swamp ground remains walkable.
     const poolAmount = smoothRange(0.64, 0.82, swampPool);

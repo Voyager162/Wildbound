@@ -18,12 +18,12 @@ Setup, the installed executable, shortcuts, and the application window use the r
 
 - Phaser runs in a secure Electron renderer. Packaged builds load local files and need no web server or internet connection.
 - The code-generated player moves with WASD or the arrow keys, visually faces all eight movement directions, and has directional walking and swimming animation.
-- Player movement is delta-time based. Entering traversable ocean, shore, or swamp water enables swimming mode at 42% of walking speed.
+- Player movement is delta-time based. Swimming begins only when the player's feet cross into traversable ocean or swamp water, at 42% of walking speed.
 - Holding the left mouse button for one real-time second harvests a highlighted nearby feature.
 - A smooth-follow camera maintains a large 2560 x 1440 world view on 16:9 displays in both windowed and fullscreen modes.
 - F3 toggles a crisp, screen-space debug panel with world/tile coordinates, climate values, world time, current landmark, movement mode, seed, chunk position, inventory usage, and FPS.
 - A circular, top-right minimap samples stable world coordinates and keeps the player marker centered.
-- Press `F` to open the world map. It begins covered by fog, permanently reveals the regions you explore, and records discovered biome color and landmark markers without obscuring the nearby minimap.
+- Press `F` to open the world map. It permanently charts the same continuous terrain colors shown by the circular minimap; drag to pan and use the mouse wheel to zoom without changing map scale automatically.
 - Rare seed-deterministic landmarks — ancient trees, waterfalls, crystal formations, lakes, craters, volcanoes, stone circles, giant skeletons, campsites, and watchtowers — stream as a separate visual layer from normal terrain and resources.
 - A saved day/night clock adds gradual dawn, daylight, dusk, and night lighting. Trees, grasses, reeds, water glints, and biome-sensitive particles provide lightweight ambient motion.
 - Elevation, moisture, and temperature noise deterministically classify ocean, beach, plains, forest, desert, swamp, hills, mountains, and snow biomes.

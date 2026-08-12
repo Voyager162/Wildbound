@@ -182,15 +182,16 @@ export class WorldChunk {
       const wind = Math.sin(timeSeconds * 1.12 + phase);
 
       if (feature.type === TerrainFeatureType.Tree) {
-        const shimmerX = wind * 6.4;
-        graphics.fillStyle(0x9dd464, 0.16);
+        const shimmerX = wind * 12;
+        graphics.fillStyle(0x9dd464, 0.21);
         graphics.fillCircle(centerX + 29 + shimmerX, centerY - 34, 11);
         graphics.fillCircle(centerX - 8 + shimmerX * 0.63, centerY - 56, 8);
         graphics.fillStyle(0xe4f09a, 0.12);
         graphics.fillCircle(centerX - 23 + shimmerX * 0.72, centerY - 43, 8);
-        graphics.lineStyle(1.45, 0x7fb456, 0.4);
+        graphics.lineStyle(1.8, 0x7fb456, 0.52);
         graphics.lineBetween(centerX + 11, centerY - 7, centerX + 20 + shimmerX, centerY - 24);
         graphics.lineBetween(centerX - 6, centerY - 3, centerX - 13 + shimmerX * 0.62, centerY - 31);
+        graphics.lineBetween(centerX + 2, centerY - 18, centerX + 5 + shimmerX * 0.84, centerY - 49);
       } else if (feature.type === TerrainFeatureType.Reeds || feature.type === TerrainFeatureType.Grass) {
         const height = feature.type === TerrainFeatureType.Reeds ? 43 : 29;
         const color = feature.type === TerrainFeatureType.Reeds ? 0xa6bd67 : 0xb9de73;
@@ -609,23 +610,28 @@ export class WorldChunk {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
         const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
         const worldTileY = this.y * CHUNK_SIZE_TILES + localY;
-        const variation = randomAtTile(this.seed, worldTileX, worldTileY, 0x2b8316d9);
         const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
-        const density = surface.biome === Biome.Plains ? 0.66 : surface.biome === Biome.Forest ? 0.76 : 0.84;
-        if (variation < density) {
-          continue;
-        }
         if (surface.isWater || (surface.biome !== Biome.Plains && surface.biome !== Biome.Forest && surface.biome !== Biome.Swamp)) {
           continue;
         }
 
-        tufts.push({
-          worldX: (worldTileX + 0.22 + randomAtTile(this.seed, worldTileX, worldTileY, 0x1593bd27) * 0.55) * WORLD_TILE_SIZE,
-          worldY: (worldTileY + 0.48 + randomAtTile(this.seed, worldTileX, worldTileY, 0x6cb6ad11) * 0.34) * WORLD_TILE_SIZE,
-          phase: randomAtTile(this.seed, worldTileX, worldTileY, 0x4a1e79e5) * Math.PI * 2,
-          height: 7 + Math.floor(variation * 7),
-          color: surface.biome === Biome.Swamp ? 0x6e9c62 : surface.biome === Biome.Forest ? 0x65964d : 0x79af4f
-        });
+        // Dense low ground cover is purely visual. Taller sparse grass stays in the feature
+        // layer, preserving harvesting behavior while making plains read as living grassland.
+        const tuftCount = surface.biome === Biome.Plains ? 3 : 2;
+        for (let tuftIndex = 0; tuftIndex < tuftCount; tuftIndex += 1) {
+          const variation = randomAtTile(this.seed, worldTileX, worldTileY, 0x2b8316d9 + tuftIndex * 0x154a31);
+          if (variation < (surface.biome === Biome.Plains ? 0.16 : 0.25)) {
+            continue;
+          }
+
+          tufts.push({
+            worldX: (worldTileX + 0.08 + randomAtTile(this.seed, worldTileX, worldTileY, 0x1593bd27 + tuftIndex) * 0.84) * WORLD_TILE_SIZE,
+            worldY: (worldTileY + 0.34 + randomAtTile(this.seed, worldTileX, worldTileY, 0x6cb6ad11 + tuftIndex) * 0.52) * WORLD_TILE_SIZE,
+            phase: randomAtTile(this.seed, worldTileX, worldTileY, 0x4a1e79e5 + tuftIndex) * Math.PI * 2,
+            height: 8 + Math.floor(variation * 10),
+            color: surface.biome === Biome.Swamp ? 0x6e9c62 : surface.biome === Biome.Forest ? 0x65964d : 0x79af4f
+          });
+        }
       }
     }
 

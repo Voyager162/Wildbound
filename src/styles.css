@@ -181,6 +181,12 @@ body {
   background:
     radial-gradient(circle at 50% 45%, rgba(41, 83, 76, 0.4), transparent 62%),
     #0a191d;
+  cursor: grab;
+  touch-action: none;
+}
+
+.world-map-viewport.is-dragging {
+  cursor: grabbing;
 }
 
 .world-map-canvas {
