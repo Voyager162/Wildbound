@@ -157,10 +157,9 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
       regionalLandColor,
       smoothRange(OCEAN_ELEVATION_MAX + 0.02, BEACH_ELEVATION_MAX, climate.elevation)
     );
-    // The visible shoreline intentionally spans both sides of the gameplay water threshold.
-    // That removes one-sided hard seams while swimming still begins only once the player crosses
-    // the exact ocean surface boundary below.
-    waterVisualAmount = 1 - smoothRange(OCEAN_ELEVATION_MAX - 0.075, BEACH_ELEVATION_MAX, climate.elevation);
+    // Keep the blend centered tightly on the true ocean edge. This retains a continuous wet-sand
+    // transition while preserving the broad, readable sand portion of the Beach biome.
+    waterVisualAmount = 1 - smoothRange(OCEAN_ELEVATION_MAX - 0.045, OCEAN_ELEVATION_MAX + 0.035, climate.elevation);
     color = blendColor(shoreLandColor, waterColor, waterVisualAmount);
     isWater = biome === Biome.Ocean;
     isShallowWater = isWater && climate.elevation > OCEAN_ELEVATION_MAX - 0.08;

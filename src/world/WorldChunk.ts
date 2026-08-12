@@ -429,12 +429,20 @@ export class WorldChunk {
             context.fillRect(cellX, cellY, VISUAL_TERRAIN_CELL_SIZE, VISUAL_TERRAIN_CELL_SIZE);
             this.drawTerrainDetail(context, surface, variation, cellX, cellY);
 
-            if (surface.waterVisualAmount > 0.16) {
+            // Full water motion is confined to actual ocean water. A narrow high-water strip on
+            // the beach remains eligible so ocean surf can roll onto wet sand and retreat, but
+            // the rest of the Beach biome stays visibly sandy.
+            const hasSwampSurface = surface.isSwampWater && surface.waterVisualAmount > 0.16;
+            const hasOceanSurface = !surface.isSwampWater && (
+              surface.isWater
+              || (surface.biome === Biome.Beach && surface.waterVisualAmount > 0.2)
+            );
+            if (hasSwampSurface || hasOceanSurface) {
               this.hasWater = true;
               const maskX = localX * VISUAL_CELLS_PER_TILE + visualX;
               const maskY = localY * VISUAL_CELLS_PER_TILE + visualY;
 
-              if (surface.isSwampWater) {
+              if (hasSwampSurface) {
                 hasSwampWaterSurface = true;
                 swampWaterMaskContext.fillRect(maskX, maskY, 1, 1);
                 continue;
