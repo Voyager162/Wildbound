@@ -160,14 +160,16 @@ export class WorldChunk {
     graphics.clear();
 
     this.ambientGrassTufts.forEach((tuft) => {
-      const wind = Math.sin(timeSeconds * 1.35 + tuft.phase) * 3.9 + Math.sin(timeSeconds * 2.1 + tuft.phase * 0.47) * 1.1;
-      graphics.lineStyle(1.25, this.shadeColor(tuft.color, -0.3), 0.58);
-      graphics.lineBetween(tuft.worldX - 4, tuft.worldY + 4, tuft.worldX - 4 + wind * 0.38, tuft.worldY - tuft.height * 0.62);
-      graphics.lineBetween(tuft.worldX - 1.4, tuft.worldY + 4, tuft.worldX - 1.4 + wind * 0.62, tuft.worldY - tuft.height);
-      graphics.lineStyle(1.1, tuft.color, 0.68);
-      graphics.lineBetween(tuft.worldX + 1.3, tuft.worldY + 4, tuft.worldX + 1.3 + wind * 0.85, tuft.worldY - tuft.height * 1.12);
-      graphics.lineStyle(0.85, 0xd9efa0, 0.48);
-      graphics.lineBetween(tuft.worldX + 4, tuft.worldY + 4, tuft.worldX + 4 + wind, tuft.worldY - tuft.height * 0.68);
+      const wind = Math.sin(timeSeconds * 1.65 + tuft.phase) * 4.5
+        + Math.sin(timeSeconds * 2.8 + tuft.phase * 0.47) * 1.35;
+      graphics.lineStyle(1.25, this.shadeColor(tuft.color, -0.34), 0.64);
+      graphics.lineBetween(tuft.worldX - 5, tuft.worldY + 4, tuft.worldX - 5 + wind * 0.34, tuft.worldY - tuft.height * 0.58);
+      graphics.lineBetween(tuft.worldX - 2.6, tuft.worldY + 4, tuft.worldX - 2.6 + wind * 0.52, tuft.worldY - tuft.height * 0.84);
+      graphics.lineStyle(1.15, tuft.color, 0.76);
+      graphics.lineBetween(tuft.worldX - 0.2, tuft.worldY + 4, tuft.worldX - 0.2 + wind * 0.72, tuft.worldY - tuft.height * 1.04);
+      graphics.lineBetween(tuft.worldX + 2.4, tuft.worldY + 4, tuft.worldX + 2.4 + wind * 0.94, tuft.worldY - tuft.height * 0.78);
+      graphics.lineStyle(0.85, 0xd9efa0, 0.56);
+      graphics.lineBetween(tuft.worldX + 4.8, tuft.worldY + 4, tuft.worldX + 4.8 + wind * 1.08, tuft.worldY - tuft.height * 0.64);
     });
 
     this.features.forEach((feature) => {
@@ -183,13 +185,19 @@ export class WorldChunk {
       const wind = Math.sin(timeSeconds * 1.12 + phase);
 
       if (feature.type === TerrainFeatureType.Tree) {
-        const shimmerX = wind * 12;
-        graphics.fillStyle(0x9dd464, 0.21);
+        const shimmerX = wind * 14;
+        graphics.fillStyle(0x16452b, 0.3);
+        graphics.fillCircle(centerX - 26 + shimmerX * 0.42, centerY - 23, 15);
+        graphics.fillCircle(centerX + 30 + shimmerX * 0.88, centerY - 29, 17);
+        graphics.fillStyle(0x4b8b42, 0.36);
+        graphics.fillCircle(centerX - 5 + shimmerX * 0.62, centerY - 57, 15);
+        graphics.fillCircle(centerX + 23 + shimmerX * 0.94, centerY - 45, 13);
+        graphics.fillStyle(0x9dd464, 0.28);
         graphics.fillCircle(centerX + 29 + shimmerX, centerY - 34, 11);
-        graphics.fillCircle(centerX - 8 + shimmerX * 0.63, centerY - 56, 8);
-        graphics.fillStyle(0xe4f09a, 0.12);
+        graphics.fillCircle(centerX - 8 + shimmerX * 0.63, centerY - 56, 9);
+        graphics.fillStyle(0xe4f09a, 0.16);
         graphics.fillCircle(centerX - 23 + shimmerX * 0.72, centerY - 43, 8);
-        graphics.lineStyle(1.8, 0x7fb456, 0.52);
+        graphics.lineStyle(1.9, 0x7fb456, 0.62);
         graphics.lineBetween(centerX + 11, centerY - 7, centerX + 20 + shimmerX, centerY - 24);
         graphics.lineBetween(centerX - 6, centerY - 3, centerX - 13 + shimmerX * 0.62, centerY - 31);
         graphics.lineBetween(centerX + 2, centerY - 18, centerX + 5 + shimmerX * 0.84, centerY - 49);
@@ -349,6 +357,23 @@ export class WorldChunk {
         context.fillRect(cellX + 2, cellY + 4, 3, 1);
       }
       return;
+    }
+
+    // Low grass belongs to the terrain layer, rather than the harvestable feature layer. This
+    // makes plains, forests, and swamps read as an unbroken living ground cover while retaining
+    // taller, interactive grass as distinct features above it.
+    const grassyBiome = surface.biome === Biome.Plains || surface.biome === Biome.Forest || surface.biome === Biome.Swamp;
+    if (grassyBiome && vegetation > 0.1 && variation > 0.77 - vegetation * 0.2) {
+      const darkGrass = surface.biome === Biome.Swamp ? 0x507b50 : surface.biome === Biome.Forest ? 0x476f3b : 0x5f963e;
+      const lightGrass = surface.biome === Biome.Swamp ? 0x83a66a : surface.biome === Biome.Forest ? 0x82a856 : 0x9ac85c;
+      context.fillStyle = this.colorToCss(darkGrass);
+      context.fillRect(cellX + 1, cellY + 4, 1, 3);
+      context.fillRect(cellX + 3, cellY + 2, 1, 5);
+      context.fillStyle = this.colorToCss(lightGrass);
+      context.fillRect(cellX + 5, cellY + 1, 1, 6);
+      if (variation > 0.91) {
+        context.fillRect(cellX + 7, cellY + 3, 1, 4);
+      }
     }
 
     if (snow > 0.2 && variation > 0.985 - snow * 0.11) {
@@ -609,7 +634,7 @@ export class WorldChunk {
   }
 
   private createAmbientGrassTufts(): AmbientGrassTuft[] {
-    const tufts: AmbientGrassTuft[] = [];
+    const candidates: Array<AmbientGrassTuft & { priority: number }> = [];
 
     for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
@@ -629,25 +654,24 @@ export class WorldChunk {
             continue;
           }
 
-          tufts.push({
+          candidates.push({
             worldX: (worldTileX + 0.08 + randomAtTile(this.seed, worldTileX, worldTileY, 0x1593bd27 + tuftIndex) * 0.84) * WORLD_TILE_SIZE,
             worldY: (worldTileY + 0.34 + randomAtTile(this.seed, worldTileX, worldTileY, 0x6cb6ad11 + tuftIndex) * 0.52) * WORLD_TILE_SIZE,
             phase: randomAtTile(this.seed, worldTileX, worldTileY, 0x4a1e79e5 + tuftIndex) * Math.PI * 2,
             height: 8 + Math.floor(variation * 10),
-            color: surface.biome === Biome.Swamp ? 0x6e9c62 : surface.biome === Biome.Forest ? 0x65964d : 0x79af4f
+            color: surface.biome === Biome.Swamp ? 0x6e9c62 : surface.biome === Biome.Forest ? 0x65964d : 0x79af4f,
+            // Keep the richest grass patches distributed across the full chunk instead of
+            // stopping after the first tile rows reach the visual budget.
+            priority: randomAtTile(this.seed, worldTileX, worldTileY, 0x7f4a26c3 + tuftIndex)
           });
-          if (tufts.length >= AMBIENT_GRASS_TUFTS_PER_CHUNK) {
-            break;
-          }
         }
-        if (tufts.length >= AMBIENT_GRASS_TUFTS_PER_CHUNK) {
-          break;
-        }
-      }
-      if (tufts.length >= AMBIENT_GRASS_TUFTS_PER_CHUNK) {
-        break;
       }
     }
+
+    const tufts = candidates
+      .sort((first, second) => second.priority - first.priority)
+      .slice(0, AMBIENT_GRASS_TUFTS_PER_CHUNK)
+      .map(({ priority: _priority, ...tuft }) => tuft);
 
     this.hasAmbientMotion = tufts.length > 0 || this.features.some((feature) =>
       feature.type === TerrainFeatureType.Tree

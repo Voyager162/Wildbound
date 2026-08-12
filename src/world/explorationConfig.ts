@@ -18,8 +18,10 @@ export const DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS = 40;
 
 // Animated environmental details are deliberately throttled. Chunks retain their baked terrain and
 // feature textures; these values govern only lightweight Graphics overlays.
-export const AMBIENT_SWAY_UPDATE_INTERVAL_MS = 120;
-export const AMBIENT_PARTICLE_UPDATE_INTERVAL_MS = 100;
+// Particles and foliage are perceptually sensitive to cadence, so these run at smooth motion
+// rates. Their per-frame work is bounded separately below.
+export const AMBIENT_SWAY_UPDATE_INTERVAL_MS = 33;
+export const AMBIENT_PARTICLE_UPDATE_INTERVAL_MS = 16;
 export const AMBIENT_PARTICLE_CELL_SIZE_PIXELS = 96;
 // The visible camera view is 2560 x 1440 world pixels, so these radii cover it with a small
 // buffer while still selecting a bounded number of particles to render.
@@ -33,7 +35,7 @@ export const AMBIENT_CHUNK_RADIUS_X = 2;
 export const AMBIENT_CHUNK_RADIUS_Y = 1;
 export const WATER_ANIMATION_UPDATE_INTERVAL_MS = 90;
 export const WATER_WAVES_PER_CHUNK = 20;
-export const AMBIENT_GRASS_TUFTS_PER_CHUNK = 28;
+export const AMBIENT_GRASS_TUFTS_PER_CHUNK = 48;
 // Stream one full baked chunk per frame after the initial area. Chunk rendering is deterministic,
 // but distributing it prevents regular stalls when the player crosses a chunk boundary.
 export const CHUNK_BUILDS_PER_FRAME = 1;
