@@ -6,6 +6,7 @@ import {
   AMBIENT_PARTICLE_UPDATE_INTERVAL_MS,
   AMBIENT_SWAY_UPDATE_INTERVAL_MS,
   CHUNK_BUILDS_PER_FRAME,
+  CHUNK_BUILD_INTERVAL_MS,
   WATER_ANIMATION_UPDATE_INTERVAL_MS
 } from './explorationConfig';
 import { LandmarkManager } from './LandmarkManager';
@@ -14,6 +15,7 @@ import { SessionWorldState } from './SessionWorldState';
 import { WorldChunk } from './WorldChunk';
 import {
   CHUNK_LOAD_RADIUS,
+  CHUNK_SIZE_PIXELS,
   CHUNK_SIZE_TILES,
   CHUNK_UNLOAD_RADIUS,
   worldToChunk
@@ -28,6 +30,7 @@ export class ChunkManager {
   private lastWaterAnimationTime = Number.NEGATIVE_INFINITY;
   private lastAmbientSwayTime = Number.NEGATIVE_INFINITY;
   private lastAmbientParticleTime = Number.NEGATIVE_INFINITY;
+  private lastChunkBuildTime = Number.NEGATIVE_INFINITY;
   private readonly ambientParticleManager: AmbientParticleManager;
   private readonly landmarkManager: LandmarkManager;
 
@@ -56,21 +59,23 @@ export class ChunkManager {
     return this.landmarkManager.loadedLandmarkCount;
   }
 
-  update(playerWorldX: number, playerWorldY: number): void {
+  update(playerWorldX: number, playerWorldY: number, time = performance.now()): void {
     const nextChunkX = worldToChunk(playerWorldX);
     const nextChunkY = worldToChunk(playerWorldY);
 
     if (nextChunkX === this.activeChunkX && nextChunkY === this.activeChunkY) {
-      this.processPendingChunks();
+      this.queuePrefetchChunks(playerWorldX, playerWorldY);
+      this.processPendingChunks(time);
       return;
     }
 
     this.activeChunkX = nextChunkX;
     this.activeChunkY = nextChunkY;
     this.queueNearbyChunks();
+    this.queuePrefetchChunks(playerWorldX, playerWorldY);
     this.unloadDistantChunks();
     this.landmarkManager.update(this.activeChunkX, this.activeChunkY);
-    this.processPendingChunks();
+    this.processPendingChunks(time);
   }
 
   updateWaterAnimation(time: number): void {
@@ -145,9 +150,34 @@ export class ChunkManager {
   }
 
   private queueNearbyChunks(): void {
+    this.queueChunkNeighborhood(this.activeChunkX, this.activeChunkY);
+  }
+
+  private queuePrefetchChunks(playerWorldX: number, playerWorldY: number): void {
+    const localX = playerWorldX - this.activeChunkX * CHUNK_SIZE_PIXELS;
+    const localY = playerWorldY - this.activeChunkY * CHUNK_SIZE_PIXELS;
+    const prefetchThreshold = CHUNK_SIZE_PIXELS * 0.64;
+    const centersX = [this.activeChunkX];
+    const centersY = [this.activeChunkY];
+
+    if (localX >= prefetchThreshold) {
+      centersX.push(this.activeChunkX + 1);
+    } else if (localX <= CHUNK_SIZE_PIXELS - prefetchThreshold) {
+      centersX.push(this.activeChunkX - 1);
+    }
+    if (localY >= prefetchThreshold) {
+      centersY.push(this.activeChunkY + 1);
+    } else if (localY <= CHUNK_SIZE_PIXELS - prefetchThreshold) {
+      centersY.push(this.activeChunkY - 1);
+    }
+
+    centersX.forEach((centerX) => centersY.forEach((centerY) => this.queueChunkNeighborhood(centerX, centerY)));
+  }
+
+  private queueChunkNeighborhood(centerChunkX: number, centerChunkY: number): void {
     const candidates: Array<{ x: number; y: number; distance: number }> = [];
-    for (let y = this.activeChunkY - CHUNK_LOAD_RADIUS; y <= this.activeChunkY + CHUNK_LOAD_RADIUS; y += 1) {
-      for (let x = this.activeChunkX - CHUNK_LOAD_RADIUS; x <= this.activeChunkX + CHUNK_LOAD_RADIUS; x += 1) {
+    for (let y = centerChunkY - CHUNK_LOAD_RADIUS; y <= centerChunkY + CHUNK_LOAD_RADIUS; y += 1) {
+      for (let x = centerChunkX - CHUNK_LOAD_RADIUS; x <= centerChunkX + CHUNK_LOAD_RADIUS; x += 1) {
         const key = `${x},${y}`;
 
         if (!this.chunks.has(key) && !this.pendingChunkKeys.has(key)) {
@@ -168,7 +198,12 @@ export class ChunkManager {
     ));
   }
 
-  private processPendingChunks(): void {
+  private processPendingChunks(time: number): void {
+    if (time - this.lastChunkBuildTime < CHUNK_BUILD_INTERVAL_MS) {
+      return;
+    }
+
+    this.lastChunkBuildTime = time;
     let built = 0;
     while (built < CHUNK_BUILDS_PER_FRAME && this.pendingChunkCoordinates.length > 0) {
       const coordinate = this.pendingChunkCoordinates.shift();
