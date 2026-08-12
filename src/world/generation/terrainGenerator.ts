@@ -21,6 +21,8 @@ export interface TerrainSurface {
   color: number;
   isWater: boolean;
   isShallowWater: boolean;
+  // Visual shoreline depth is continuous, unlike the exact water flag used for swimming.
+  waterVisualAmount: number;
   elevation: number;
   moisture: number;
   temperature: number;
@@ -131,6 +133,7 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
   let color = regionalLandColor;
   let isWater = biome === Biome.Ocean;
   let isShallowWater = false;
+  let waterVisualAmount = 0;
 
   // Ocean is the only swim-water biome. Beaches retain the same continuous shore palette but
   // stay walkable, so the minimap, F3 label, and movement state never disagree at a shoreline.
@@ -147,7 +150,8 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
     // The visible shoreline intentionally spans both sides of the gameplay water threshold.
     // That removes one-sided hard seams while swimming still begins only once the player crosses
     // the exact ocean surface boundary below.
-    color = blendColor(waterColor, shoreLandColor, smoothRange(OCEAN_ELEVATION_MAX - 0.065, OCEAN_ELEVATION_MAX + 0.055, climate.elevation));
+    waterVisualAmount = 1 - smoothRange(OCEAN_ELEVATION_MAX - 0.075, BEACH_ELEVATION_MAX, climate.elevation);
+    color = blendColor(shoreLandColor, waterColor, waterVisualAmount);
     isWater = biome === Biome.Ocean;
     isShallowWater = isWater && climate.elevation > OCEAN_ELEVATION_MAX - 0.08;
   } else if (biome === Biome.Swamp && swampPool > 0.64) {
@@ -156,10 +160,14 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
     color = blendColor(regionalLandColor, 0x367f8b, poolAmount);
     isWater = true;
     isShallowWater = true;
+    waterVisualAmount = poolAmount;
   }
 
   if (!isWater) {
-    const rollingShade = (topography.height - climate.elevation) * 0.35 + (topography.contour < 0.075 ? -0.07 : 0);
+    // Fade ground-only shading as the shore becomes water so its discontinuity cannot form an
+    // accidental hard coastline where the swim-state boundary lies.
+    const rollingShade = ((topography.height - climate.elevation) * 0.35 + (topography.contour < 0.075 ? -0.07 : 0))
+      * (1 - waterVisualAmount);
     color = shadeColor(color, rollingShade);
 
   }
@@ -170,6 +178,7 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
     color: shadeColor(color, microVariation * 0.16),
     isWater,
     isShallowWater,
+    waterVisualAmount,
     elevation: climate.elevation,
     moisture: climate.moisture,
     temperature: climate.temperature,

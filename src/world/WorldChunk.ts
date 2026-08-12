@@ -30,6 +30,7 @@ interface WaterWave {
   speed: number;
   alpha: number;
   amplitude: number;
+  shoreAmount: number;
 }
 
 interface AmbientGrassTuft {
@@ -134,27 +135,47 @@ export class WorldChunk {
     // the baked terrain texture or allocating sprites per tile.
     this.waterWaves.forEach((wave) => {
       const cycle = seconds * wave.speed + wave.phase;
-      const offsetX = Math.sin(cycle) * wave.amplitude;
-      const offsetY = Math.cos(cycle * 1.37) * 1.6;
-      const crestAlpha = wave.alpha * (0.52 + (Math.sin(cycle * 1.8) + 1) * 0.27);
-      graphics.lineStyle(1.45, 0xc6f5f4, crestAlpha);
-      graphics.lineBetween(
-        wave.worldX + offsetX,
-        wave.worldY + offsetY,
-        wave.worldX + wave.width * 0.58 + offsetX,
-        wave.worldY + offsetY - 0.45
+      const currentX = Math.sin(cycle) * wave.amplitude + Math.cos(cycle * 0.42) * wave.amplitude * 0.56;
+      const currentY = Math.cos(cycle * 1.37) * 1.85 + Math.sin(cycle * 0.62) * 1.1;
+      const swell = (Math.sin(cycle * 1.8) + 1) * 0.5;
+      const crestAlpha = wave.alpha * (0.42 + swell * 0.42);
+      const ribbonColor = wave.shoreAmount > 0.42 ? 0x8cdbda : 0x3b9fbd;
+      graphics.fillStyle(ribbonColor, crestAlpha * (0.22 + wave.shoreAmount * 0.18));
+      graphics.fillEllipse(
+        wave.worldX + wave.width * 0.5 + currentX,
+        wave.worldY + currentY + 0.4,
+        wave.width * (0.72 + swell * 0.16),
+        2.5 + swell * 2.1
       );
-      graphics.lineStyle(0.8, 0x78cfde, crestAlpha * 0.72);
+      graphics.lineStyle(1.5, wave.shoreAmount > 0.34 ? 0xd5fbef : 0x9de9e7, crestAlpha);
       graphics.lineBetween(
-        wave.worldX + wave.width * 0.68 + offsetX,
-        wave.worldY + offsetY + 1.2,
-        wave.worldX + wave.width + offsetX,
-        wave.worldY + offsetY + 0.7
+        wave.worldX + currentX,
+        wave.worldY + currentY,
+        wave.worldX + wave.width * (0.54 + swell * 0.12) + currentX,
+        wave.worldY + currentY - 0.55
+      );
+      graphics.lineStyle(0.85, 0x78cfde, crestAlpha * 0.82);
+      graphics.lineBetween(
+        wave.worldX + wave.width * 0.65 + currentX,
+        wave.worldY + currentY + 1.25,
+        wave.worldX + wave.width + currentX,
+        wave.worldY + currentY + 0.65
       );
 
-      if (Math.sin(cycle * 1.8) > 0.78) {
-        graphics.fillStyle(0xecffff, crestAlpha * 0.9);
-        graphics.fillCircle(wave.worldX + wave.width * 0.44 + offsetX, wave.worldY + offsetY - 1.5, 1.05);
+      if (wave.shoreAmount > 0.24) {
+        const foamAlpha = crestAlpha * (0.32 + wave.shoreAmount * 0.66);
+        graphics.lineStyle(1.1, 0xf2fff4, foamAlpha);
+        graphics.lineBetween(
+          wave.worldX + wave.width * 0.12 + currentX,
+          wave.worldY + currentY - 2.2,
+          wave.worldX + wave.width * 0.73 + currentX,
+          wave.worldY + currentY - 2.75
+        );
+      }
+
+      if (swell > 0.9) {
+        graphics.fillStyle(0xecffff, crestAlpha * 0.88);
+        graphics.fillCircle(wave.worldX + wave.width * 0.44 + currentX, wave.worldY + currentY - 1.5, 1.05);
       }
     });
   }
@@ -303,17 +324,19 @@ export class WorldChunk {
             context.fillRect(cellX, cellY, VISUAL_TERRAIN_CELL_SIZE, VISUAL_TERRAIN_CELL_SIZE);
             this.drawTerrainDetail(context, surface, variation, cellX, cellY);
 
-            if (surface.isWater) {
+            if (surface.waterVisualAmount > 0.08) {
               this.hasWater = true;
-              if (variation > 0.968) {
+              if (variation > 0.963 + surface.waterVisualAmount * 0.008) {
                 waveCandidates.push({
                   worldX: worldX + cellX + 1,
                   worldY: worldY + cellY + 4,
                   width: 7 + Math.floor(randomAtTile(this.seed, worldTileX, worldTileY, 0x443aec01) * 13),
                   phase: randomAtTile(this.seed, worldTileX * VISUAL_CELLS_PER_TILE + visualX, worldTileY * VISUAL_CELLS_PER_TILE + visualY, 0xc353c5f9) * Math.PI * 2,
                   speed: 0.85 + randomAtTile(this.seed, worldTileX, worldTileY, 0x1e3e7655) * 1.25,
-                  alpha: 0.26 + randomAtTile(this.seed, worldTileX, worldTileY, 0x6f1620d3) * 0.32,
-                  amplitude: 2.4 + randomAtTile(this.seed, worldTileX, worldTileY, 0x9a0372c7) * 4.6,
+                  alpha: (0.22 + randomAtTile(this.seed, worldTileX, worldTileY, 0x6f1620d3) * 0.36)
+                    * (0.32 + surface.waterVisualAmount * 0.68),
+                  amplitude: 2.8 + randomAtTile(this.seed, worldTileX, worldTileY, 0x9a0372c7) * 5.4,
+                  shoreAmount: 1 - surface.waterVisualAmount,
                   priority: randomAtTile(this.seed, worldTileX * VISUAL_CELLS_PER_TILE + visualX, worldTileY * VISUAL_CELLS_PER_TILE + visualY, 0xf5e91d3b)
                 });
               }
@@ -339,16 +362,20 @@ export class WorldChunk {
     cellX: number,
     cellY: number
   ): void {
-    if (surface.isWater) {
-      // Baked undertones give deep water volume; the separate wave layer above supplies motion.
-      if (variation > 0.78) {
-        context.fillStyle = surface.isShallowWater ? 'rgba(203, 246, 232, 0.32)' : 'rgba(137, 214, 229, 0.28)';
+    if (surface.waterVisualAmount > 0.05) {
+      // Baked undertones blend through the visual shore. The dynamic layer above then carries
+      // slow color ribbons, crests, and small foam lines right up to the walkable shallows.
+      if (variation > 0.74) {
+        const alpha = 0.1 + surface.waterVisualAmount * 0.25;
+        context.fillStyle = surface.isShallowWater ? `rgba(203, 246, 232, ${alpha})` : `rgba(137, 214, 229, ${alpha})`;
         context.fillRect(cellX + 1, cellY + 3, 5, 1);
-      } else if (variation < 0.12) {
-        context.fillStyle = 'rgba(13, 72, 116, 0.24)';
+      } else if (variation < 0.15) {
+        context.fillStyle = `rgba(13, 72, 116, ${(0.08 + surface.waterVisualAmount * 0.18).toFixed(3)})`;
         context.fillRect(cellX, cellY + 6, 7, 1);
       }
-      return;
+      if (surface.waterVisualAmount > 0.24) {
+        return;
+      }
     }
 
 
@@ -448,37 +475,52 @@ export class WorldChunk {
     return (red << 16) | (green << 8) | blue;
   }
 
-  private drawGroundCover(): void {
-    const graphics = this.featureGraphics;
+  private groundGrassDensity(surface: TerrainSurface): number {
+    if (surface.isWater) {
+      return 0;
+    }
+
+    const biomeDensity = surface.biome === Biome.Plains
+      ? 1
+      : surface.biome === Biome.Forest
+        ? 0.82
+        : surface.biome === Biome.Hills
+          ? 0.22
+          : 0;
+    if (biomeDensity === 0) {
+      return 0;
+    }
+
     const smooth = (start: number, end: number, value: number): number => {
       const normalized = Math.max(0, Math.min(1, (value - start) / (end - start)));
       return normalized * normalized * (3 - 2 * normalized);
     };
+    const climateCoverage = smooth(0.28, 0.53, surface.moisture)
+      * (1 - smooth(0.59, 0.77, surface.temperature))
+      * (1 - smooth(0.59, 0.8, surface.elevation))
+      * (1 - smooth(0.1, 0.26, surface.temperature));
+    return Math.min(0.96, (0.28 + climateCoverage * 0.72) * biomeDensity * GROUND_GRASS_FREQUENCY_SCALE);
+  }
+
+  private groundGrassClumpCount(density: number, placement: number): number {
+    return placement < density * 0.34 ? 3 : placement < density * 0.7 ? 2 : 1;
+  }
+
+  private drawGroundCover(): void {
+    const graphics = this.featureGraphics;
 
     for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
         const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
         const worldTileY = this.y * CHUNK_SIZE_TILES + localY;
         const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
-        if (surface.isWater) {
-          continue;
-        }
-
-        // Climate-weighted coverage fades naturally through biome boundaries instead of changing
-        // with a discrete biome label. It remains non-interactive; tall grass is still a feature.
-        const climateCoverage = smooth(0.28, 0.53, surface.moisture)
-          * (1 - smooth(0.59, 0.77, surface.temperature))
-          * (1 - smooth(0.59, 0.8, surface.elevation))
-          * (1 - smooth(0.1, 0.26, surface.temperature));
-        // Every viable grassy climate gets a dependable base layer, with the continuous climate
-        // weight still making the density ebb away naturally at dry, cold, high, and wet edges.
-        const density = Math.min(0.96, (0.28 + climateCoverage * 0.72) * GROUND_GRASS_FREQUENCY_SCALE);
+        const density = this.groundGrassDensity(surface);
         const placement = randomAtTile(this.seed, worldTileX, worldTileY, 0x6d42aeb9);
-        if (placement > density) {
+        if (density === 0 || placement > density) {
           continue;
         }
 
-        const clumpCount = placement < density * 0.34 ? 3 : placement < density * 0.7 ? 2 : 1;
+        const clumpCount = this.groundGrassClumpCount(density, placement);
         const baseX = localX * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING;
         const baseY = localY * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING;
         const shadow = this.shadeColor(surface.color, -0.42);
@@ -701,25 +743,27 @@ export class WorldChunk {
         const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
         const worldTileY = this.y * CHUNK_SIZE_TILES + localY;
         const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
-        if (surface.isWater || (surface.biome !== Biome.Plains && surface.biome !== Biome.Forest && surface.biome !== Biome.Swamp)) {
+        const density = this.groundGrassDensity(surface);
+        const placement = randomAtTile(this.seed, worldTileX, worldTileY, 0x6d42aeb9);
+        if (density === 0 || placement > density) {
           continue;
         }
 
-        // Dense low ground cover is purely visual. Taller sparse grass stays in the feature
-        // layer, preserving harvesting behavior while making plains read as living grassland.
-        const tuftCount = surface.biome === Biome.Plains ? 3 : 2;
-        for (let tuftIndex = 0; tuftIndex < tuftCount; tuftIndex += 1) {
-          const variation = randomAtTile(this.seed, worldTileX, worldTileY, 0x2b8316d9 + tuftIndex * 0x154a31);
-          if (variation < (surface.biome === Biome.Plains ? 0.16 : 0.25)) {
-            continue;
-          }
-
+        // The animated tufts use the exact same deterministic positions as the baked cover.
+        // A bounded selection is redrawn at runtime, producing visible wind without asking every
+        // decorative blade in every nearby chunk to redraw each frame.
+        const clumpCount = this.groundGrassClumpCount(density, placement);
+        for (let tuftIndex = 0; tuftIndex < clumpCount; tuftIndex += 1) {
+          const height = (GROUND_GRASS_BASE_HEIGHT_PIXELS
+            + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37 + tuftIndex) * GROUND_GRASS_HEIGHT_VARIATION_PIXELS)
+            * GROUND_GRASS_SIZE_SCALE;
+          const offsetX = 4 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7 + tuftIndex) * 24;
           candidates.push({
-            worldX: (worldTileX + 0.08 + randomAtTile(this.seed, worldTileX, worldTileY, 0x1593bd27 + tuftIndex) * 0.84) * WORLD_TILE_SIZE,
-            worldY: (worldTileY + 0.34 + randomAtTile(this.seed, worldTileX, worldTileY, 0x6cb6ad11 + tuftIndex) * 0.52) * WORLD_TILE_SIZE,
+            worldX: worldTileX * WORLD_TILE_SIZE + offsetX,
+            worldY: worldTileY * WORLD_TILE_SIZE + 23,
             phase: randomAtTile(this.seed, worldTileX, worldTileY, 0x4a1e79e5 + tuftIndex) * Math.PI * 2,
-            height: 8 + Math.floor(variation * 10),
-            color: surface.biome === Biome.Swamp ? 0x6e9c62 : surface.biome === Biome.Forest ? 0x65964d : 0x79af4f,
+            height,
+            color: surface.biome === Biome.Hills ? 0x81914d : surface.biome === Biome.Forest ? 0x65964d : 0x79af4f,
             // Keep the richest grass patches distributed across the full chunk instead of
             // stopping after the first tile rows reach the visual budget.
             priority: randomAtTile(this.seed, worldTileX, worldTileY, 0x7f4a26c3 + tuftIndex)
