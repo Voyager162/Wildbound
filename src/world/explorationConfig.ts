@@ -15,6 +15,11 @@ export const DAY_NIGHT_CYCLE_DURATION_MS = 12 * 60 * 1000;
 export const DAY_NIGHT_INITIAL_TIME_MS = DAY_NIGHT_CYCLE_DURATION_MS * (8 / 24);
 export const WORLD_TIME_SAVE_INTERVAL_MS = 900;
 export const DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS = 40;
+// Night uses a deep tint, then this bounded glow budget lets biome-specific particles become
+// small local sources of color instead of simply disappearing under the darkness.
+export const DAY_NIGHT_MAX_DARKNESS_ALPHA = 0.74;
+export const NIGHT_AMBIENT_LIGHT_UPDATE_INTERVAL_MS = 40;
+export const NIGHT_AMBIENT_LIGHT_MAX_COUNT = 38;
 
 // Animated environmental details are deliberately throttled. Chunks retain their baked terrain and
 // feature textures; these values govern only lightweight Graphics overlays.

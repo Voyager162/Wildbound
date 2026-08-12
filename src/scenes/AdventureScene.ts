@@ -8,6 +8,7 @@ import { isSaveGameData, type SaveGameData } from '../save/SaveGameData';
 import { DayNightOverlay } from '../ui/DayNightOverlay';
 import { InventoryOverlay } from '../ui/InventoryOverlay';
 import { MinimapOverlay } from '../ui/MinimapOverlay';
+import { NightAmbientOverlay } from '../ui/NightAmbientOverlay';
 import { WorldMapOverlay } from '../ui/WorldMapOverlay';
 import { MINIMAP_AREA_SCALE } from '../ui/uiConfig';
 import { ChunkManager } from '../world/ChunkManager';
@@ -27,6 +28,7 @@ import {
   EXPLORATION_REVEAL_RADIUS_REGIONS,
   EXPLORATION_REVEAL_STAMP_RADIUS_TILES,
   EXPLORATION_REVEAL_STAMP_SPACING_TILES,
+  NIGHT_AMBIENT_LIGHT_UPDATE_INTERVAL_MS,
   WORLD_TIME_SAVE_INTERVAL_MS
 } from '../world/explorationConfig';
 import { landmarkAtTile, landmarksIntersectingTiles } from '../world/generation/landmarkGenerator';
@@ -61,6 +63,7 @@ export class AdventureScene extends Phaser.Scene {
   private inventoryOverlay!: InventoryOverlay;
   private minimapOverlay!: MinimapOverlay;
   private dayNightOverlay!: DayNightOverlay;
+  private nightAmbientOverlay!: NightAmbientOverlay;
   private worldMapOverlay!: WorldMapOverlay;
   private debugElement!: HTMLPreElement;
   private interactionHighlight!: Phaser.GameObjects.Arc;
@@ -90,6 +93,7 @@ export class AdventureScene extends Phaser.Scene {
   private lastDropInteractionMs = Number.NEGATIVE_INFINITY;
   private lastSaveAttemptMs = Number.NEGATIVE_INFINITY;
   private lastDayNightOverlayUpdateMs = Number.NEGATIVE_INFINITY;
+  private lastNightAmbientLightUpdateMs = Number.NEGATIVE_INFINITY;
   private lastWorldTimeSaveMs = Number.NEGATIVE_INFINITY;
   private lastExplorationRegionX = Number.NaN;
   private lastExplorationRegionY = Number.NaN;
@@ -98,6 +102,7 @@ export class AdventureScene extends Phaser.Scene {
   private saveDirty = false;
   private savePending = false;
   private worldTimeMs = DAY_NIGHT_INITIAL_TIME_MS;
+  private nightAmount = 0;
 
   constructor() {
     super('adventure');
@@ -168,6 +173,7 @@ export class AdventureScene extends Phaser.Scene {
     );
     this.minimapOverlay = new MinimapOverlay(gameElement);
     this.dayNightOverlay = new DayNightOverlay(gameElement);
+    this.nightAmbientOverlay = new NightAmbientOverlay(gameElement);
     this.worldMapOverlay = new WorldMapOverlay(gameElement);
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleShutdown, this);
@@ -185,7 +191,7 @@ export class AdventureScene extends Phaser.Scene {
 
     if (this.worldMapOpen) {
       this.chunkManager.updateWaterAnimation(time);
-      this.chunkManager.updateAmbient(time, this.player.x, this.player.y);
+      this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.nightAmount);
       this.persistIfNeeded(time);
 
       if (this.isDebugVisible && time - this.lastDebugUpdateMs >= DEBUG_UPDATE_INTERVAL_MS) {
@@ -215,7 +221,7 @@ export class AdventureScene extends Phaser.Scene {
     this.updatePlayerAvatar(delta, isMoving);
     this.chunkManager.update(this.player.x, this.player.y, time);
     this.chunkManager.updateWaterAnimation(time);
-    this.chunkManager.updateAmbient(time, this.player.x, this.player.y);
+    this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.nightAmount);
     this.updateInteractionTarget();
     this.updateDropInteraction(time);
     this.updateHarvesting(delta);
@@ -261,6 +267,8 @@ export class AdventureScene extends Phaser.Scene {
     this.updateDropInteraction(0, true);
     this.updateMinimap(0, true);
     this.dayNightOverlay.update(this.worldTimeMs);
+    this.nightAmount = sampleDayNight(this.worldTimeMs).nightAmount;
+    this.nightAmbientOverlay.update(this.nightAmount, this.cameras.main, this.chunkManager.getNightAmbientLights());
     this.updateExploration(true);
     this.updateDebugText();
 
@@ -416,6 +424,7 @@ export class AdventureScene extends Phaser.Scene {
     this.inventoryOverlay.destroy();
     this.minimapOverlay.destroy();
     this.dayNightOverlay.destroy();
+    this.nightAmbientOverlay.destroy();
     this.worldMapOverlay.destroy();
     this.chunkManager?.destroy();
     this.dropManager?.destroy();
@@ -430,10 +439,16 @@ export class AdventureScene extends Phaser.Scene {
 
   private updateWorldTime(time: number, delta: number): void {
     this.worldTimeMs = normalizeWorldTime(this.worldTimeMs + delta);
+    this.nightAmount = sampleDayNight(this.worldTimeMs).nightAmount;
 
     if (time - this.lastDayNightOverlayUpdateMs >= DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS) {
       this.lastDayNightOverlayUpdateMs = time;
       this.dayNightOverlay.update(this.worldTimeMs);
+    }
+
+    if (time - this.lastNightAmbientLightUpdateMs >= NIGHT_AMBIENT_LIGHT_UPDATE_INTERVAL_MS) {
+      this.lastNightAmbientLightUpdateMs = time;
+      this.nightAmbientOverlay.update(this.nightAmount, this.cameras.main, this.chunkManager.getNightAmbientLights());
     }
 
     if (time - this.lastWorldTimeSaveMs >= WORLD_TIME_SAVE_INTERVAL_MS) {

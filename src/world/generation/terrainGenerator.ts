@@ -2,6 +2,11 @@ import { BEACH_ELEVATION_MAX, biomeForClimate, Biome, climateAtTile, OCEAN_ELEVA
 import { coherentNoise, randomAtTile } from './noise';
 import { sampleTopographyVisual, type TopographySample } from './topographyGenerator';
 import { CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from '../worldConfig';
+import {
+  OCEAN_SHORELINE_RIPPLE_ELEVATION,
+  OCEAN_SHORELINE_WOBBLE_ELEVATION,
+  OCEAN_SURF_BLEND_ELEVATION
+} from '../worldVisualConfig';
 
 export enum TerrainType {
   Grass = 'grass',
@@ -151,15 +156,27 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
   const shallowWater = 0x3c94b0;
   const beachSand = 0xdbc37f;
   if (biome === Biome.Ocean || biome === Biome.Beach) {
-    const waterColor = blendColor(deepWater, shallowWater, smoothRange(0.08, OCEAN_ELEVATION_MAX + 0.035, climate.elevation));
+    // Coarse curvature plus finer ripple noise makes this world's shore recognizably unique to
+    // its seed without a jagged tile contour. It only affects the visual surf line; swimming
+    // still starts at the canonical ocean threshold below.
+    const shorelineWobble = (coherentNoise(seed, tileX, tileY, 84, 0x48f3a925) - 0.5)
+      * OCEAN_SHORELINE_WOBBLE_ELEVATION * 2
+      + (coherentNoise(seed, tileX, tileY, 23, 0x1f97cb6d) - 0.5)
+      * OCEAN_SHORELINE_RIPPLE_ELEVATION * 2;
+    const visualOceanElevation = OCEAN_ELEVATION_MAX + shorelineWobble;
+    const waterColor = blendColor(deepWater, shallowWater, smoothRange(0.08, visualOceanElevation + 0.035, climate.elevation));
     const shoreLandColor = blendColor(
       beachSand,
       regionalLandColor,
       smoothRange(OCEAN_ELEVATION_MAX + 0.02, BEACH_ELEVATION_MAX, climate.elevation)
     );
-    // Keep the blend centered tightly on the true ocean edge. This retains a continuous wet-sand
-    // transition while preserving the broad, readable sand portion of the Beach biome.
-    waterVisualAmount = 1 - smoothRange(OCEAN_ELEVATION_MAX - 0.045, OCEAN_ELEVATION_MAX + 0.035, climate.elevation);
+    // A compact moving-surf zone preserves more of the beach as clear sand. The seeded contour
+    // above shifts this line smoothly, creating a wavy shoreline rather than a straight band.
+    waterVisualAmount = 1 - smoothRange(
+      visualOceanElevation - OCEAN_SURF_BLEND_ELEVATION * 0.4,
+      visualOceanElevation + OCEAN_SURF_BLEND_ELEVATION * 0.6,
+      climate.elevation
+    );
     color = blendColor(shoreLandColor, waterColor, waterVisualAmount);
     isWater = biome === Biome.Ocean;
     isShallowWater = isWater && climate.elevation > OCEAN_ELEVATION_MAX - 0.08;

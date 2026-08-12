@@ -164,6 +164,10 @@ export class WorldChunk {
       const shorePulse = Math.sin(cycle * 1.18) * (2 + wave.shoreAmount * OCEAN_SURF_TRAVEL_PIXELS);
       currentX -= wave.shoreNormalX * shorePulse;
       currentY -= wave.shoreNormalY * shorePulse;
+      const hasShoreOrientation = wave.shoreAmount > 0.08 && (Math.abs(wave.shoreNormalX) + Math.abs(wave.shoreNormalY)) > 0.01;
+      const tangentX = hasShoreOrientation ? -wave.shoreNormalY : 1;
+      const tangentY = hasShoreOrientation ? wave.shoreNormalX : 0;
+      const crestLength = wave.width * (0.62 + swell * 0.14);
       const ribbonColor = wave.shoreAmount > 0.42 ? 0x8cdbda : 0x3b9fbd;
       // A soft, wide band makes the whole water surface visibly drift before the fine crest
       // lines become noticeable. The offset is intentionally stronger than the crest itself.
@@ -185,15 +189,15 @@ export class WorldChunk {
       graphics.lineBetween(
         wave.worldX + currentX,
         wave.worldY + currentY,
-        wave.worldX + wave.width * (0.62 + swell * 0.14) + currentX,
-        wave.worldY + currentY - 0.8
+        wave.worldX + crestLength * tangentX + currentX,
+        wave.worldY + crestLength * tangentY + currentY - 0.8
       );
       graphics.lineStyle(1, 0x78cfde, crestAlpha * 0.88);
       graphics.lineBetween(
-        wave.worldX + wave.width * 0.59 + currentX,
-        wave.worldY + currentY + 1.65,
-        wave.worldX + wave.width + currentX,
-        wave.worldY + currentY + 0.8
+        wave.worldX + wave.width * 0.59 * tangentX + currentX,
+        wave.worldY + wave.width * 0.59 * tangentY + currentY + 1.65,
+        wave.worldX + wave.width * tangentX + currentX,
+        wave.worldY + wave.width * tangentY + currentY + 0.8
       );
 
       // Expanding elliptical rings make small, overlapping surface ripples obvious without a
@@ -212,10 +216,10 @@ export class WorldChunk {
         const foamAlpha = crestAlpha * (0.45 + wave.shoreAmount * 0.64);
         graphics.lineStyle(1.45, 0xf2fff4, foamAlpha);
         graphics.lineBetween(
-          wave.worldX + wave.width * 0.12 + currentX,
-          wave.worldY + currentY - 2.2,
-          wave.worldX + wave.width * 0.73 + currentX,
-          wave.worldY + currentY - 2.75
+          wave.worldX + wave.width * 0.12 * tangentX + currentX,
+          wave.worldY + wave.width * 0.12 * tangentY + currentY - 2.2,
+          wave.worldX + wave.width * 0.73 * tangentX + currentX,
+          wave.worldY + wave.width * 0.73 * tangentY + currentY - 2.75
         );
       }
 

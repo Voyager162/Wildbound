@@ -1,10 +1,11 @@
 import { sampleDayNight } from '../world/dayNight';
+import { DAY_NIGHT_MAX_DARKNESS_ALPHA } from '../world/explorationConfig';
 
 const blendChannel = (first: number, second: number, amount: number): number => Math.round(first + (second - first) * amount);
 
 const DAY_TINT = [255, 255, 255] as const;
 const TWILIGHT_TINT = [255, 163, 96] as const;
-const NIGHT_TINT = [10, 24, 56] as const;
+const NIGHT_TINT = [5, 13, 32] as const;
 
 export class DayNightOverlay {
   private readonly element: HTMLDivElement;
@@ -29,7 +30,7 @@ export class DayNightOverlay {
     const tintRed = blendChannel(baseRed, NIGHT_TINT[0], nightAmount);
     const tintGreen = blendChannel(baseGreen, NIGHT_TINT[1], nightAmount);
     const tintBlue = blendChannel(baseBlue, NIGHT_TINT[2], nightAmount);
-    const tintAlpha = nightAmount * 0.56 + twilightAmount * 0.14;
+    const tintAlpha = nightAmount * DAY_NIGHT_MAX_DARKNESS_ALPHA + twilightAmount * 0.14;
     const style = `rgba(${tintRed}, ${tintGreen}, ${tintBlue}, ${tintAlpha.toFixed(3)})`;
 
     if (style !== this.lastStyle) {

@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { AmbientParticleManager } from './AmbientParticleManager';
+import { AmbientParticleManager, type NightAmbientLight } from './AmbientParticleManager';
 import {
   AMBIENT_CHUNK_RADIUS_X,
   AMBIENT_CHUNK_RADIUS_Y,
@@ -94,7 +94,7 @@ export class ChunkManager {
     });
   }
 
-  updateAmbient(time: number, playerWorldX: number, playerWorldY: number): void {
+  updateAmbient(time: number, playerWorldX: number, playerWorldY: number, nightAmount: number): void {
     if (time - this.lastAmbientSwayTime >= AMBIENT_SWAY_UPDATE_INTERVAL_MS) {
       this.lastAmbientSwayTime = time;
       this.chunks.forEach((chunk) => {
@@ -109,8 +109,12 @@ export class ChunkManager {
 
     if (time - this.lastAmbientParticleTime >= AMBIENT_PARTICLE_UPDATE_INTERVAL_MS) {
       this.lastAmbientParticleTime = time;
-      this.ambientParticleManager.update(time, playerWorldX, playerWorldY);
+      this.ambientParticleManager.update(time, playerWorldX, playerWorldY, nightAmount);
     }
+  }
+
+  getNightAmbientLights(): readonly NightAmbientLight[] {
+    return this.ambientParticleManager.getNightLights();
   }
 
   getTopographyAt(worldX: number, worldY: number): TopographySample {

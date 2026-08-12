@@ -3,7 +3,8 @@ import {
   AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
   AMBIENT_PARTICLE_MAX_COUNT,
   AMBIENT_PARTICLE_RADIUS_CELLS_X,
-  AMBIENT_PARTICLE_RADIUS_CELLS_Y
+  AMBIENT_PARTICLE_RADIUS_CELLS_Y,
+  NIGHT_AMBIENT_LIGHT_MAX_COUNT
 } from './explorationConfig';
 import { biomeAtTile, Biome } from './generation/biomeGenerator';
 import { randomAtTile } from './generation/noise';
@@ -12,6 +13,14 @@ import { WORLD_TILE_SIZE } from './worldConfig';
 // Every biome gets a distinct moving foreground layer. These are world-space effects rather
 // than screen overlays, so a gust crossing the forest still feels anchored to the world.
 type ParticleKind = 'leaf' | 'pollen' | 'dust' | 'sand' | 'mist' | 'spore' | 'snow' | 'firefly' | 'spray' | 'ice-crystal';
+
+export interface NightAmbientLight {
+  worldX: number;
+  worldY: number;
+  radius: number;
+  color: number;
+  intensity: number;
+}
 
 interface AmbientParticle {
   baseX: number;
@@ -22,6 +31,9 @@ interface AmbientParticle {
   color: number;
   kind: ParticleKind;
   windStrength: number;
+  nightLightColor: number;
+  nightLightRadius: number;
+  nightLightIntensity: number;
 }
 
 export class AmbientParticleManager {
@@ -29,12 +41,13 @@ export class AmbientParticleManager {
   private lastAnchorCellX = Number.NaN;
   private lastAnchorCellY = Number.NaN;
   private particles: AmbientParticle[] = [];
+  private nightLights: NightAmbientLight[] = [];
 
   constructor(private readonly scene: Phaser.Scene, private readonly seed: string) {
     this.graphics = scene.add.graphics().setDepth(2.5);
   }
 
-  update(time: number, playerWorldX: number, playerWorldY: number): void {
+  update(time: number, playerWorldX: number, playerWorldY: number, nightAmount: number): void {
     const anchorCellX = Math.floor(playerWorldX / AMBIENT_PARTICLE_CELL_SIZE_PIXELS);
     const anchorCellY = Math.floor(playerWorldY / AMBIENT_PARTICLE_CELL_SIZE_PIXELS);
     if (anchorCellX !== this.lastAnchorCellX || anchorCellY !== this.lastAnchorCellY) {
@@ -45,12 +58,36 @@ export class AmbientParticleManager {
 
     const timeSeconds = time / 1000;
     this.graphics.clear();
-    this.particles.forEach((particle) => this.drawParticle(particle, timeSeconds));
+    const lightCandidates: Array<NightAmbientLight & { priority: number }> = [];
+    this.particles.forEach((particle) => {
+      const state = this.particleState(particle, timeSeconds);
+      this.drawParticle(particle, state, nightAmount);
+      if (nightAmount > 0.035 && particle.nightLightIntensity > 0) {
+        const pulse = 0.72 + (Math.sin(state.cycle * 1.9 + particle.phase * 0.44) + 1) * 0.14;
+        lightCandidates.push({
+          worldX: state.x,
+          worldY: state.y,
+          radius: particle.nightLightRadius * (0.9 + pulse * 0.12),
+          color: particle.nightLightColor,
+          intensity: particle.nightLightIntensity * pulse,
+          priority: particle.nightLightIntensity * 2 + Math.sin(state.cycle * 0.63 + particle.phase) * 0.18
+        });
+      }
+    });
+    this.nightLights = lightCandidates
+      .sort((first, second) => second.priority - first.priority)
+      .slice(0, NIGHT_AMBIENT_LIGHT_MAX_COUNT)
+      .map(({ priority: _priority, ...light }) => light);
+  }
+
+  getNightLights(): readonly NightAmbientLight[] {
+    return this.nightLights;
   }
 
   destroy(): void {
     this.graphics.destroy();
     this.particles = [];
+    this.nightLights = [];
   }
 
   private createParticles(anchorCellX: number, anchorCellY: number): AmbientParticle[] {
@@ -73,6 +110,7 @@ export class AmbientParticleManager {
         }
 
         const variation = randomAtTile(this.seed, cellX, cellY, 0xa54cd63b);
+        const nightLight = this.nightLightFor(biome, kind, variation);
         candidates.push({
           baseX: (cellX + 0.12 + randomAtTile(this.seed, cellX, cellY, 0x2ebf9541) * 0.76) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
           baseY: (cellY + 0.1 + randomAtTile(this.seed, cellX, cellY, 0x9f8c1ad5) * 0.8) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
@@ -82,6 +120,7 @@ export class AmbientParticleManager {
           color: this.colorForKind(kind, variation),
           kind,
           windStrength: 18 + randomAtTile(this.seed, cellX, cellY, 0x4d81e8b7) * 32,
+          ...nightLight,
           priority: randomAtTile(this.seed, cellX, cellY, 0x1d82f961)
         });
 
@@ -89,6 +128,7 @@ export class AmbientParticleManager {
         // passes feel active even when their terrain features are sparse.
         if ((biome === Biome.Snow || biome === Biome.Mountains) && variation > 0.22) {
           const highlandVariation = randomAtTile(this.seed, cellX, cellY, 0x6be71af3);
+          const highlandKind = highlandVariation > 0.62 ? 'ice-crystal' : 'snow';
           candidates.push({
             baseX: (cellX + 0.08 + randomAtTile(this.seed, cellX, cellY, 0x66c6b921) * 0.86) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
             baseY: (cellY + 0.06 + randomAtTile(this.seed, cellX, cellY, 0x8aa751ef) * 0.86) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
@@ -96,8 +136,9 @@ export class AmbientParticleManager {
             driftSpeed: 0.38 + highlandVariation * 0.7,
             size: 2.4 + highlandVariation * 3.8,
             color: highlandVariation > 0.58 ? 0xd8fbff : 0x9fe8fb,
-            kind: highlandVariation > 0.62 ? 'ice-crystal' : 'snow',
+            kind: highlandKind,
             windStrength: 24 + highlandVariation * 42,
+            ...this.nightLightFor(biome, highlandKind, highlandVariation),
             priority: 0.5 + randomAtTile(this.seed, cellX, cellY, 0x139dd507) * 0.5
           });
         }
@@ -115,6 +156,7 @@ export class AmbientParticleManager {
             color: sandVariation > 0.54 ? 0xf1cf83 : 0xc8914c,
             kind: 'sand',
             windStrength: 44 + sandVariation * 54,
+            ...this.nightLightFor(biome, 'sand', sandVariation),
             priority: 0.55 + randomAtTile(this.seed, cellX, cellY, 0x5b6fd841) * 0.45
           });
         }
@@ -131,7 +173,27 @@ export class AmbientParticleManager {
             color: sporeVariation > 0.56 ? 0xb8e584 : 0x83c889,
             kind: 'spore',
             windStrength: 11 + sporeVariation * 18,
+            ...this.nightLightFor(biome, 'spore', sporeVariation),
             priority: 0.45 + randomAtTile(this.seed, cellX, cellY, 0x6c318f59) * 0.42
+          });
+        }
+
+        // Forest and swamp fireflies emerge from a separate deterministic layer, so each
+        // wetland and grove has an unmistakable night identity without raising the day particle
+        // density or allocating new objects every frame.
+        if ((biome === Biome.Forest || biome === Biome.Swamp) && variation > 0.16) {
+          const fireflyVariation = randomAtTile(this.seed, cellX, cellY, 0x4619d5af);
+          candidates.push({
+            baseX: (cellX + 0.14 + randomAtTile(this.seed, cellX, cellY, 0x7b14c0e1) * 0.72) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
+            baseY: (cellY + 0.12 + randomAtTile(this.seed, cellX, cellY, 0x9bd1f743) * 0.68) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
+            phase: randomAtTile(this.seed, cellX, cellY, 0xf20db7c1) * Math.PI * 2,
+            driftSpeed: 0.32 + fireflyVariation * 0.42,
+            size: 2 + fireflyVariation * 2.1,
+            color: fireflyVariation > 0.5 ? 0xb8ee63 : 0xffe66e,
+            kind: 'firefly',
+            windStrength: 8 + fireflyVariation * 16,
+            ...this.nightLightFor(biome, 'firefly', fireflyVariation),
+            priority: 0.72 + randomAtTile(this.seed, cellX, cellY, 0x6492b31b) * 0.28
           });
         }
       }
@@ -144,13 +206,35 @@ export class AmbientParticleManager {
     return particles;
   }
 
-  private drawParticle(particle: AmbientParticle, timeSeconds: number): void {
+  private particleState(particle: AmbientParticle, timeSeconds: number): { x: number; y: number; cycle: number; alpha: number } {
     const cycle = timeSeconds * particle.driftSpeed + particle.phase;
     const wind = Math.sin(cycle * 0.7) * particle.windStrength + Math.sin(cycle * 1.63) * 9;
-    const x = particle.baseX + wind + Math.cos(cycle * 0.24) * 12;
-    const y = particle.baseY + Math.cos(cycle * 0.56) * 13 + Math.sin(cycle * 0.31) * 8;
-    const alpha = 0.28 + (Math.sin(cycle * 1.8) + 1) * 0.19;
+    return {
+      cycle,
+      x: particle.baseX + wind + Math.cos(cycle * 0.24) * 12,
+      y: particle.baseY + Math.cos(cycle * 0.56) * 13 + Math.sin(cycle * 0.31) * 8,
+      alpha: 0.28 + (Math.sin(cycle * 1.8) + 1) * 0.19
+    };
+  }
+
+  private drawParticle(
+    particle: AmbientParticle,
+    state: { x: number; y: number; cycle: number; alpha: number },
+    nightAmount: number
+  ): void {
+    const { x, y, cycle } = state;
+    const alpha = particle.kind === 'firefly'
+      ? state.alpha * (0.05 + nightAmount * 0.95)
+      : state.alpha;
     const graphics = this.graphics;
+
+    if (nightAmount > 0.04 && particle.nightLightIntensity > 0) {
+      const glowAlpha = particle.nightLightIntensity * nightAmount * (0.1 + (Math.sin(cycle * 1.7) + 1) * 0.055);
+      graphics.fillStyle(particle.nightLightColor, glowAlpha);
+      graphics.fillCircle(x, y, particle.nightLightRadius * 0.34);
+      graphics.fillStyle(0xffffff, glowAlpha * 0.62);
+      graphics.fillCircle(x, y, Math.max(1, particle.size * 0.55));
+    }
 
     graphics.fillStyle(particle.color, alpha);
     switch (particle.kind) {
@@ -217,7 +301,7 @@ export class AmbientParticleManager {
   private kindForBiome(biome: Biome, variation: number): ParticleKind | null {
     switch (biome) {
       case Biome.Forest:
-        return variation > 0.22 ? 'leaf' : 'pollen';
+        return variation > 0.78 ? 'firefly' : variation > 0.26 ? 'leaf' : 'pollen';
       case Biome.Plains:
         return variation > 0.62 ? 'leaf' : 'pollen';
       case Biome.Desert:
@@ -234,6 +318,39 @@ export class AmbientParticleManager {
         return variation > 0.68 ? 'ice-crystal' : variation > 0.2 ? 'snow' : 'mist';
       case Biome.Snow:
         return variation > 0.72 ? 'ice-crystal' : 'snow';
+    }
+  }
+
+  private nightLightFor(
+    biome: Biome,
+    kind: ParticleKind,
+    variation: number
+  ): Pick<AmbientParticle, 'nightLightColor' | 'nightLightRadius' | 'nightLightIntensity'> {
+    // Every biome has a restrained nighttime color language. These values describe the light
+    // contribution only; the visible daytime particle remains appropriate for its biome.
+    switch (biome) {
+      case Biome.Forest:
+        return kind === 'firefly'
+          ? { nightLightColor: variation > 0.5 ? 0xc5ff6a : 0xffe879, nightLightRadius: 92 + variation * 34, nightLightIntensity: 0.72 }
+          : { nightLightColor: 0xb5e66d, nightLightRadius: 42, nightLightIntensity: 0.16 };
+      case Biome.Plains:
+        return { nightLightColor: 0xf9df83, nightLightRadius: 44 + variation * 18, nightLightIntensity: 0.18 };
+      case Biome.Desert:
+        return { nightLightColor: 0xe6b977, nightLightRadius: 38 + variation * 16, nightLightIntensity: 0.14 };
+      case Biome.Swamp:
+        return kind === 'firefly'
+          ? { nightLightColor: variation > 0.48 ? 0x9cff74 : 0xffe47a, nightLightRadius: 98 + variation * 36, nightLightIntensity: 0.78 }
+          : { nightLightColor: 0x8fe7a8, nightLightRadius: 56 + variation * 20, nightLightIntensity: 0.28 };
+      case Biome.Ocean:
+        return { nightLightColor: 0x9ceeff, nightLightRadius: 48 + variation * 18, nightLightIntensity: 0.22 };
+      case Biome.Beach:
+        return { nightLightColor: 0xbceaff, nightLightRadius: 46 + variation * 16, nightLightIntensity: 0.2 };
+      case Biome.Hills:
+        return { nightLightColor: 0xf0d490, nightLightRadius: 40 + variation * 16, nightLightIntensity: 0.15 };
+      case Biome.Mountains:
+        return { nightLightColor: 0x91dbff, nightLightRadius: 62 + variation * 24, nightLightIntensity: 0.31 };
+      case Biome.Snow:
+        return { nightLightColor: 0xc9f8ff, nightLightRadius: 58 + variation * 24, nightLightIntensity: 0.3 };
     }
   }
 
