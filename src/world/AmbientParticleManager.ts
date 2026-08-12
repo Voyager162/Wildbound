@@ -8,6 +8,11 @@ import {
   NIGHT_AMBIENT_LIGHT_MAX_COUNT,
   NIGHT_AMBIENT_LIGHT_RETENTION_CELLS
 } from './explorationConfig';
+import {
+  AMBIENT_PARTICLE_PRELOAD_CELLS_X,
+  AMBIENT_PARTICLE_PRELOAD_CELLS_Y,
+  AMBIENT_PARTICLE_RETENTION_CELLS
+} from './ambientBufferConfig';
 import { biomeAtTile, Biome } from './generation/biomeGenerator';
 import { randomAtTile } from './generation/noise';
 import { WORLD_TILE_SIZE } from './worldConfig';
@@ -47,6 +52,7 @@ export class AmbientParticleManager {
   private lastAnchorCellX = Number.NaN;
   private lastAnchorCellY = Number.NaN;
   private particles: AmbientParticle[] = [];
+  private readonly particlePool = new Map<string, AmbientParticle>();
   private readonly lightParticles = new Map<string, AmbientParticle>();
   private nightLights: NightAmbientLight[] = [];
 
@@ -60,7 +66,7 @@ export class AmbientParticleManager {
     if (anchorCellX !== this.lastAnchorCellX || anchorCellY !== this.lastAnchorCellY) {
       this.lastAnchorCellX = anchorCellX;
       this.lastAnchorCellY = anchorCellY;
-      this.particles = this.createParticles(anchorCellX, anchorCellY);
+      this.refreshStableParticlePool(this.createParticles(anchorCellX, anchorCellY), anchorCellX, anchorCellY);
       this.refreshStableLightPool(anchorCellX, anchorCellY);
     }
 
@@ -94,6 +100,7 @@ export class AmbientParticleManager {
   destroy(): void {
     this.graphics.destroy();
     this.particles = [];
+    this.particlePool.clear();
     this.lightParticles.clear();
     this.nightLights = [];
   }
@@ -102,8 +109,10 @@ export class AmbientParticleManager {
     const particles: AmbientParticle[] = [];
     const candidates: Array<AmbientParticle & { priority: number }> = [];
 
-    for (let cellY = anchorCellY - AMBIENT_PARTICLE_RADIUS_CELLS_Y; cellY <= anchorCellY + AMBIENT_PARTICLE_RADIUS_CELLS_Y; cellY += 1) {
-      for (let cellX = anchorCellX - AMBIENT_PARTICLE_RADIUS_CELLS_X; cellX <= anchorCellX + AMBIENT_PARTICLE_RADIUS_CELLS_X; cellX += 1) {
+    const radiusX = AMBIENT_PARTICLE_RADIUS_CELLS_X + AMBIENT_PARTICLE_PRELOAD_CELLS_X;
+    const radiusY = AMBIENT_PARTICLE_RADIUS_CELLS_Y + AMBIENT_PARTICLE_PRELOAD_CELLS_Y;
+    for (let cellY = anchorCellY - radiusY; cellY <= anchorCellY + radiusY; cellY += 1) {
+      for (let cellX = anchorCellX - radiusX; cellX <= anchorCellX + radiusX; cellX += 1) {
         const placement = randomAtTile(this.seed, cellX, cellY, 0x7c43a5d1);
         const centerWorldX = (cellX + 0.5) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS;
         const centerWorldY = (cellY + 0.5) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS;
@@ -219,9 +228,37 @@ export class AmbientParticleManager {
     return particles;
   }
 
+  private refreshStableParticlePool(
+    candidates: readonly AmbientParticle[],
+    anchorCellX: number,
+    anchorCellY: number
+  ): void {
+    const retainRadiusX = AMBIENT_PARTICLE_RADIUS_CELLS_X
+      + AMBIENT_PARTICLE_RETENTION_CELLS;
+    const retainRadiusY = AMBIENT_PARTICLE_RADIUS_CELLS_Y
+      + AMBIENT_PARTICLE_RETENTION_CELLS;
+    this.particlePool.forEach((particle, id) => {
+      if (Math.abs(particle.cellX - anchorCellX) > retainRadiusX || Math.abs(particle.cellY - anchorCellY) > retainRadiusY) {
+        this.particlePool.delete(id);
+      }
+    });
+
+    candidates
+      .filter((particle) => !this.particlePool.has(particle.id))
+      .sort((first, second) => second.lightPriority - first.lightPriority)
+      .some((particle) => {
+        this.particlePool.set(particle.id, particle);
+        return this.particlePool.size >= AMBIENT_PARTICLE_MAX_COUNT;
+      });
+
+    this.particles = Array.from(this.particlePool.values());
+  }
+
   private refreshStableLightPool(anchorCellX: number, anchorCellY: number): void {
-    const retainRadiusX = AMBIENT_PARTICLE_RADIUS_CELLS_X + NIGHT_AMBIENT_LIGHT_RETENTION_CELLS;
-    const retainRadiusY = AMBIENT_PARTICLE_RADIUS_CELLS_Y + NIGHT_AMBIENT_LIGHT_RETENTION_CELLS;
+    const retainRadiusX = AMBIENT_PARTICLE_RADIUS_CELLS_X
+      + NIGHT_AMBIENT_LIGHT_RETENTION_CELLS;
+    const retainRadiusY = AMBIENT_PARTICLE_RADIUS_CELLS_Y
+      + NIGHT_AMBIENT_LIGHT_RETENTION_CELLS;
     this.lightParticles.forEach((particle, id) => {
       if (Math.abs(particle.cellX - anchorCellX) > retainRadiusX || Math.abs(particle.cellY - anchorCellY) > retainRadiusY) {
         this.lightParticles.delete(id);
