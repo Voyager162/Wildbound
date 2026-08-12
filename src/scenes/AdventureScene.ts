@@ -5,8 +5,10 @@ import { FacingDirection, getInteractionTarget } from '../player/interaction';
 import { PLAYER_SPEED_SCALE } from '../player/playerConfig';
 import type { InteractionTarget } from '../player/interaction';
 import { isSaveGameData, type SaveGameData } from '../save/SaveGameData';
+import { DayNightOverlay } from '../ui/DayNightOverlay';
 import { InventoryOverlay } from '../ui/InventoryOverlay';
 import { MinimapOverlay } from '../ui/MinimapOverlay';
+import { WorldMapOverlay } from '../ui/WorldMapOverlay';
 import { MINIMAP_AREA_SCALE } from '../ui/uiConfig';
 import { ChunkManager } from '../world/ChunkManager';
 import { DropManager } from '../world/DropManager';
@@ -17,6 +19,15 @@ import type { TopographySample } from '../world/generation/topographyGenerator';
 import { RESOURCE_COLORS, resourceForFeature, resourceLabel } from '../world/resources';
 import { SessionWorldState } from '../world/SessionWorldState';
 import type { DroppedItem } from '../world/SessionWorldState';
+import { normalizeWorldTime, sampleDayNight } from '../world/dayNight';
+import {
+  DAY_NIGHT_INITIAL_TIME_MS,
+  DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS,
+  EXPLORATION_REGION_SIZE_TILES,
+  EXPLORATION_REVEAL_RADIUS_REGIONS,
+  WORLD_TIME_SAVE_INTERVAL_MS
+} from '../world/explorationConfig';
+import { landmarkAtTile, landmarksIntersectingTiles } from '../world/generation/landmarkGenerator';
 import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
 
 const BASE_PLAYER_SPEED = 220;
@@ -47,6 +58,8 @@ export class AdventureScene extends Phaser.Scene {
   private inventory!: Inventory;
   private inventoryOverlay!: InventoryOverlay;
   private minimapOverlay!: MinimapOverlay;
+  private dayNightOverlay!: DayNightOverlay;
+  private worldMapOverlay!: WorldMapOverlay;
   private debugElement!: HTMLPreElement;
   private interactionHighlight!: Phaser.GameObjects.Arc;
   private dropHighlight!: Phaser.GameObjects.Ellipse;
@@ -55,6 +68,7 @@ export class AdventureScene extends Phaser.Scene {
   private harvestProgressGraphics!: Phaser.GameObjects.Graphics;
   private isDebugVisible = false;
   private inventoryOpen = false;
+  private worldMapOpen = false;
   private worldReady = false;
   private worldSeed = WORLD_SEED;
   private facing = FacingDirection.Down;
@@ -73,10 +87,15 @@ export class AdventureScene extends Phaser.Scene {
   private lastDebugUpdateMs = Number.NEGATIVE_INFINITY;
   private lastDropInteractionMs = Number.NEGATIVE_INFINITY;
   private lastSaveAttemptMs = Number.NEGATIVE_INFINITY;
+  private lastDayNightOverlayUpdateMs = Number.NEGATIVE_INFINITY;
+  private lastWorldTimeSaveMs = Number.NEGATIVE_INFINITY;
+  private lastExplorationRegionX = Number.NaN;
+  private lastExplorationRegionY = Number.NaN;
   private animationElapsedMs = 0;
   private lastAvatarState = '';
   private saveDirty = false;
   private savePending = false;
+  private worldTimeMs = DAY_NIGHT_INITIAL_TIME_MS;
 
   constructor() {
     super('adventure');
@@ -130,6 +149,8 @@ export class AdventureScene extends Phaser.Scene {
     }) as MovementKeys;
     this.input.keyboard!.on('keydown-F3', this.toggleDebug, this);
     this.input.keyboard!.on('keydown-E', this.handlePrimaryAction, this);
+    this.input.keyboard!.on('keydown-F', this.handleWorldMapKeyDown, this);
+    this.input.keyboard!.on('keydown-ESC', this.closeWorldMap, this);
 
     const gameElement = document.getElementById('game');
     if (!gameElement) {
@@ -144,6 +165,8 @@ export class AdventureScene extends Phaser.Scene {
       (slot) => this.dropInventorySlot(slot)
     );
     this.minimapOverlay = new MinimapOverlay(gameElement);
+    this.dayNightOverlay = new DayNightOverlay(gameElement);
+    this.worldMapOverlay = new WorldMapOverlay(gameElement);
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleShutdown, this);
     window.addEventListener('beforeunload', this.handleBeforeUnload);
@@ -152,6 +175,21 @@ export class AdventureScene extends Phaser.Scene {
 
   update(time: number, delta: number): void {
     if (!this.worldReady) {
+      return;
+    }
+
+    this.updateWorldTime(time, delta);
+    this.updateExploration();
+
+    if (this.worldMapOpen) {
+      this.chunkManager.updateWaterAnimation(time);
+      this.chunkManager.updateAmbient(time, this.player.x, this.player.y);
+      this.persistIfNeeded(time);
+
+      if (this.isDebugVisible && time - this.lastDebugUpdateMs >= DEBUG_UPDATE_INTERVAL_MS) {
+        this.lastDebugUpdateMs = time;
+        this.updateDebugText();
+      }
       return;
     }
 
@@ -175,6 +213,7 @@ export class AdventureScene extends Phaser.Scene {
     this.updatePlayerAvatar(delta, isMoving);
     this.chunkManager.update(this.player.x, this.player.y);
     this.chunkManager.updateWaterAnimation(time);
+    this.chunkManager.updateAmbient(time, this.player.x, this.player.y);
     this.updateInteractionTarget();
     this.updateDropInteraction(time);
     this.updateHarvesting(delta);
@@ -204,6 +243,10 @@ export class AdventureScene extends Phaser.Scene {
       this.player.setPosition(savedGame.player.x, savedGame.player.y);
     }
 
+    const hadSavedWorldTime = this.sessionWorldState.worldTimeMs !== null;
+    this.worldTimeMs = normalizeWorldTime(this.sessionWorldState.worldTimeMs ?? DAY_NIGHT_INITIAL_TIME_MS);
+    this.sessionWorldState.setWorldTimeMs(this.worldTimeMs);
+
     this.chunkManager = new ChunkManager(this, this.worldSeed, this.sessionWorldState);
     this.dropManager = new DropManager(this, this.sessionWorldState);
     this.worldReady = true;
@@ -215,9 +258,11 @@ export class AdventureScene extends Phaser.Scene {
     this.updateInteractionTarget(true);
     this.updateDropInteraction(0, true);
     this.updateMinimap(0, true);
+    this.dayNightOverlay.update(this.worldTimeMs);
+    this.updateExploration(true);
     this.updateDebugText();
 
-    if (!savedGame) {
+    if (!savedGame || !hadSavedWorldTime) {
       this.markSaveDirty();
     }
   }
@@ -296,7 +341,7 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private handlePrimaryAction(): void {
-    if (!this.worldReady) {
+    if (!this.worldReady || this.worldMapOpen) {
       return;
     }
 
@@ -318,6 +363,38 @@ export class AdventureScene extends Phaser.Scene {
     this.inventoryOverlay.setOpen(this.inventoryOpen);
   }
 
+  private toggleWorldMap(): void {
+    if (!this.worldReady) {
+      return;
+    }
+
+    this.worldMapOpen = !this.worldMapOpen;
+    if (this.worldMapOpen && this.inventoryOpen) {
+      this.toggleInventory();
+    }
+
+    this.cancelHarvesting();
+    this.worldMapOverlay.setOpen(this.worldMapOpen);
+    if (this.worldMapOpen) {
+      this.updateWorldMap();
+    }
+  }
+
+  private handleWorldMapKeyDown(event: KeyboardEvent): void {
+    if (!event.repeat) {
+      this.toggleWorldMap();
+    }
+  }
+
+  private closeWorldMap(): void {
+    if (!this.worldMapOpen) {
+      return;
+    }
+
+    this.worldMapOpen = false;
+    this.worldMapOverlay.setOpen(false);
+  }
+
   private handleResize(): void {
     this.updateCameraZoom();
     if (this.worldReady) {
@@ -331,13 +408,96 @@ export class AdventureScene extends Phaser.Scene {
     this.debugElement.remove();
     this.inventoryOverlay.destroy();
     this.minimapOverlay.destroy();
+    this.dayNightOverlay.destroy();
+    this.worldMapOverlay.destroy();
     this.chunkManager?.destroy();
     this.dropManager?.destroy();
   }
 
   private readonly handleBeforeUnload = (): void => {
+    if (this.worldReady && this.sessionWorldState.setWorldTimeMs(this.worldTimeMs)) {
+      this.markSaveDirty();
+    }
     void this.persistSave();
   };
+
+  private updateWorldTime(time: number, delta: number): void {
+    this.worldTimeMs = normalizeWorldTime(this.worldTimeMs + delta);
+
+    if (time - this.lastDayNightOverlayUpdateMs >= DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS) {
+      this.lastDayNightOverlayUpdateMs = time;
+      this.dayNightOverlay.update(this.worldTimeMs);
+    }
+
+    if (time - this.lastWorldTimeSaveMs >= WORLD_TIME_SAVE_INTERVAL_MS) {
+      this.lastWorldTimeSaveMs = time;
+      if (this.sessionWorldState.setWorldTimeMs(this.worldTimeMs)) {
+        this.markSaveDirty();
+      }
+    }
+  }
+
+  private updateExploration(force = false): void {
+    const tileX = worldToTile(this.player.x);
+    const tileY = worldToTile(this.player.y);
+    const regionX = Math.floor(tileX / EXPLORATION_REGION_SIZE_TILES);
+    const regionY = Math.floor(tileY / EXPLORATION_REGION_SIZE_TILES);
+
+    if (!force && regionX === this.lastExplorationRegionX && regionY === this.lastExplorationRegionY) {
+      return;
+    }
+
+    this.lastExplorationRegionX = regionX;
+    this.lastExplorationRegionY = regionY;
+    const revealedNewRegion = this.sessionWorldState.revealRegionsAround(
+      regionX,
+      regionY,
+      EXPLORATION_REVEAL_RADIUS_REGIONS
+    );
+    if (revealedNewRegion) {
+      this.markSaveDirty();
+      if (this.worldMapOpen) {
+        this.updateWorldMap();
+      }
+    }
+  }
+
+  private updateWorldMap(): void {
+    const exploredRegions = this.sessionWorldState.getExploredRegions();
+    const regions = exploredRegions.map(([regionX, regionY]) => ({
+      tileX: regionX * EXPLORATION_REGION_SIZE_TILES,
+      tileY: regionY * EXPLORATION_REGION_SIZE_TILES,
+      sizeTiles: EXPLORATION_REGION_SIZE_TILES
+    }));
+    const landmarksById = new Map<string, ReturnType<typeof landmarksIntersectingTiles>[number]>();
+
+    // Exploration advances in compact, contiguous areas. Looking up landmarks per explored
+    // region avoids scanning unexplored gaps in an infinite world and the generator cache makes
+    // revisiting existing territory inexpensive.
+    regions.forEach((region) => {
+      landmarksIntersectingTiles(
+        this.worldSeed,
+        region.tileX,
+        region.tileY,
+        region.tileX + region.sizeTiles,
+        region.tileY + region.sizeTiles
+      ).forEach((landmark) => {
+        const landmarkRegionX = Math.floor(landmark.centerTileX / EXPLORATION_REGION_SIZE_TILES);
+        const landmarkRegionY = Math.floor(landmark.centerTileY / EXPLORATION_REGION_SIZE_TILES);
+        if (this.sessionWorldState.isRegionExplored(landmarkRegionX, landmarkRegionY)) {
+          landmarksById.set(landmark.id, landmark);
+        }
+      });
+    });
+
+    this.worldMapOverlay.draw({
+      seed: this.worldSeed,
+      playerTileX: this.player.x / WORLD_TILE_SIZE,
+      playerTileY: this.player.y / WORLD_TILE_SIZE,
+      regions,
+      landmarks: Array.from(landmarksById.values())
+    });
+  }
 
   private updatePlayerAvatar(delta: number, isMoving: boolean): void {
     if (isMoving) {
@@ -740,8 +900,12 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
+    // Snapshot the clock immediately before serializing rather than relying only on the periodic
+    // dirty tick. A save made after any gameplay change therefore restores the exact latest time.
+    this.sessionWorldState.setWorldTimeMs(this.worldTimeMs);
     this.savePending = true;
     this.saveDirty = false;
+    let saveSucceeded = false;
     const saveData: SaveGameData = {
       version: 1,
       seed: this.worldSeed,
@@ -752,11 +916,17 @@ export class AdventureScene extends Phaser.Scene {
 
     try {
       await saveApi.save(saveData);
+      saveSucceeded = true;
     } catch (error) {
       console.warn('Wildbound could not write its local save.', error);
       this.saveDirty = true;
     } finally {
       this.savePending = false;
+      // Changes can arrive while IPC is writing the previous snapshot. Queue one follow-up write
+      // so exploration/time changes are not stranded behind an in-flight save.
+      if (saveSucceeded && this.saveDirty) {
+        void this.persistSave();
+      }
     }
   }
 
@@ -771,6 +941,7 @@ export class AdventureScene extends Phaser.Scene {
     const generatedFeature = featureAtTile(this.worldSeed, tileX, tileY);
     const feature = this.sessionWorldState.isFeatureHarvested(tileX, tileY) ? 'harvested' : (generatedFeature ?? 'none');
     const target = this.interactionTarget ? this.interactionTarget.feature : 'none';
+    const landmark = landmarkAtTile(this.worldSeed, tileX, tileY)?.label ?? 'none';
     const usedInventorySlots = this.inventory.getSlots().filter((slot) => slot !== null).length;
 
     this.debugElement.textContent = [
@@ -781,17 +952,21 @@ export class AdventureScene extends Phaser.Scene {
       `Elevation   ${climate.elevation.toFixed(2)}`,
       `Moisture    ${climate.moisture.toFixed(2)}`,
       `Temperature ${climate.temperature.toFixed(2)}`,
+      `Time        ${sampleDayNight(this.worldTimeMs).label}`,
+      `Landmark    ${landmark}`,
       `Feature     ${feature}`,
       `Target      ${target}`,
       `Facing      ${this.facing}`,
       `Movement    ${this.isSwimming ? 'swimming' : 'walking'}`,
       `Terrain     ${this.terrainSurface}`,
       `Harvested   ${this.sessionWorldState.harvestedFeatureCount}`,
+      `Explored    ${this.sessionWorldState.exploredRegionCount} regions`,
       `Drops       ${this.sessionWorldState.dropCount}`,
       `Inventory   ${usedInventorySlots}/${INVENTORY_SLOT_COUNT} slots`,
       `Seed        ${this.worldSeed}`,
       `Chunk       ${this.chunkManager.currentChunkX}, ${this.chunkManager.currentChunkY}`,
       `Loaded      ${this.chunkManager.loadedChunkCount} chunks`,
+      `Landmarks   ${this.chunkManager.loadedLandmarkCount} nearby`,
       `FPS         ${this.game.loop.actualFps.toFixed(0)}`
     ].join('\n');
   }

@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { Biome } from './generation/biomeGenerator';
 import { generateChunkFeatures, type TerrainFeature, TerrainFeatureType } from './generation/featureGenerator';
 import { TOPOGRAPHY_GENERATION_VERSION } from './generation/topographyGenerator';
 import { randomAtTile } from './generation/noise';
@@ -19,17 +20,28 @@ interface WaterRipple {
   width: number;
 }
 
+interface AmbientGrassTuft {
+  worldX: number;
+  worldY: number;
+  phase: number;
+  height: number;
+  color: number;
+}
+
 export class WorldChunk {
   readonly key: string;
   private readonly textureKey: string;
   private readonly terrainImage: Phaser.GameObjects.Image;
   private readonly waterGraphics: Phaser.GameObjects.Graphics;
+  private readonly ambientGraphics: Phaser.GameObjects.Graphics;
   // Complex feature vectors are baked into one texture per chunk, avoiding per-frame Graphics triangulation.
   private readonly featureTextureKey: string;
   private readonly featureImage: Phaser.GameObjects.Image;
   private readonly featureGraphics: Phaser.GameObjects.Graphics;
   private readonly features: TerrainFeature[];
+  private readonly ambientGrassTufts: AmbientGrassTuft[];
   private hasWater = false;
+  private hasAmbientMotion = false;
   private harvestingTileKey: string | null = null;
   private harvestOffset = 0;
 
@@ -55,6 +67,7 @@ export class WorldChunk {
 
     this.terrainImage = scene.add.image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.textureKey).setOrigin(0);
     this.waterGraphics = scene.add.graphics().setDepth(0.25);
+    this.ambientGraphics = scene.add.graphics().setDepth(1.15);
     this.featureImage = scene.add
       .image(x * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, y * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, this.featureTextureKey)
       .setOrigin(0)
@@ -62,6 +75,7 @@ export class WorldChunk {
     // This is an off-screen scratch pad only. It is immediately baked into featureImage's texture.
     this.featureGraphics = scene.add.graphics().setVisible(false);
     this.features = generateChunkFeatures(seed, x, y);
+    this.ambientGrassTufts = this.createAmbientGrassTufts();
 
     this.drawTerrain(terrainTexture);
     this.refreshFeatures();
@@ -96,8 +110,58 @@ export class WorldChunk {
     }
 
     const phase = time / 1000 + this.x * 0.73 + this.y * 0.41;
-    this.waterGraphics.setAlpha(0.46 + (Math.sin(phase * 1.9) + 1) * 0.14);
-    this.waterGraphics.setPosition(Math.sin(phase * 1.3) * 0.8, Math.cos(phase * 1.1) * 0.45);
+    this.waterGraphics.setAlpha(0.42 + (Math.sin(phase * 1.9) + 1) * 0.15);
+    this.waterGraphics.setPosition(Math.sin(phase * 1.3) * 1.4, Math.cos(phase * 1.1) * 0.8);
+  }
+
+  updateAmbient(time: number): void {
+    if (!this.hasAmbientMotion) {
+      return;
+    }
+
+    const graphics = this.ambientGraphics;
+    const timeSeconds = time / 1000;
+    graphics.clear();
+
+    this.ambientGrassTufts.forEach((tuft) => {
+      const wind = Math.sin(timeSeconds * 1.45 + tuft.phase) * 3.1;
+      graphics.lineStyle(1.2, tuft.color, 0.42);
+      graphics.lineBetween(tuft.worldX - 3, tuft.worldY + 4, tuft.worldX - 2 + wind * 0.45, tuft.worldY - tuft.height);
+      graphics.lineBetween(tuft.worldX, tuft.worldY + 4, tuft.worldX + wind * 0.72, tuft.worldY - tuft.height - 3);
+      graphics.lineStyle(0.9, 0xd5e996, 0.26);
+      graphics.lineBetween(tuft.worldX + 3, tuft.worldY + 4, tuft.worldX + 3 + wind, tuft.worldY - tuft.height * 0.72);
+    });
+
+    this.features.forEach((feature) => {
+      const worldTileX = this.x * CHUNK_SIZE_TILES + feature.localTileX;
+      const worldTileY = this.y * CHUNK_SIZE_TILES + feature.localTileY;
+      if (this.sessionState.isFeatureHarvested(worldTileX, worldTileY)) {
+        return;
+      }
+
+      const centerX = (worldTileX + 0.5) * WORLD_TILE_SIZE;
+      const centerY = (worldTileY + 0.5) * WORLD_TILE_SIZE;
+      const phase = randomAtTile(this.seed, worldTileX, worldTileY, 0x55f0b2a1) * Math.PI * 2;
+      const wind = Math.sin(timeSeconds * 1.12 + phase);
+
+      if (feature.type === TerrainFeatureType.Tree) {
+        const shimmerX = wind * 4.6;
+        graphics.fillStyle(0x91c75d, 0.10);
+        graphics.fillCircle(centerX + 29 + shimmerX, centerY - 34, 10);
+        graphics.fillStyle(0xd6e787, 0.08);
+        graphics.fillCircle(centerX - 23 + shimmerX * 0.72, centerY - 43, 7);
+        graphics.lineStyle(1.2, 0x7fb456, 0.28);
+        graphics.lineBetween(centerX + 11, centerY - 7, centerX + 20 + shimmerX, centerY - 24);
+      } else if (feature.type === TerrainFeatureType.Reeds || feature.type === TerrainFeatureType.Grass) {
+        const height = feature.type === TerrainFeatureType.Reeds ? 41 : 24;
+        const color = feature.type === TerrainFeatureType.Reeds ? 0xa6bd67 : 0xb9de73;
+        graphics.lineStyle(1.5, color, 0.42);
+        [-9, -2, 6].forEach((offset, index) => {
+          const bend = wind * (3 + index) + index * 1.4;
+          graphics.lineBetween(centerX + offset, centerY + 13, centerX + offset + bend, centerY + 13 - height + index * 3);
+        });
+      }
+    });
   }
 
   refreshFeatures(): void {
@@ -134,6 +198,7 @@ export class WorldChunk {
   destroy(): void {
     this.terrainImage.destroy();
     this.waterGraphics.destroy();
+    this.ambientGraphics.destroy();
     this.featureImage.destroy();
     this.featureGraphics.destroy();
     this.scene.textures.remove(this.textureKey);
@@ -172,7 +237,9 @@ export class WorldChunk {
 
             if (surface.isWater) {
               this.hasWater = true;
-              if (variation > 0.987 && ripples.length < 36) {
+              // A small capped set keeps animated glints inexpensive even when every loaded
+              // chunk is ocean, while the baked terrain still provides the dense water detail.
+              if (variation > 0.987 && ripples.length < 18) {
                 ripples.push({
                   worldX: worldX + cellX + 1,
                   worldY: worldY + cellY + 4,
@@ -447,5 +514,40 @@ export class WorldChunk {
   }
   private tileKey(tileX: number, tileY: number): string {
     return `${tileX},${tileY}`;
+  }
+
+  private createAmbientGrassTufts(): AmbientGrassTuft[] {
+    const tufts: AmbientGrassTuft[] = [];
+
+    for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
+      for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
+        const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
+        const worldTileY = this.y * CHUNK_SIZE_TILES + localY;
+        const variation = randomAtTile(this.seed, worldTileX, worldTileY, 0x2b8316d9);
+        if (variation < 0.945) {
+          continue;
+        }
+
+        const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
+        if (surface.isWater || (surface.biome !== Biome.Plains && surface.biome !== Biome.Forest && surface.biome !== Biome.Swamp)) {
+          continue;
+        }
+
+        tufts.push({
+          worldX: (worldTileX + 0.22 + randomAtTile(this.seed, worldTileX, worldTileY, 0x1593bd27) * 0.55) * WORLD_TILE_SIZE,
+          worldY: (worldTileY + 0.48 + randomAtTile(this.seed, worldTileX, worldTileY, 0x6cb6ad11) * 0.34) * WORLD_TILE_SIZE,
+          phase: randomAtTile(this.seed, worldTileX, worldTileY, 0x4a1e79e5) * Math.PI * 2,
+          height: 7 + Math.floor(variation * 7),
+          color: surface.biome === Biome.Swamp ? 0x6e9c62 : surface.biome === Biome.Forest ? 0x65964d : 0x79af4f
+        });
+      }
+    }
+
+    this.hasAmbientMotion = tufts.length > 0 || this.features.some((feature) =>
+      feature.type === TerrainFeatureType.Tree
+      || feature.type === TerrainFeatureType.Reeds
+      || feature.type === TerrainFeatureType.Grass
+    );
+    return tufts;
   }
 }

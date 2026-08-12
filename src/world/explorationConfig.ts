@@ -1,0 +1,24 @@
+// Exploration progression is stored in coarse regions rather than individual tiles so a long-lived
+// world remains compact enough for the desktop save file.
+export const EXPLORATION_REGION_SIZE_TILES = 16;
+export const EXPLORATION_REVEAL_RADIUS_REGIONS = 1;
+
+// World time advances continuously in real time. Twelve minutes gives each lighting phase room to
+// breathe while still making a complete cycle easy to experience in one play session.
+export const DAY_NIGHT_CYCLE_DURATION_MS = 12 * 60 * 1000;
+export const DAY_NIGHT_INITIAL_TIME_MS = DAY_NIGHT_CYCLE_DURATION_MS * (8 / 24);
+export const WORLD_TIME_SAVE_INTERVAL_MS = 900;
+export const DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS = 40;
+
+// Animated environmental details are deliberately throttled. Chunks retain their baked terrain and
+// feature textures; these values govern only lightweight Graphics overlays.
+export const AMBIENT_SWAY_UPDATE_INTERVAL_MS = 75;
+export const AMBIENT_PARTICLE_UPDATE_INTERVAL_MS = 80;
+export const AMBIENT_PARTICLE_CELL_SIZE_PIXELS = 112;
+// The visible camera view is 2560 x 1440 world pixels, so these radii cover it with a small
+// buffer while still selecting a bounded number of particles to render.
+export const AMBIENT_PARTICLE_RADIUS_CELLS_X = 12;
+export const AMBIENT_PARTICLE_RADIUS_CELLS_Y = 8;
+export const AMBIENT_PARTICLE_MAX_COUNT = 70;
+export const AMBIENT_CHUNK_RADIUS_X = 3;
+export const AMBIENT_CHUNK_RADIUS_Y = 2;

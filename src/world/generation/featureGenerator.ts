@@ -1,5 +1,6 @@
 import { biomeForClimate, climateAtTile, Biome } from './biomeGenerator';
 import { randomAtTile } from './noise';
+import { isLandmarkReservedTile } from './landmarkGenerator';
 import { sampleTopographyVisual } from './topographyGenerator';
 import { CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from '../worldConfig';
 
@@ -35,6 +36,12 @@ const shouldPlace = (seed: string, tileX: number, tileY: number, salt: number, c
   randomAtTile(seed, tileX, tileY, salt) < chance;
 
 export const featureAtTile = (seed: string, tileX: number, tileY: number): TerrainFeatureType | null => {
+  // Landmark reservations are a separate macro layer. Skipping normal resources here keeps the
+  // visible chunk art, harvesting lookup, and F3 feature readout in agreement.
+  if (isLandmarkReservedTile(seed, tileX, tileY)) {
+    return null;
+  }
+
   const climate = climateAtTile(seed, tileX, tileY);
   const biome = biomeForClimate(climate);
 

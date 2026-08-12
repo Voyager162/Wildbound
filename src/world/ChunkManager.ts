@@ -1,4 +1,12 @@
 import Phaser from 'phaser';
+import { AmbientParticleManager } from './AmbientParticleManager';
+import {
+  AMBIENT_CHUNK_RADIUS_X,
+  AMBIENT_CHUNK_RADIUS_Y,
+  AMBIENT_PARTICLE_UPDATE_INTERVAL_MS,
+  AMBIENT_SWAY_UPDATE_INTERVAL_MS
+} from './explorationConfig';
+import { LandmarkManager } from './LandmarkManager';
 import { sampleTopography, type TopographySample } from './generation/topographyGenerator';
 import { SessionWorldState } from './SessionWorldState';
 import { WorldChunk } from './WorldChunk';
@@ -14,12 +22,19 @@ export class ChunkManager {
   private activeChunkX = Number.NaN;
   private activeChunkY = Number.NaN;
   private lastWaterAnimationTime = Number.NEGATIVE_INFINITY;
+  private lastAmbientSwayTime = Number.NEGATIVE_INFINITY;
+  private lastAmbientParticleTime = Number.NEGATIVE_INFINITY;
+  private readonly ambientParticleManager: AmbientParticleManager;
+  private readonly landmarkManager: LandmarkManager;
 
   constructor(
     private readonly scene: Phaser.Scene,
     private readonly seed: string,
     private readonly sessionState: SessionWorldState
-  ) {}
+  ) {
+    this.ambientParticleManager = new AmbientParticleManager(scene, seed);
+    this.landmarkManager = new LandmarkManager(scene, seed);
+  }
 
   get currentChunkX(): number {
     return this.activeChunkX;
@@ -31,6 +46,10 @@ export class ChunkManager {
 
   get loadedChunkCount(): number {
     return this.chunks.size;
+  }
+
+  get loadedLandmarkCount(): number {
+    return this.landmarkManager.loadedLandmarkCount;
   }
 
   update(playerWorldX: number, playerWorldY: number): void {
@@ -45,6 +64,7 @@ export class ChunkManager {
     this.activeChunkY = nextChunkY;
     this.loadNearbyChunks();
     this.unloadDistantChunks();
+    this.landmarkManager.update(this.activeChunkX, this.activeChunkY);
   }
 
   updateWaterAnimation(time: number): void {
@@ -54,6 +74,25 @@ export class ChunkManager {
 
     this.lastWaterAnimationTime = time;
     this.chunks.forEach((chunk) => chunk.updateWaterAnimation(time));
+  }
+
+  updateAmbient(time: number, playerWorldX: number, playerWorldY: number): void {
+    if (time - this.lastAmbientSwayTime >= AMBIENT_SWAY_UPDATE_INTERVAL_MS) {
+      this.lastAmbientSwayTime = time;
+      this.chunks.forEach((chunk) => {
+        if (
+          Math.abs(chunk.x - this.activeChunkX) <= AMBIENT_CHUNK_RADIUS_X
+          && Math.abs(chunk.y - this.activeChunkY) <= AMBIENT_CHUNK_RADIUS_Y
+        ) {
+          chunk.updateAmbient(time);
+        }
+      });
+    }
+
+    if (time - this.lastAmbientParticleTime >= AMBIENT_PARTICLE_UPDATE_INTERVAL_MS) {
+      this.lastAmbientParticleTime = time;
+      this.ambientParticleManager.update(time, playerWorldX, playerWorldY);
+    }
   }
 
   getTopographyAt(worldX: number, worldY: number): TopographySample {
@@ -86,6 +125,8 @@ export class ChunkManager {
   destroy(): void {
     this.chunks.forEach((chunk) => chunk.destroy());
     this.chunks.clear();
+    this.ambientParticleManager.destroy();
+    this.landmarkManager.destroy();
   }
 
   private loadNearbyChunks(): void {

@@ -32,6 +32,15 @@ body {
   display: block;
 }
 
+.day-night-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+  transition: background 280ms linear;
+}
+
 .debug-overlay {
   position: absolute;
   top: 8px;
@@ -82,6 +91,176 @@ body {
   opacity: 0;
   pointer-events: none;
   transition: opacity 150ms ease, background-color 150ms ease;
+}
+
+.world-map-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: clamp(16px, 3vw, 38px);
+  background: rgba(2, 10, 15, 0);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease, background-color 180ms ease;
+}
+
+.world-map-overlay.is-open {
+  background: rgba(2, 10, 15, 0.78);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.world-map-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  width: min(920px, calc(100vw - 32px));
+  height: min(720px, calc(100vh - 32px));
+  min-height: 330px;
+  overflow: hidden;
+  border: 2px solid #afca9c;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #172b2c, #07161b 72%);
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.64), inset 0 0 0 1px rgba(239, 255, 221, 0.12);
+  opacity: 0;
+  transform: translateY(14px) scale(0.96);
+  transition: opacity 200ms ease, transform 230ms cubic-bezier(0.18, 0.78, 0.3, 1.1);
+}
+
+.world-map-overlay.is-open .world-map-panel {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.world-map-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 17px;
+  border-color: rgba(166, 208, 170, 0.3);
+  color: #eff9e8;
+}
+
+.world-map-header {
+  border-bottom: 1px solid rgba(166, 208, 170, 0.3);
+  background: linear-gradient(90deg, rgba(92, 148, 105, 0.2), transparent);
+}
+
+.world-map-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.world-map-status,
+.world-map-controls,
+.world-map-legend {
+  color: #b7cbb5;
+  font: 600 12px/1.35 "Cascadia Mono", Consolas, monospace;
+  letter-spacing: 0;
+}
+
+.world-map-status {
+  text-align: right;
+}
+
+.world-map-controls {
+  margin: 0;
+  padding: 8px 17px;
+  border-bottom: 1px solid rgba(166, 208, 170, 0.2);
+  background: rgba(3, 18, 19, 0.48);
+}
+
+.world-map-viewport {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(41, 83, 76, 0.4), transparent 62%),
+    #0a191d;
+}
+
+.world-map-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.world-map-canvas--annotations {
+  pointer-events: none;
+}
+
+.world-map-empty-state {
+  position: absolute;
+  inset: 0;
+  display: none;
+  place-items: center;
+  align-content: center;
+  gap: 7px;
+  padding: 32px;
+  color: #dcead4;
+  font: 600 14px/1.55 system-ui, sans-serif;
+  text-align: center;
+  text-shadow: 0 2px 4px #061014;
+  pointer-events: none;
+}
+
+.world-map-empty-state strong {
+  color: #f1ffe9;
+  font-size: 17px;
+}
+
+.world-map-empty-state.is-visible {
+  display: grid;
+}
+
+.world-map-legend {
+  display: grid;
+  gap: 7px;
+  padding: 10px 17px 12px;
+  border-top: 1px solid rgba(166, 208, 170, 0.3);
+  background: rgba(3, 17, 17, 0.56);
+}
+
+.world-map-legend h3 {
+  margin: 0;
+  color: #eff9e8;
+  font: 800 11px/1.2 system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.world-map-legend-list {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  gap: 8px 13px;
+}
+
+.world-map-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.world-map-legend-swatch {
+  width: 8px;
+  height: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 50%;
+  background: var(--world-map-biome-color, #f2cf71);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--world-map-biome-color, #f2cf71) 72%, transparent);
+}
+
+.world-map-legend-empty {
+  color: #7d9a8a;
 }
 
 .inventory-overlay.is-open {
@@ -332,5 +511,15 @@ body {
 
   .debug-overlay {
     font-size: 11px;
+  }
+
+  .world-map-header,
+  .world-map-controls,
+  .world-map-legend {
+    padding: 10px 12px;
+  }
+
+  .world-map-title {
+    font-size: 15px;
   }
 }

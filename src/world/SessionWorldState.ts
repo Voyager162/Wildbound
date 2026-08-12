@@ -13,6 +13,10 @@ export interface SessionWorldStateData {
   harvestedFeatureKeys: string[];
   drops: DroppedItem[];
   nextDropId: number;
+  // Exploration is deliberately coarse: each key represents a fixed map region, not a tile.
+  // This keeps a long-running save compact while still making every journey permanent.
+  exploredRegionKeys?: string[];
+  worldTimeMs?: number;
 }
 
 const isResourceType = (value: unknown): value is ResourceType =>
@@ -38,7 +42,9 @@ const isDroppedItem = (value: unknown): value is DroppedItem => {
 export class SessionWorldState {
   private readonly harvestedFeatureKeys = new Set<string>();
   private readonly drops = new Map<string, DroppedItem>();
+  private readonly exploredRegionKeys = new Set<string>();
   private nextDropId = 0;
+  private savedWorldTimeMs: number | null = null;
 
   isFeatureHarvested(tileX: number, tileY: number): boolean {
     return this.harvestedFeatureKeys.has(this.featureKey(tileX, tileY));
@@ -86,18 +92,83 @@ export class SessionWorldState {
     return drop ? { ...drop } : null;
   }
 
+  revealRegion(regionX: number, regionY: number): boolean {
+    if (!Number.isInteger(regionX) || !Number.isInteger(regionY)) {
+      return false;
+    }
+
+    const key = this.regionKey(regionX, regionY);
+    if (this.exploredRegionKeys.has(key)) {
+      return false;
+    }
+
+    this.exploredRegionKeys.add(key);
+    return true;
+  }
+
+  revealRegionsAround(regionX: number, regionY: number, radius: number): boolean {
+    if (!Number.isInteger(regionX) || !Number.isInteger(regionY) || !Number.isInteger(radius) || radius < 0) {
+      return false;
+    }
+
+    let revealedNewRegion = false;
+    for (let y = regionY - radius; y <= regionY + radius; y += 1) {
+      for (let x = regionX - radius; x <= regionX + radius; x += 1) {
+        revealedNewRegion = this.revealRegion(x, y) || revealedNewRegion;
+      }
+    }
+
+    return revealedNewRegion;
+  }
+
+  isRegionExplored(regionX: number, regionY: number): boolean {
+    return this.exploredRegionKeys.has(this.regionKey(regionX, regionY));
+  }
+
+  getExploredRegions(): Array<readonly [number, number]> {
+    const regions: Array<readonly [number, number]> = [];
+    this.exploredRegionKeys.forEach((key) => {
+      const [x, y] = this.parseRegionKey(key);
+      if (x !== null && y !== null) {
+        regions.push([x, y]);
+      }
+    });
+    return regions;
+  }
+
+  setWorldTimeMs(worldTimeMs: number): boolean {
+    if (!Number.isFinite(worldTimeMs)) {
+      return false;
+    }
+
+    if (this.savedWorldTimeMs === worldTimeMs) {
+      return false;
+    }
+
+    this.savedWorldTimeMs = worldTimeMs;
+    return true;
+  }
+
+  get worldTimeMs(): number | null {
+    return this.savedWorldTimeMs;
+  }
+
   toSaveData(): SessionWorldStateData {
     return {
       harvestedFeatureKeys: Array.from(this.harvestedFeatureKeys),
       drops: this.getDrops(),
-      nextDropId: this.nextDropId
+      nextDropId: this.nextDropId,
+      exploredRegionKeys: Array.from(this.exploredRegionKeys),
+      worldTimeMs: this.savedWorldTimeMs ?? undefined
     };
   }
 
   restore(data: unknown): void {
     this.harvestedFeatureKeys.clear();
     this.drops.clear();
+    this.exploredRegionKeys.clear();
     this.nextDropId = 0;
+    this.savedWorldTimeMs = null;
 
     if (!data || typeof data !== 'object') {
       return;
@@ -119,6 +190,23 @@ export class SessionWorldState {
     if (typeof state.nextDropId === 'number' && Number.isInteger(state.nextDropId) && state.nextDropId >= 0) {
       this.nextDropId = state.nextDropId;
     }
+
+    if (Array.isArray(state.exploredRegionKeys)) {
+      state.exploredRegionKeys.forEach((key) => {
+        if (typeof key !== 'string') {
+          return;
+        }
+
+        const [regionX, regionY] = this.parseRegionKey(key);
+        if (regionX !== null && regionY !== null) {
+          this.exploredRegionKeys.add(this.regionKey(regionX, regionY));
+        }
+      });
+    }
+
+    if (typeof state.worldTimeMs === 'number' && Number.isFinite(state.worldTimeMs)) {
+      this.savedWorldTimeMs = state.worldTimeMs;
+    }
   }
 
   get harvestedFeatureCount(): number {
@@ -129,7 +217,28 @@ export class SessionWorldState {
     return this.drops.size;
   }
 
+  get exploredRegionCount(): number {
+    return this.exploredRegionKeys.size;
+  }
+
   private featureKey(tileX: number, tileY: number): string {
     return `${tileX},${tileY}`;
+  }
+
+  private regionKey(regionX: number, regionY: number): string {
+    return `${regionX},${regionY}`;
+  }
+
+  private parseRegionKey(key: string): readonly [number | null, number | null] {
+    const match = /^(-?\d+),(-?\d+)$/.exec(key);
+    if (!match) {
+      return [null, null];
+    }
+
+    const regionX = Number(match[1]);
+    const regionY = Number(match[2]);
+    return Number.isSafeInteger(regionX) && Number.isSafeInteger(regionY)
+      ? [regionX, regionY]
+      : [null, null];
   }
 }

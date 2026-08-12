@@ -21,8 +21,11 @@ Setup, the installed executable, shortcuts, and the application window use the r
 - Player movement is delta-time based. Entering traversable ocean, shore, or swamp water enables swimming mode at 42% of walking speed.
 - Holding the left mouse button for one real-time second harvests a highlighted nearby feature.
 - A smooth-follow camera maintains a large 2560 x 1440 world view on 16:9 displays in both windowed and fullscreen modes.
-- F3 toggles a crisp, screen-space debug panel with world/tile coordinates, climate values, movement mode, seed, chunk position, inventory usage, and FPS.
+- F3 toggles a crisp, screen-space debug panel with world/tile coordinates, climate values, world time, current landmark, movement mode, seed, chunk position, inventory usage, and FPS.
 - A circular, top-right minimap samples stable world coordinates and keeps the player marker centered.
+- Press `F` to open the world map. It begins covered by fog, permanently reveals the regions you explore, and records discovered biome color and landmark markers without obscuring the nearby minimap.
+- Rare seed-deterministic landmarks — ancient trees, waterfalls, crystal formations, lakes, craters, volcanoes, stone circles, giant skeletons, campsites, and watchtowers — stream as a separate visual layer from normal terrain and resources.
+- A saved day/night clock adds gradual dawn, daylight, dusk, and night lighting. Trees, grasses, reeds, water glints, and biome-sensitive particles provide lightweight ambient motion.
 - Elevation, moisture, and temperature noise deterministically classify ocean, beach, plains, forest, desert, swamp, hills, mountains, and snow biomes.
 - Terrain uses smoothly blended coastline/elevation bands, detailed grass/vegetation/sand/mud/ice/rock marks, rolling hill contours, mountain formations, and subtle animated water glints. These details are baked once into chunk textures.
 - Sparse code-generated trees, cacti, rocks, reeds, snowy rocks, and ice patches highlight when interactable and shake during harvesting.
@@ -36,20 +39,22 @@ On Windows, Wildbound saves to:
 
 `%APPDATA%\Wildbound\wildbound-save.json`
 
-This file stores only player/world changes over the deterministic generated world; it does not store every terrain tile.
+This file stores only player/world changes over the deterministic generated world — including harvested features, drops, explored map regions, and world time — rather than every terrain tile.
 
 ## Tuning controls
 
-- `src/world/worldConfig.ts`: `BIOME_SIZE_SCALE` is a 1-100 biome-size control; higher values create larger regions. Current value: `20`.
-- `src/player/playerConfig.ts`: `PLAYER_SPEED_SCALE` is a 1-100 movement-speed control. Current value: `50`, which keeps 220 pixels per second on land.
+- `src/world/worldConfig.ts`: `BIOME_SIZE_SCALE` is a 1-100 biome-size control; higher values create larger regions. Current value: `50`.
+- `src/player/playerConfig.ts`: `PLAYER_SPEED_SCALE` is a 1-100 movement-speed control. Current value: `70`, which keeps 308 pixels per second on land.
 - `src/ui/uiConfig.ts`: `MINIMAP_AREA_SCALE` is a 1-100 minimap-coverage control. Current value: `50`, which preserves the previous coverage.
 - `src/world/generation/featureGenerator.ts`: `FEATURE_DENSITIES` controls deterministic feature density by biome.
+- `src/world/explorationConfig.ts` controls fog reveal granularity, day/night duration, and ambient effect budgets.
+- `src/world/landmarkConfig.ts` controls landmark rarity, placement spacing, footprints, and visibility range.
 
 ## Procedural world configuration
 
 - Logical tile size: 32 x 32 pixels.
 - Chunks: 16 x 16 tiles (512 x 512 pixels).
-- `WORLD_SEED` in `src/world/worldConfig.ts` is the single default seed. The current default is `1234ddw`.
+- `WORLD_SEED` in `src/world/worldConfig.ts` is the single default seed. The current default is `waoefiu`.
 - Chunks load within three chunk steps of the player and unload farther than four steps away. Unloaded terrain and features regenerate exactly from the seed and global coordinates; saved harvested features remain removed after restart.
 
 ## Development
