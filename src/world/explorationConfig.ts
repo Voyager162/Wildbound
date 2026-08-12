@@ -21,20 +21,23 @@ export const DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS = 40;
 // Particles and foliage are perceptually sensitive to cadence, so these run at smooth motion
 // rates. Their per-frame work is bounded separately below.
 export const AMBIENT_SWAY_UPDATE_INTERVAL_MS = 33;
-export const AMBIENT_PARTICLE_UPDATE_INTERVAL_MS = 16;
+// 40 Hz keeps the motion visually fluid while leaving enough frame time for the game itself.
+export const AMBIENT_PARTICLE_UPDATE_INTERVAL_MS = 25;
 export const AMBIENT_PARTICLE_CELL_SIZE_PIXELS = 96;
 // The visible camera view is 2560 x 1440 world pixels, so these radii cover it with a small
 // buffer while still selecting a bounded number of particles to render.
 export const AMBIENT_PARTICLE_RADIUS_CELLS_X = 15;
 export const AMBIENT_PARTICLE_RADIUS_CELLS_Y = 10;
 export const AMBIENT_PARTICLE_MAX_COUNT = 140;
-// This spans the full wide camera view plus a one-chunk wind buffer. Foliage has already been
-// animated before it crosses onto the screen, avoiding a visible static-to-moving pop at edges.
-export const AMBIENT_CHUNK_RADIUS_X = 3;
-export const AMBIENT_CHUNK_RADIUS_Y = 2;
+// These are the camera-adjacent chunks only. New chunks are primed with their current wind pose
+// at creation, so rendering a much larger hidden animation buffer is unnecessary.
+export const AMBIENT_CHUNK_RADIUS_X = 2;
+export const AMBIENT_CHUNK_RADIUS_Y = 1;
 export const WATER_ANIMATION_UPDATE_INTERVAL_MS = 90;
 export const WATER_WAVES_PER_CHUNK = 20;
-export const AMBIENT_GRASS_TUFTS_PER_CHUNK = 48;
+// The continuous terrain layer supplies field density; this smaller cap reserves animation work
+// for the most noticeable nearby tufts.
+export const AMBIENT_GRASS_TUFTS_PER_CHUNK = 32;
 // Stream one full baked chunk per frame after the initial area. Chunk rendering is deterministic,
 // but distributing it prevents regular stalls when the player crosses a chunk boundary.
 export const CHUNK_BUILDS_PER_FRAME = 1;

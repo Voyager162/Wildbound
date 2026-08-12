@@ -379,15 +379,30 @@ export class WorldChunk {
     // actual biome rather than the forest-weighted vegetation value above.
     const groundGrassThreshold = surface.biome === Biome.Plains ? 0.34 : surface.biome === Biome.Forest ? 0.43 : 0.5;
     if (grassyBiome && variation > groundGrassThreshold) {
-      const darkGrass = surface.biome === Biome.Swamp ? 0x507b50 : surface.biome === Biome.Forest ? 0x476f3b : 0x5f963e;
-      const lightGrass = surface.biome === Biome.Swamp ? 0x83a66a : surface.biome === Biome.Forest ? 0x82a856 : 0x9ac85c;
-      context.fillStyle = this.colorToCss(darkGrass);
-      context.fillRect(cellX + 1, cellY + 4, 1, 3);
-      context.fillRect(cellX + 3, cellY + 2, 1, 5);
-      context.fillStyle = this.colorToCss(lightGrass);
-      context.fillRect(cellX + 5, cellY + 1, 1, 6);
-      if (variation > 0.91) {
+      const darkGrass = surface.biome === Biome.Swamp ? 0x365e41 : surface.biome === Biome.Forest ? 0x2d5b31 : 0x3f7836;
+      const lightGrass = surface.biome === Biome.Swamp ? 0x94b874 : surface.biome === Biome.Forest ? 0x8ec45b : 0xa9d666;
+      const grassPattern = Math.floor(variation * 1000) % 3;
+      if (grassPattern === 0) {
+        context.fillStyle = this.colorToCss(darkGrass);
+        context.fillRect(cellX + 1, cellY + 4, 2, 3);
+        context.fillRect(cellX + 4, cellY + 2, 1, 5);
+        context.fillStyle = this.colorToCss(lightGrass);
+        context.fillRect(cellX + 6, cellY + 1, 1, 6);
+        context.fillRect(cellX + 5, cellY + 3, 1, 3);
+      } else if (grassPattern === 1) {
+        context.fillStyle = this.colorToCss(darkGrass);
+        context.fillRect(cellX + 1, cellY + 2, 1, 5);
+        context.fillRect(cellX + 3, cellY + 4, 2, 3);
+        context.fillStyle = this.colorToCss(lightGrass);
+        context.fillRect(cellX + 5, cellY, 1, 7);
         context.fillRect(cellX + 7, cellY + 3, 1, 4);
+      } else {
+        context.fillStyle = this.colorToCss(darkGrass);
+        context.fillRect(cellX, cellY + 4, 2, 3);
+        context.fillRect(cellX + 3, cellY + 1, 1, 6);
+        context.fillStyle = this.colorToCss(lightGrass);
+        context.fillRect(cellX + 5, cellY + 3, 2, 4);
+        context.fillRect(cellX + 7, cellY + 1, 1, 5);
       }
     }
 
