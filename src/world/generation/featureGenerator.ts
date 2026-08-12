@@ -1,8 +1,8 @@
 import { biomeForClimate, climateAtTile, Biome } from './biomeGenerator';
 import { randomAtTile } from './noise';
 import { isLandmarkReservedTile } from './landmarkGenerator';
-import { sampleTopographyVisual } from './topographyGenerator';
-import { CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from '../worldConfig';
+import { surfaceAtTile } from './terrainGenerator';
+import { CHUNK_SIZE_TILES } from '../worldConfig';
 
 export enum TerrainFeatureType {
   Tree = 'tree',
@@ -35,6 +35,52 @@ export const FEATURE_DENSITIES = {
 const shouldPlace = (seed: string, tileX: number, tileY: number, salt: number, chance: number): boolean =>
   randomAtTile(seed, tileX, tileY, salt) < chance;
 
+const featureClearance: Record<TerrainFeatureType, number> = {
+  [TerrainFeatureType.Tree]: 1.75,
+  [TerrainFeatureType.Cactus]: 1.25,
+  [TerrainFeatureType.Rock]: 1.45,
+  [TerrainFeatureType.Reeds]: 1.1,
+  [TerrainFeatureType.SnowyRock]: 1.35,
+  [TerrainFeatureType.IcePatch]: 1.6,
+  [TerrainFeatureType.Grass]: 1
+};
+
+const isBiomeCompatible = (feature: TerrainFeatureType, biome: Biome): boolean => {
+  switch (feature) {
+    case TerrainFeatureType.Tree:
+      return biome === Biome.Forest;
+    case TerrainFeatureType.Cactus:
+      return biome === Biome.Desert;
+    case TerrainFeatureType.Rock:
+      return biome === Biome.Hills || biome === Biome.Mountains;
+    case TerrainFeatureType.Reeds:
+      return biome === Biome.Swamp;
+    case TerrainFeatureType.SnowyRock:
+    case TerrainFeatureType.IcePatch:
+      return biome === Biome.Snow;
+    case TerrainFeatureType.Grass:
+      return biome === Biome.Plains;
+  }
+};
+
+// Features have wide artwork, so validating just their center tile lets a mountain rock visibly
+// reach into a swamp pool. Require an all-compatible footprint around the object instead.
+const hasSafeFeatureFootprint = (seed: string, tileX: number, tileY: number, feature: TerrainFeatureType): boolean => {
+  const clearance = featureClearance[feature];
+  const samples = [-clearance, 0, clearance];
+  return samples.every((offsetY) => samples.every((offsetX) => {
+    const surface = surfaceAtTile(seed, tileX + 0.5 + offsetX, tileY + 0.5 + offsetY);
+    if (surface.isWater || surface.waterVisualAmount > 0.1) {
+      return false;
+    }
+
+    return isBiomeCompatible(feature, surface.biome);
+  }));
+};
+
+const acceptFeature = (seed: string, tileX: number, tileY: number, feature: TerrainFeatureType): TerrainFeatureType | null =>
+  hasSafeFeatureFootprint(seed, tileX, tileY, feature) ? feature : null;
+
 export const featureAtTile = (seed: string, tileX: number, tileY: number): TerrainFeatureType | null => {
   // Landmark reservations are a separate macro layer. Skipping normal resources here keeps the
   // visible chunk art, harvesting lookup, and F3 feature readout in agreement.
@@ -51,40 +97,34 @@ export const featureAtTile = (seed: string, tileX: number, tileY: number): Terra
     return null;
   }
 
-  const topography = sampleTopographyVisual(
-    seed,
-    tileX * WORLD_TILE_SIZE,
-    tileY * WORLD_TILE_SIZE,
-    climate
-  );
   switch (biome) {
     case Biome.Snow:
       if (shouldPlace(seed, tileX, tileY, 0x1a7f44bd, FEATURE_DENSITIES.snowyRock)) {
-        return TerrainFeatureType.SnowyRock;
+        return acceptFeature(seed, tileX, tileY, TerrainFeatureType.SnowyRock);
       }
       return shouldPlace(seed, tileX, tileY, 0x33c51981, FEATURE_DENSITIES.icePatch)
-        ? TerrainFeatureType.IcePatch
+        ? acceptFeature(seed, tileX, tileY, TerrainFeatureType.IcePatch)
         : null;
     case Biome.Mountains:
     case Biome.Hills:
       return shouldPlace(seed, tileX, tileY, 0x47bd60a9, FEATURE_DENSITIES.rocky)
-        ? TerrainFeatureType.Rock
+        ? acceptFeature(seed, tileX, tileY, TerrainFeatureType.Rock)
         : null;
     case Biome.Swamp:
       return shouldPlace(seed, tileX, tileY, 0x5d1be613, FEATURE_DENSITIES.swampReeds)
-        ? TerrainFeatureType.Reeds
+        ? acceptFeature(seed, tileX, tileY, TerrainFeatureType.Reeds)
         : null;
     case Biome.Desert:
       return shouldPlace(seed, tileX, tileY, 0x6ea84c35, FEATURE_DENSITIES.desertCactus)
-        ? TerrainFeatureType.Cactus
+        ? acceptFeature(seed, tileX, tileY, TerrainFeatureType.Cactus)
         : null;
     case Biome.Forest:
       return shouldPlace(seed, tileX, tileY, 0x77a5c3d1, FEATURE_DENSITIES.forestTree)
-        ? TerrainFeatureType.Tree
+        ? acceptFeature(seed, tileX, tileY, TerrainFeatureType.Tree)
         : null;
     case Biome.Plains:
       return shouldPlace(seed, tileX, tileY, 0x8df3524f, FEATURE_DENSITIES.plainsGrass)
-        ? TerrainFeatureType.Grass
+        ? acceptFeature(seed, tileX, tileY, TerrainFeatureType.Grass)
         : null;
   }
 };

@@ -145,7 +145,6 @@ export class WorldChunk {
     }
 
     const seconds = time / 1000;
-    this.updateWaterSurfaceLayers(seconds);
     const graphics = this.waterGraphics;
     graphics.clear();
 
@@ -228,6 +227,14 @@ export class WorldChunk {
         graphics.fillCircle(wave.worldX + wave.width * 0.44 + currentX, wave.worldY + currentY - 1.5, 1.25);
       }
     });
+  }
+
+  // The broad water texture is just a few GPU tile-offset writes, so it stays smooth even while
+  // the more expensive vector ripples below run at a lower, budget-friendly cadence.
+  updateWaterSurfaceMotion(time: number): void {
+    if (this.hasWater) {
+      this.updateWaterSurfaceLayers(time / 1000);
+    }
   }
 
   private updateWaterSurfaceLayers(seconds: number): void {

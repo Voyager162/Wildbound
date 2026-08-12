@@ -20,10 +20,11 @@ import type { TopographySample } from '../world/generation/topographyGenerator';
 import { RESOURCE_COLORS, resourceForFeature, resourceLabel } from '../world/resources';
 import { SessionWorldState } from '../world/SessionWorldState';
 import type { DroppedItem } from '../world/SessionWorldState';
-import { normalizeWorldTime, sampleDayNight } from '../world/dayNight';
+import { normalizeWorldTime, sampleDayNight, worldTimeForHour } from '../world/dayNight';
 import {
   DAY_NIGHT_INITIAL_TIME_MS,
   DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS,
+  DAY_NIGHT_START_HOUR_OVERRIDE,
   EXPLORATION_REGION_SIZE_TILES,
   EXPLORATION_REVEAL_RADIUS_REGIONS,
   EXPLORATION_REVEAL_STAMP_RADIUS_TILES,
@@ -252,7 +253,9 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     const hadSavedWorldTime = this.sessionWorldState.worldTimeMs !== null;
-    this.worldTimeMs = normalizeWorldTime(this.sessionWorldState.worldTimeMs ?? DAY_NIGHT_INITIAL_TIME_MS);
+    this.worldTimeMs = DAY_NIGHT_START_HOUR_OVERRIDE === null
+      ? normalizeWorldTime(this.sessionWorldState.worldTimeMs ?? DAY_NIGHT_INITIAL_TIME_MS)
+      : worldTimeForHour(DAY_NIGHT_START_HOUR_OVERRIDE);
     this.sessionWorldState.setWorldTimeMs(this.worldTimeMs);
 
     this.chunkManager = new ChunkManager(this, this.worldSeed, this.sessionWorldState);
@@ -272,7 +275,7 @@ export class AdventureScene extends Phaser.Scene {
     this.updateExploration(true);
     this.updateDebugText();
 
-    if (!savedGame || !hadSavedWorldTime) {
+    if (!savedGame || !hadSavedWorldTime || DAY_NIGHT_START_HOUR_OVERRIDE !== null) {
       this.markSaveDirty();
     }
   }

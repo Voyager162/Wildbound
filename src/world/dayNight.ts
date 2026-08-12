@@ -17,6 +17,9 @@ export const normalizeWorldTime = (worldTimeMs: number): number => {
   return wrapped < 0 ? wrapped + DAY_NIGHT_CYCLE_DURATION_MS : wrapped;
 };
 
+export const worldTimeForHour = (hour: number): number =>
+  normalizeWorldTime(DAY_NIGHT_CYCLE_DURATION_MS * (Math.max(0, Math.min(24, hour)) / 24));
+
 // World time starts at midnight. Sunrise is 06:00, noon is 12:00, and sunset is 18:00.
 export const sampleDayNight = (worldTimeMs: number): DayNightSample => {
   const normalizedMs = normalizeWorldTime(worldTimeMs);

@@ -79,6 +79,15 @@ export class ChunkManager {
   }
 
   updateWaterAnimation(time: number): void {
+    this.chunks.forEach((chunk) => {
+      if (
+        Math.abs(chunk.x - this.activeChunkX) <= AMBIENT_CHUNK_RADIUS_X
+        && Math.abs(chunk.y - this.activeChunkY) <= AMBIENT_CHUNK_RADIUS_Y
+      ) {
+        chunk.updateWaterSurfaceMotion(time);
+      }
+    });
+
     if (time - this.lastWaterAnimationTime < WATER_ANIMATION_UPDATE_INTERVAL_MS) {
       return;
     }

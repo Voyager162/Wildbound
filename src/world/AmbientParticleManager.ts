@@ -224,7 +224,7 @@ export class AmbientParticleManager {
   ): void {
     const { x, y, cycle } = state;
     const alpha = particle.kind === 'firefly'
-      ? state.alpha * (0.05 + nightAmount * 0.95)
+      ? (nightAmount <= 0.04 ? 0 : state.alpha * nightAmount)
       : state.alpha;
     const graphics = this.graphics;
 
