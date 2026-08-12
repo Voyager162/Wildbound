@@ -11,7 +11,7 @@ import { WORLD_TILE_SIZE } from './worldConfig';
 
 // Every biome gets a distinct moving foreground layer. These are world-space effects rather
 // than screen overlays, so a gust crossing the forest still feels anchored to the world.
-type ParticleKind = 'leaf' | 'pollen' | 'dust' | 'mist' | 'snow' | 'firefly' | 'spray' | 'ice-crystal';
+type ParticleKind = 'leaf' | 'pollen' | 'dust' | 'sand' | 'mist' | 'spore' | 'snow' | 'firefly' | 'spray' | 'ice-crystal';
 
 interface AmbientParticle {
   baseX: number;
@@ -101,6 +101,39 @@ export class AmbientParticleManager {
             priority: 0.5 + randomAtTile(this.seed, cellX, cellY, 0x139dd507) * 0.5
           });
         }
+
+        // Desert gusts are a separate, long-traveling layer from generic dust so arid regions
+        // remain visibly alive even when the wind is moving parallel to the player.
+        if (biome === Biome.Desert && variation > 0.1) {
+          const sandVariation = randomAtTile(this.seed, cellX, cellY, 0x3a84f1c9);
+          candidates.push({
+            baseX: (cellX + 0.04 + randomAtTile(this.seed, cellX, cellY, 0x246f3b81) * 0.92) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
+            baseY: (cellY + 0.18 + randomAtTile(this.seed, cellX, cellY, 0x664da8c7) * 0.64) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
+            phase: randomAtTile(this.seed, cellX, cellY, 0x7a5237bd) * Math.PI * 2,
+            driftSpeed: 0.9 + sandVariation * 0.95,
+            size: 2.6 + sandVariation * 3.6,
+            color: sandVariation > 0.54 ? 0xf1cf83 : 0xc8914c,
+            kind: 'sand',
+            windStrength: 44 + sandVariation * 54,
+            priority: 0.55 + randomAtTile(this.seed, cellX, cellY, 0x5b6fd841) * 0.45
+          });
+        }
+
+        // Swamp spores complement low mist and fireflies with a subtle upward-drifting life layer.
+        if (biome === Biome.Swamp && variation > 0.46) {
+          const sporeVariation = randomAtTile(this.seed, cellX, cellY, 0x17d9a3e5);
+          candidates.push({
+            baseX: (cellX + 0.14 + randomAtTile(this.seed, cellX, cellY, 0x4f3d6657) * 0.72) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
+            baseY: (cellY + 0.06 + randomAtTile(this.seed, cellX, cellY, 0x2e8bc4d1) * 0.84) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
+            phase: randomAtTile(this.seed, cellX, cellY, 0x1d5ab743) * Math.PI * 2,
+            driftSpeed: 0.34 + sporeVariation * 0.5,
+            size: 1.7 + sporeVariation * 2.4,
+            color: sporeVariation > 0.56 ? 0xb8e584 : 0x83c889,
+            kind: 'spore',
+            windStrength: 11 + sporeVariation * 18,
+            priority: 0.45 + randomAtTile(this.seed, cellX, cellY, 0x6c318f59) * 0.42
+          });
+        }
       }
     }
 
@@ -135,6 +168,18 @@ export class AmbientParticleManager {
         graphics.fillEllipse(x, y, particle.size * 4.7, particle.size * 1.65);
         graphics.fillStyle(0xf3d99a, alpha * 0.3);
         graphics.fillCircle(x + particle.size * 1.1, y - 1, particle.size * 0.65);
+        break;
+      case 'sand':
+        graphics.fillEllipse(x, y, particle.size * 6.4, particle.size * 1.05);
+        graphics.lineStyle(0.9, 0xffdc8e, alpha * 0.82);
+        graphics.lineBetween(x - particle.size * 2.6, y + 0.8, x + particle.size * 3.1, y - 0.7);
+        graphics.fillStyle(0xf7d587, alpha * 0.42);
+        graphics.fillCircle(x + particle.size * 1.8, y - 1.4, particle.size * 0.48);
+        break;
+      case 'spore':
+        graphics.fillCircle(x, y, particle.size * 0.8);
+        graphics.fillStyle(0xe1ffc1, alpha * 0.5);
+        graphics.fillCircle(x + Math.sin(cycle) * particle.size, y - particle.size * 1.1, particle.size * 0.38);
         break;
       case 'snow':
         graphics.fillCircle(x, y, particle.size * 0.9);
@@ -176,7 +221,7 @@ export class AmbientParticleManager {
       case Biome.Plains:
         return variation > 0.62 ? 'leaf' : 'pollen';
       case Biome.Desert:
-        return 'dust';
+        return variation > 0.42 ? 'sand' : 'dust';
       case Biome.Swamp:
         return variation > 0.45 ? 'firefly' : 'mist';
       case Biome.Ocean:
@@ -200,8 +245,12 @@ export class AmbientParticleManager {
         return 0xf0df7a;
       case 'dust':
         return 0xd6b072;
+      case 'sand':
+        return variation > 0.5 ? 0xf1cf83 : 0xc8914c;
       case 'mist':
         return 0xa8dfdf;
+      case 'spore':
+        return variation > 0.5 ? 0xb8e584 : 0x83c889;
       case 'snow':
         return 0xe4fbff;
       case 'firefly':

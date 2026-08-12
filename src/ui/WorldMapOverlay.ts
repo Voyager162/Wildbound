@@ -122,8 +122,8 @@ const BIOME_ORDER: readonly Biome[] = [
 
 const MAX_RENDER_DEVICE_SCALE = 2;
 const MAX_CANVAS_PIXELS = 1_600_000;
-const MAX_ATLAS_PIXELS = 5_200_000;
-const ATLAS_VIEW_MULTIPLIER = 2.6;
+const MAX_ATLAS_PIXELS = 3_200_000;
+const ATLAS_VIEW_MULTIPLIER = 2.2;
 const MIN_VIEWPORT_SIZE = 48;
 const MAP_INNER_PADDING = 14;
 const MAX_REGION_INPUT = 60_000;
@@ -131,7 +131,7 @@ const MAX_LANDMARK_INPUT = 1_500;
 const MAX_ABSOLUTE_TILE_COORDINATE = 10_000_000;
 const MAX_REGION_SIZE_TILES = 4_096;
 const COLOR_CACHE_LIMIT = 360_000;
-const RENDER_TIME_BUDGET_MS = 3.5;
+const RENDER_TIME_BUDGET_MS = 1.5;
 // Fog-map pixels intentionally use the exact sampler used by the circular minimap.
 // This keeps the two map surfaces visually identical rather than introducing a second,
 // softer terrain-palette interpretation for the large chart.
@@ -351,6 +351,12 @@ export class WorldMapOverlay {
       this.renderedGeometry = viewGeometry;
       this.drawAtlasView(viewGeometry);
       this.drawAnnotations(viewGeometry, normalized);
+      return;
+    }
+
+    // AdventureScene supplies a current snapshot during its update loop. Never restart the same
+    // progressive atlas job from those updates or it can be cancelled before any frame completes.
+    if (this.renderJob?.request.contentSignature === normalized.contentSignature) {
       return;
     }
 
@@ -780,13 +786,15 @@ export class WorldMapOverlay {
 
   private terrainSampleStep(geometry: MapGeometry): number {
     const tilesPerRenderedPixel = geometry.tilesPerCssPixel / geometry.renderScale;
-    if (tilesPerRenderedPixel <= 0.7) {
+    // Close views spend the pixels needed for crisp detail; broad views deliberately sample in
+    // larger blocks because their terrain occupies too little screen space to benefit from it.
+    if (tilesPerRenderedPixel <= 0.2) {
       return 1;
     }
-    if (tilesPerRenderedPixel <= 1.8) {
+    if (tilesPerRenderedPixel <= 0.9) {
       return 2;
     }
-    if (tilesPerRenderedPixel <= 4) {
+    if (tilesPerRenderedPixel <= 2.6) {
       return 3;
     }
     return 4;
