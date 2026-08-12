@@ -33,8 +33,11 @@ export const AMBIENT_PARTICLE_MAX_COUNT = 140;
 // at creation, so rendering a much larger hidden animation buffer is unnecessary.
 export const AMBIENT_CHUNK_RADIUS_X = 2;
 export const AMBIENT_CHUNK_RADIUS_Y = 1;
-export const WATER_ANIMATION_UPDATE_INTERVAL_MS = 50;
-export const WATER_WAVES_PER_CHUNK = 24;
+// Water is redrawn at a smooth cadence, but only for the small camera-adjacent chunk buffer.
+export const WATER_ANIMATION_UPDATE_INTERVAL_MS = 33;
+// A mix of broad travelling bands and small ripple sources makes the current legible from a
+// distance without turning every visual terrain cell into a live object.
+export const WATER_WAVES_PER_CHUNK = 30;
 // The continuous terrain layer supplies field density; this smaller cap reserves animation work
 // for the most noticeable nearby tufts.
 export const AMBIENT_GRASS_TUFTS_PER_CHUNK = 32;

@@ -21,6 +21,9 @@ export interface TerrainSurface {
   color: number;
   isWater: boolean;
   isShallowWater: boolean;
+  // Swamp pools use the same continuous water palette, but deliberately have no ocean waves or
+  // animated shore foam.
+  isSwampWater: boolean;
   // Visual shoreline depth is continuous, unlike the exact water flag used for swimming.
   waterVisualAmount: number;
   elevation: number;
@@ -133,6 +136,7 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
   let color = regionalLandColor;
   let isWater = biome === Biome.Ocean;
   let isShallowWater = false;
+  let isSwampWater = false;
   let waterVisualAmount = 0;
 
   // Ocean is the only swim-water biome. Beaches retain the same continuous shore palette but
@@ -155,22 +159,23 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
     isWater = biome === Biome.Ocean;
     isShallowWater = isWater && climate.elevation > OCEAN_ELEVATION_MAX - 0.08;
   } else if (biome === Biome.Swamp && swampPool > 0.64) {
-    // Swamp pools are shallow swim-water; surrounding swamp ground remains walkable.
+    // Swamp pools are shallow swim-water; their color eases in over a broad noise range rather
+    // than flipping at the gameplay boundary.
     const poolAmount = smoothRange(0.64, 0.82, swampPool);
     color = blendColor(regionalLandColor, 0x367f8b, poolAmount);
+    isSwampWater = true;
     isWater = true;
     isShallowWater = true;
     waterVisualAmount = poolAmount;
   }
 
-  if (!isWater) {
-    // Fade ground-only shading as the shore becomes water so its discontinuity cannot form an
-    // accidental hard coastline where the swim-state boundary lies.
-    const rollingShade = ((topography.height - climate.elevation) * 0.35 + (topography.contour < 0.075 ? -0.07 : 0))
-      * (1 - waterVisualAmount);
-    color = shadeColor(color, rollingShade);
-
-  }
+  // Fade ground-only shading as the shore becomes water so its discontinuity cannot form an
+  // accidental hard coastline where the swim-state boundary lies. This intentionally runs on
+  // both sides of a swamp-pool threshold: the visual blend is continuous even when walkability
+  // changes at a tile sample.
+  const rollingShade = ((topography.height - climate.elevation) * 0.35 + (topography.contour < 0.075 ? -0.07 : 0))
+    * (1 - waterVisualAmount);
+  color = shadeColor(color, rollingShade);
 
   return {
     biome,
@@ -178,6 +183,7 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
     color: shadeColor(color, microVariation * 0.16),
     isWater,
     isShallowWater,
+    isSwampWater,
     waterVisualAmount,
     elevation: climate.elevation,
     moisture: climate.moisture,

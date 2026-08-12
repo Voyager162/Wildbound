@@ -11,7 +11,8 @@ import {
   GROUND_GRASS_BASE_HEIGHT_PIXELS,
   GROUND_GRASS_FREQUENCY_SCALE,
   GROUND_GRASS_HEIGHT_VARIATION_PIXELS,
-  GROUND_GRASS_SIZE_SCALE
+  GROUND_GRASS_SIZE_SCALE,
+  GROUND_GRASS_WIND_STRENGTH_PIXELS
 } from './worldVisualConfig';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 
@@ -132,39 +133,61 @@ export class WorldChunk {
 
     // The wave field is deterministic, but every crest travels at a slightly different speed.
     // Redrawing only nearby chunks gives water a visible directional current without touching
-    // the baked terrain texture or allocating sprites per tile.
+    // the baked terrain texture or allocating sprites per tile. Swamp samples never enter this
+    // list, keeping their pools calm while oceans have broad flow bands, ripples, and foam.
     this.waterWaves.forEach((wave) => {
       const cycle = seconds * wave.speed + wave.phase;
-      const currentX = Math.sin(cycle) * wave.amplitude + Math.cos(cycle * 0.42) * wave.amplitude * 0.56;
-      const currentY = Math.cos(cycle * 1.37) * 1.85 + Math.sin(cycle * 0.62) * 1.1;
+      const currentX = Math.sin(cycle) * wave.amplitude + Math.cos(cycle * 0.42) * wave.amplitude * 0.62;
+      const currentY = Math.cos(cycle * 1.37) * 2.45 + Math.sin(cycle * 0.62) * 1.45;
       const swell = (Math.sin(cycle * 1.8) + 1) * 0.5;
-      const crestAlpha = wave.alpha * (0.42 + swell * 0.42);
+      const crestAlpha = wave.alpha * (0.5 + swell * 0.46);
       const ribbonColor = wave.shoreAmount > 0.42 ? 0x8cdbda : 0x3b9fbd;
-      graphics.fillStyle(ribbonColor, crestAlpha * (0.22 + wave.shoreAmount * 0.18));
+      // A soft, wide band makes the whole water surface visibly drift before the fine crest
+      // lines become noticeable. The offset is intentionally stronger than the crest itself.
+      graphics.fillStyle(ribbonColor, crestAlpha * (0.42 + wave.shoreAmount * 0.2));
       graphics.fillEllipse(
         wave.worldX + wave.width * 0.5 + currentX,
-        wave.worldY + currentY + 0.4,
-        wave.width * (0.72 + swell * 0.16),
-        2.5 + swell * 2.1
+        wave.worldY + currentY + 0.7,
+        wave.width * (0.86 + swell * 0.2),
+        3.6 + swell * 2.8
       );
-      graphics.lineStyle(1.5, wave.shoreAmount > 0.34 ? 0xd5fbef : 0x9de9e7, crestAlpha);
+      graphics.fillStyle(0x1f7fad, crestAlpha * 0.22);
+      graphics.fillEllipse(
+        wave.worldX + wave.width * 0.48 + currentX * 1.25,
+        wave.worldY + currentY + 3.5,
+        wave.width * (0.75 + swell * 0.12),
+        2.1 + swell * 1.4
+      );
+      graphics.lineStyle(1.75, wave.shoreAmount > 0.34 ? 0xd5fbef : 0x9de9e7, crestAlpha);
       graphics.lineBetween(
         wave.worldX + currentX,
         wave.worldY + currentY,
-        wave.worldX + wave.width * (0.54 + swell * 0.12) + currentX,
-        wave.worldY + currentY - 0.55
+        wave.worldX + wave.width * (0.62 + swell * 0.14) + currentX,
+        wave.worldY + currentY - 0.8
       );
-      graphics.lineStyle(0.85, 0x78cfde, crestAlpha * 0.82);
+      graphics.lineStyle(1, 0x78cfde, crestAlpha * 0.88);
       graphics.lineBetween(
-        wave.worldX + wave.width * 0.65 + currentX,
-        wave.worldY + currentY + 1.25,
+        wave.worldX + wave.width * 0.59 + currentX,
+        wave.worldY + currentY + 1.65,
         wave.worldX + wave.width + currentX,
-        wave.worldY + currentY + 0.65
+        wave.worldY + currentY + 0.8
+      );
+
+      // Expanding elliptical rings make small, overlapping surface ripples obvious without a
+      // physics simulation. Each source has its own deterministic phase and speed.
+      const rippleCycle = (seconds * (0.42 + wave.speed * 0.16) + wave.phase * 0.19) % 1;
+      const rippleAlpha = wave.alpha * (1 - rippleCycle) * (0.36 + swell * 0.22);
+      graphics.lineStyle(0.85, wave.shoreAmount > 0.35 ? 0xdfffee : 0x92e4e8, rippleAlpha);
+      graphics.strokeEllipse(
+        wave.worldX + wave.width * 0.48 + currentX * 0.7,
+        wave.worldY + currentY - 0.4,
+        4 + rippleCycle * (9 + wave.shoreAmount * 6),
+        2.1 + rippleCycle * 5.2
       );
 
       if (wave.shoreAmount > 0.24) {
-        const foamAlpha = crestAlpha * (0.32 + wave.shoreAmount * 0.66);
-        graphics.lineStyle(1.1, 0xf2fff4, foamAlpha);
+        const foamAlpha = crestAlpha * (0.45 + wave.shoreAmount * 0.64);
+        graphics.lineStyle(1.45, 0xf2fff4, foamAlpha);
         graphics.lineBetween(
           wave.worldX + wave.width * 0.12 + currentX,
           wave.worldY + currentY - 2.2,
@@ -175,7 +198,7 @@ export class WorldChunk {
 
       if (swell > 0.9) {
         graphics.fillStyle(0xecffff, crestAlpha * 0.88);
-        graphics.fillCircle(wave.worldX + wave.width * 0.44 + currentX, wave.worldY + currentY - 1.5, 1.05);
+        graphics.fillCircle(wave.worldX + wave.width * 0.44 + currentX, wave.worldY + currentY - 1.5, 1.25);
       }
     });
   }
@@ -190,8 +213,11 @@ export class WorldChunk {
     graphics.clear();
 
     this.ambientGrassTufts.forEach((tuft) => {
-      const wind = Math.sin(timeSeconds * 1.65 + tuft.phase) * 4.5
-        + Math.sin(timeSeconds * 2.8 + tuft.phase * 0.47) * 1.35;
+      // Layered gusts are deliberately pronounced: this cover should read as a moving field,
+      // not a static texture with an occasional twitch.
+      const wind = (Math.sin(timeSeconds * 1.65 + tuft.phase) * 0.74
+        + Math.sin(timeSeconds * 2.8 + tuft.phase * 0.47) * 0.26)
+        * GROUND_GRASS_WIND_STRENGTH_PIXELS;
       graphics.lineStyle(1.25, this.shadeColor(tuft.color, -0.34), 0.64);
       graphics.lineBetween(tuft.worldX - 5, tuft.worldY + 4, tuft.worldX - 5 + wind * 0.34, tuft.worldY - tuft.height * 0.58);
       graphics.lineBetween(tuft.worldX - 2.6, tuft.worldY + 4, tuft.worldX - 2.6 + wind * 0.52, tuft.worldY - tuft.height * 0.84);
@@ -324,20 +350,24 @@ export class WorldChunk {
             context.fillRect(cellX, cellY, VISUAL_TERRAIN_CELL_SIZE, VISUAL_TERRAIN_CELL_SIZE);
             this.drawTerrainDetail(context, surface, variation, cellX, cellY);
 
-            if (surface.waterVisualAmount > 0.08) {
+            if (surface.waterVisualAmount > 0.08 && !surface.isSwampWater) {
               this.hasWater = true;
-              if (variation > 0.963 + surface.waterVisualAmount * 0.008) {
+              if (variation > 0.942 + surface.waterVisualAmount * 0.014) {
+                const shoreAmount = 1 - surface.waterVisualAmount;
                 waveCandidates.push({
                   worldX: worldX + cellX + 1,
                   worldY: worldY + cellY + 4,
-                  width: 7 + Math.floor(randomAtTile(this.seed, worldTileX, worldTileY, 0x443aec01) * 13),
+                  width: 12 + Math.floor(randomAtTile(this.seed, worldTileX, worldTileY, 0x443aec01) * 24),
                   phase: randomAtTile(this.seed, worldTileX * VISUAL_CELLS_PER_TILE + visualX, worldTileY * VISUAL_CELLS_PER_TILE + visualY, 0xc353c5f9) * Math.PI * 2,
-                  speed: 0.85 + randomAtTile(this.seed, worldTileX, worldTileY, 0x1e3e7655) * 1.25,
-                  alpha: (0.22 + randomAtTile(this.seed, worldTileX, worldTileY, 0x6f1620d3) * 0.36)
-                    * (0.32 + surface.waterVisualAmount * 0.68),
-                  amplitude: 2.8 + randomAtTile(this.seed, worldTileX, worldTileY, 0x9a0372c7) * 5.4,
-                  shoreAmount: 1 - surface.waterVisualAmount,
+                  speed: 0.92 + randomAtTile(this.seed, worldTileX, worldTileY, 0x1e3e7655) * 1.38,
+                  alpha: (0.3 + randomAtTile(this.seed, worldTileX, worldTileY, 0x6f1620d3) * 0.38)
+                    * (0.5 + surface.waterVisualAmount * 0.5),
+                  amplitude: 4.2 + randomAtTile(this.seed, worldTileX, worldTileY, 0x9a0372c7) * 7.2,
+                  shoreAmount,
+                  // Retain broad ocean currents, but reserve enough candidates for visibly
+                  // animated foam along a coast.
                   priority: randomAtTile(this.seed, worldTileX * VISUAL_CELLS_PER_TILE + visualX, worldTileY * VISUAL_CELLS_PER_TILE + visualY, 0xf5e91d3b)
+                    + shoreAmount * 0.42
                 });
               }
             }
@@ -476,7 +506,9 @@ export class WorldChunk {
   }
 
   private groundGrassDensity(surface: TerrainSurface): number {
-    if (surface.isWater) {
+    // Grass thins out through the visual water blend instead of disappearing on the exact swamp
+    // swim-state threshold. This prevents a tile-sized dark/green edge around calm pools.
+    if (surface.waterVisualAmount > 0.24) {
       return 0;
     }
 
@@ -499,7 +531,8 @@ export class WorldChunk {
       * (1 - smooth(0.59, 0.77, surface.temperature))
       * (1 - smooth(0.59, 0.8, surface.elevation))
       * (1 - smooth(0.1, 0.26, surface.temperature));
-    return Math.min(0.96, (0.28 + climateCoverage * 0.72) * biomeDensity * GROUND_GRASS_FREQUENCY_SCALE);
+    const shoreFade = 1 - smooth(0.02, 0.24, surface.waterVisualAmount);
+    return Math.min(0.96, (0.28 + climateCoverage * 0.72) * biomeDensity * shoreFade * GROUND_GRASS_FREQUENCY_SCALE);
   }
 
   private groundGrassClumpCount(density: number, placement: number): number {
