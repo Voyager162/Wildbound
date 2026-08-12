@@ -4,7 +4,8 @@ import {
   AMBIENT_CHUNK_RADIUS_X,
   AMBIENT_CHUNK_RADIUS_Y,
   AMBIENT_PARTICLE_UPDATE_INTERVAL_MS,
-  AMBIENT_SWAY_UPDATE_INTERVAL_MS
+  AMBIENT_SWAY_UPDATE_INTERVAL_MS,
+  WATER_ANIMATION_UPDATE_INTERVAL_MS
 } from './explorationConfig';
 import { LandmarkManager } from './LandmarkManager';
 import { sampleTopography, type TopographySample } from './generation/topographyGenerator';
@@ -68,12 +69,19 @@ export class ChunkManager {
   }
 
   updateWaterAnimation(time: number): void {
-    if (time - this.lastWaterAnimationTime < 50) {
+    if (time - this.lastWaterAnimationTime < WATER_ANIMATION_UPDATE_INTERVAL_MS) {
       return;
     }
 
     this.lastWaterAnimationTime = time;
-    this.chunks.forEach((chunk) => chunk.updateWaterAnimation(time));
+    this.chunks.forEach((chunk) => {
+      if (
+        Math.abs(chunk.x - this.activeChunkX) <= AMBIENT_CHUNK_RADIUS_X
+        && Math.abs(chunk.y - this.activeChunkY) <= AMBIENT_CHUNK_RADIUS_Y
+      ) {
+        chunk.updateWaterAnimation(time);
+      }
+    });
   }
 
   updateAmbient(time: number, playerWorldX: number, playerWorldY: number): void {

@@ -1,4 +1,5 @@
-import { BIOME_COLORS, biomeAtTile, Biome } from '../world/generation/biomeGenerator';
+import { BIOME_COLORS, Biome } from '../world/generation/biomeGenerator';
+import { surfaceAtTile } from '../world/generation/terrainGenerator';
 
 /**
  * A permanently revealed, square world-space area. `tileX` and `tileY` are the
@@ -48,7 +49,7 @@ interface MapGeometry extends CanvasDimensions {
   tilesPerCssPixel: number;
 }
 
-interface BiomeSample {
+interface TerrainMapSample {
   biome: Biome;
   color: string;
 }
@@ -111,8 +112,11 @@ const MAX_REGION_INPUT = 60_000;
 const MAX_LANDMARK_INPUT = 1_500;
 const MAX_ABSOLUTE_TILE_COORDINATE = 10_000_000;
 const MAX_REGION_SIZE_TILES = 4_096;
-const COLOR_CACHE_LIMIT = 36_000;
+const COLOR_CACHE_LIMIT = 90_000;
 const RENDER_TIME_BUDGET_MS = 3.5;
+// Samples use the exact continuous terrain palette from world chunks rather than a
+// single biome swatch for each fog-of-war region.
+const TERRAIN_SAMPLE_STEP_PIXELS = 2;
 const MAX_LANDMARK_LABELS = 16;
 const MAX_LANDMARK_LABEL_LENGTH = 32;
 const DEFAULT_LANDMARK_COLOR = 0xf6ca63;
@@ -159,7 +163,7 @@ export class WorldMapOverlay {
   private readonly status: HTMLSpanElement;
   private readonly legendList: HTMLUListElement;
   private readonly resizeObserver: ResizeObserver | null;
-  private readonly colorCache = new Map<string, BiomeSample>();
+  private readonly colorCache = new Map<string, TerrainMapSample>();
 
   private open = false;
   private destroyed = false;
@@ -453,6 +457,7 @@ export class WorldMapOverlay {
 
     this.emptyState.classList.remove('is-visible');
     this.drawMapBackground(geometry);
+    this.terrainContext.setTransform(geometry.renderScale, 0, 0, geometry.renderScale, 0, 0);
     this.renderJob = {
       request,
       geometry,
@@ -535,6 +540,7 @@ export class WorldMapOverlay {
     }
 
     this.renderJob = null;
+    this.terrainContext.setTransform(1, 0, 0, 1, 0, 0);
     const latest = this.latestRequest;
     if (!latest || latest.contentSignature !== job.request.contentSignature || !this.open) {
       this.startRenderJob();
@@ -553,9 +559,6 @@ export class WorldMapOverlay {
     region: ExploredMapRegion,
     discoveredBiomes: Set<Biome>
   ): void {
-    const sample = this.biomeSampleAt(seed, region.tileX + region.sizeTiles / 2, region.tileY + region.sizeTiles / 2);
-    discoveredBiomes.add(sample.biome);
-
     const projected = this.projectRegion(geometry, region);
     const left = Math.floor(clamp(projected.left, geometry.left, geometry.left + geometry.width));
     const top = Math.floor(clamp(projected.top, geometry.top, geometry.top + geometry.height));
@@ -566,21 +569,32 @@ export class WorldMapOverlay {
     }
 
     const context = this.terrainContext;
-    context.fillStyle = sample.color;
-    context.fillRect(left, top, right - left, bottom - top);
+    // Exploration is stored as compact regions, but revealed terrain itself is painted from
+    // dense deterministic surface samples. The world map therefore shows the same soft
+    // shoreline and climate transitions as the terrain under the player.
+    for (let y = top; y < bottom; y += TERRAIN_SAMPLE_STEP_PIXELS) {
+      for (let x = left; x < right; x += TERRAIN_SAMPLE_STEP_PIXELS) {
+        const tileX = geometry.minTileX + (x + TERRAIN_SAMPLE_STEP_PIXELS * 0.5 - geometry.left) * geometry.tilesPerCssPixel;
+        const tileY = geometry.minTileY + (y + TERRAIN_SAMPLE_STEP_PIXELS * 0.5 - geometry.top) * geometry.tilesPerCssPixel;
+        const sample = this.terrainSampleAt(seed, tileX, tileY);
+        discoveredBiomes.add(sample.biome);
+        context.fillStyle = sample.color;
+        context.fillRect(x, y, Math.min(TERRAIN_SAMPLE_STEP_PIXELS, right - x), Math.min(TERRAIN_SAMPLE_STEP_PIXELS, bottom - y));
+      }
+    }
   }
 
-  private biomeSampleAt(seed: string, tileX: number, tileY: number): BiomeSample {
-    const sampleTileX = Math.round(tileX);
-    const sampleTileY = Math.round(tileY);
+  private terrainSampleAt(seed: string, tileX: number, tileY: number): TerrainMapSample {
+    const sampleTileX = Math.round(tileX * 2) / 2;
+    const sampleTileY = Math.round(tileY * 2) / 2;
     const key = `${seed}:${sampleTileX},${sampleTileY}`;
     const cached = this.colorCache.get(key);
     if (cached) {
       return cached;
     }
 
-    const biome = biomeAtTile(seed, sampleTileX, sampleTileY);
-    const sample = { biome, color: toColor(BIOME_COLORS[biome]) };
+    const surface = surfaceAtTile(seed, sampleTileX, sampleTileY);
+    const sample = { biome: surface.biome, color: toColor(surface.color) };
     if (this.colorCache.size >= COLOR_CACHE_LIMIT) {
       this.colorCache.clear();
     }

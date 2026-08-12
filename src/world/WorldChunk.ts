@@ -5,6 +5,7 @@ import { TOPOGRAPHY_GENERATION_VERSION } from './generation/topographyGenerator'
 import { randomAtTile } from './generation/noise';
 import { surfaceAtTile, type TerrainSurface } from './generation/terrainGenerator';
 import { SessionWorldState } from './SessionWorldState';
+import { WATER_WAVES_PER_CHUNK } from './explorationConfig';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 
 // Terrain is baked into one texture per chunk. The 8px visual cells retain detail while
@@ -14,10 +15,14 @@ const VISUAL_CELLS_PER_TILE = WORLD_TILE_SIZE / VISUAL_TERRAIN_CELL_SIZE;
 const FEATURE_TEXTURE_PADDING = 128;
 const FEATURE_TEXTURE_SIZE = CHUNK_SIZE_PIXELS + FEATURE_TEXTURE_PADDING * 2;
 
-interface WaterRipple {
+interface WaterWave {
   worldX: number;
   worldY: number;
   width: number;
+  phase: number;
+  speed: number;
+  alpha: number;
+  amplitude: number;
 }
 
 interface AmbientGrassTuft {
@@ -40,6 +45,7 @@ export class WorldChunk {
   private readonly featureGraphics: Phaser.GameObjects.Graphics;
   private readonly features: TerrainFeature[];
   private readonly ambientGrassTufts: AmbientGrassTuft[];
+  private readonly waterWaves: WaterWave[] = [];
   private hasWater = false;
   private hasAmbientMotion = false;
   private harvestingTileKey: string | null = null;
@@ -109,9 +115,38 @@ export class WorldChunk {
       return;
     }
 
-    const phase = time / 1000 + this.x * 0.73 + this.y * 0.41;
-    this.waterGraphics.setAlpha(0.42 + (Math.sin(phase * 1.9) + 1) * 0.15);
-    this.waterGraphics.setPosition(Math.sin(phase * 1.3) * 1.4, Math.cos(phase * 1.1) * 0.8);
+    const seconds = time / 1000;
+    const graphics = this.waterGraphics;
+    graphics.clear();
+
+    // The wave field is deterministic, but every crest travels at a slightly different speed.
+    // Redrawing only nearby chunks gives water a visible directional current without touching
+    // the baked terrain texture or allocating sprites per tile.
+    this.waterWaves.forEach((wave) => {
+      const cycle = seconds * wave.speed + wave.phase;
+      const offsetX = Math.sin(cycle) * wave.amplitude;
+      const offsetY = Math.cos(cycle * 1.37) * 1.6;
+      const crestAlpha = wave.alpha * (0.52 + (Math.sin(cycle * 1.8) + 1) * 0.27);
+      graphics.lineStyle(1.45, 0xc6f5f4, crestAlpha);
+      graphics.lineBetween(
+        wave.worldX + offsetX,
+        wave.worldY + offsetY,
+        wave.worldX + wave.width * 0.58 + offsetX,
+        wave.worldY + offsetY - 0.45
+      );
+      graphics.lineStyle(0.8, 0x78cfde, crestAlpha * 0.72);
+      graphics.lineBetween(
+        wave.worldX + wave.width * 0.68 + offsetX,
+        wave.worldY + offsetY + 1.2,
+        wave.worldX + wave.width + offsetX,
+        wave.worldY + offsetY + 0.7
+      );
+
+      if (Math.sin(cycle * 1.8) > 0.78) {
+        graphics.fillStyle(0xecffff, crestAlpha * 0.9);
+        graphics.fillCircle(wave.worldX + wave.width * 0.44 + offsetX, wave.worldY + offsetY - 1.5, 1.05);
+      }
+    });
   }
 
   updateAmbient(time: number): void {
@@ -124,12 +159,14 @@ export class WorldChunk {
     graphics.clear();
 
     this.ambientGrassTufts.forEach((tuft) => {
-      const wind = Math.sin(timeSeconds * 1.45 + tuft.phase) * 3.1;
-      graphics.lineStyle(1.2, tuft.color, 0.42);
-      graphics.lineBetween(tuft.worldX - 3, tuft.worldY + 4, tuft.worldX - 2 + wind * 0.45, tuft.worldY - tuft.height);
-      graphics.lineBetween(tuft.worldX, tuft.worldY + 4, tuft.worldX + wind * 0.72, tuft.worldY - tuft.height - 3);
-      graphics.lineStyle(0.9, 0xd5e996, 0.26);
-      graphics.lineBetween(tuft.worldX + 3, tuft.worldY + 4, tuft.worldX + 3 + wind, tuft.worldY - tuft.height * 0.72);
+      const wind = Math.sin(timeSeconds * 1.35 + tuft.phase) * 3.9 + Math.sin(timeSeconds * 2.1 + tuft.phase * 0.47) * 1.1;
+      graphics.lineStyle(1.25, this.shadeColor(tuft.color, -0.3), 0.58);
+      graphics.lineBetween(tuft.worldX - 4, tuft.worldY + 4, tuft.worldX - 4 + wind * 0.38, tuft.worldY - tuft.height * 0.62);
+      graphics.lineBetween(tuft.worldX - 1.4, tuft.worldY + 4, tuft.worldX - 1.4 + wind * 0.62, tuft.worldY - tuft.height);
+      graphics.lineStyle(1.1, tuft.color, 0.68);
+      graphics.lineBetween(tuft.worldX + 1.3, tuft.worldY + 4, tuft.worldX + 1.3 + wind * 0.85, tuft.worldY - tuft.height * 1.12);
+      graphics.lineStyle(0.85, 0xd9efa0, 0.48);
+      graphics.lineBetween(tuft.worldX + 4, tuft.worldY + 4, tuft.worldX + 4 + wind, tuft.worldY - tuft.height * 0.68);
     });
 
     this.features.forEach((feature) => {
@@ -145,18 +182,20 @@ export class WorldChunk {
       const wind = Math.sin(timeSeconds * 1.12 + phase);
 
       if (feature.type === TerrainFeatureType.Tree) {
-        const shimmerX = wind * 4.6;
-        graphics.fillStyle(0x91c75d, 0.10);
-        graphics.fillCircle(centerX + 29 + shimmerX, centerY - 34, 10);
-        graphics.fillStyle(0xd6e787, 0.08);
-        graphics.fillCircle(centerX - 23 + shimmerX * 0.72, centerY - 43, 7);
-        graphics.lineStyle(1.2, 0x7fb456, 0.28);
+        const shimmerX = wind * 6.4;
+        graphics.fillStyle(0x9dd464, 0.16);
+        graphics.fillCircle(centerX + 29 + shimmerX, centerY - 34, 11);
+        graphics.fillCircle(centerX - 8 + shimmerX * 0.63, centerY - 56, 8);
+        graphics.fillStyle(0xe4f09a, 0.12);
+        graphics.fillCircle(centerX - 23 + shimmerX * 0.72, centerY - 43, 8);
+        graphics.lineStyle(1.45, 0x7fb456, 0.4);
         graphics.lineBetween(centerX + 11, centerY - 7, centerX + 20 + shimmerX, centerY - 24);
+        graphics.lineBetween(centerX - 6, centerY - 3, centerX - 13 + shimmerX * 0.62, centerY - 31);
       } else if (feature.type === TerrainFeatureType.Reeds || feature.type === TerrainFeatureType.Grass) {
-        const height = feature.type === TerrainFeatureType.Reeds ? 41 : 24;
+        const height = feature.type === TerrainFeatureType.Reeds ? 43 : 29;
         const color = feature.type === TerrainFeatureType.Reeds ? 0xa6bd67 : 0xb9de73;
         graphics.lineStyle(1.5, color, 0.42);
-        [-9, -2, 6].forEach((offset, index) => {
+        [-12, -6, -1, 5, 10].forEach((offset, index) => {
           const bend = wind * (3 + index) + index * 1.4;
           graphics.lineBetween(centerX + offset, centerY + 13, centerX + offset + bend, centerY + 13 - height + index * 3);
         });
@@ -209,7 +248,7 @@ export class WorldChunk {
     const context = texture.getContext();
     const worldX = this.x * CHUNK_SIZE_PIXELS;
     const worldY = this.y * CHUNK_SIZE_PIXELS;
-    const ripples: WaterRipple[] = [];
+    const waveCandidates: Array<WaterWave & { priority: number }> = [];
 
     for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
@@ -237,13 +276,16 @@ export class WorldChunk {
 
             if (surface.isWater) {
               this.hasWater = true;
-              // A small capped set keeps animated glints inexpensive even when every loaded
-              // chunk is ocean, while the baked terrain still provides the dense water detail.
-              if (variation > 0.987 && ripples.length < 18) {
-                ripples.push({
+              if (variation > 0.968) {
+                waveCandidates.push({
                   worldX: worldX + cellX + 1,
                   worldY: worldY + cellY + 4,
-                  width: 3 + Math.floor(variation * 5)
+                  width: 7 + Math.floor(randomAtTile(this.seed, worldTileX, worldTileY, 0x443aec01) * 13),
+                  phase: randomAtTile(this.seed, worldTileX * VISUAL_CELLS_PER_TILE + visualX, worldTileY * VISUAL_CELLS_PER_TILE + visualY, 0xc353c5f9) * Math.PI * 2,
+                  speed: 0.85 + randomAtTile(this.seed, worldTileX, worldTileY, 0x1e3e7655) * 1.25,
+                  alpha: 0.26 + randomAtTile(this.seed, worldTileX, worldTileY, 0x6f1620d3) * 0.32,
+                  amplitude: 2.4 + randomAtTile(this.seed, worldTileX, worldTileY, 0x9a0372c7) * 4.6,
+                  priority: randomAtTile(this.seed, worldTileX * VISUAL_CELLS_PER_TILE + visualX, worldTileY * VISUAL_CELLS_PER_TILE + visualY, 0xf5e91d3b)
                 });
               }
             }
@@ -254,11 +296,11 @@ export class WorldChunk {
 
     texture.refresh();
 
-    this.waterGraphics.clear();
-    if (ripples.length > 0) {
-      this.waterGraphics.lineStyle(1.5, 0xd8fbff, 0.72);
-      ripples.forEach((ripple) => this.waterGraphics.lineBetween(ripple.worldX, ripple.worldY, ripple.worldX + ripple.width, ripple.worldY));
-    }
+    waveCandidates
+      .sort((first, second) => second.priority - first.priority)
+      .slice(0, WATER_WAVES_PER_CHUNK)
+      .forEach(({ priority: _priority, ...wave }) => this.waterWaves.push(wave));
+    this.updateWaterAnimation(0);
   }
 
   private drawTerrainDetail(
@@ -269,6 +311,14 @@ export class WorldChunk {
     cellY: number
   ): void {
     if (surface.isWater) {
+      // Baked undertones give deep water volume; the separate wave layer above supplies motion.
+      if (variation > 0.78) {
+        context.fillStyle = surface.isShallowWater ? 'rgba(203, 246, 232, 0.32)' : 'rgba(137, 214, 229, 0.28)';
+        context.fillRect(cellX + 1, cellY + 3, 5, 1);
+      } else if (variation < 0.12) {
+        context.fillStyle = 'rgba(13, 72, 116, 0.24)';
+        context.fillRect(cellX, cellY + 6, 7, 1);
+      }
       return;
     }
 
@@ -397,6 +447,11 @@ export class WorldChunk {
         graphics.fillRoundedRect(centerX - 9 * scale, centerY - 4, 18 * scale, 49 * scale, 5 * scale);
         graphics.fillStyle(0x8c5932, 1);
         graphics.fillRoundedRect(centerX - 3 * scale, centerY - 3, 6 * scale, 45 * scale, 3 * scale);
+        graphics.lineStyle(1.35 * scale, 0xc28a4d, 0.5);
+        [-4, 3, 10, 18, 27].forEach((offset) => graphics.lineBetween(
+          centerX - 5 * scale, centerY + offset * scale,
+          centerX + 5 * scale, centerY + (offset - 2) * scale
+        ));
         graphics.lineStyle(3 * scale, 0x3a2418, 0.9);
         graphics.lineBetween(centerX - 2 * scale, centerY + 16, centerX - 23 * scale * mirror, centerY + 36 * scale);
         graphics.lineBetween(centerX + 3 * scale, centerY + 20, centerX + 24 * scale * mirror, centerY + 37 * scale);
@@ -415,6 +470,15 @@ export class WorldChunk {
         graphics.fillCircle(centerX - 18 * scale, centerY - 39 * scale, canopy * 0.27);
         graphics.fillCircle(centerX + 15 * scale, centerY - 46 * scale, canopy * 0.22);
         graphics.fillCircle(centerX + 31 * scale, centerY - 16 * scale, canopy * 0.2);
+        graphics.fillStyle(0xb7dc70, 0.62);
+        graphics.fillCircle(centerX - 34 * scale, centerY - 30 * scale, canopy * 0.13);
+        graphics.fillCircle(centerX + 5 * scale, centerY - 66 * scale, canopy * 0.14);
+        graphics.fillStyle(0x27502d, 0.78);
+        [-13, 0, 12].forEach((offset, index) => graphics.fillCircle(
+          centerX + offset * scale,
+          centerY + (26 + (index % 2) * 3) * scale,
+          3.2 * scale
+        ));
         break;
       }
       case TerrainFeatureType.Cactus: {
@@ -429,6 +493,11 @@ export class WorldChunk {
         graphics.fillRoundedRect(centerX + 24 * scale * mirror, centerY - 20 * scale, 12 * scale, 34 * scale, 5 * scale);
         graphics.lineStyle(2 * scale, 0x93bd62, 0.86);
         [-5, 0, 5].forEach((offset) => graphics.lineBetween(centerX + offset * scale, centerY - 36 * scale, centerX + offset * scale, centerY + 20 * scale));
+        graphics.lineStyle(0.75 * scale, 0xe6d69a, 0.74);
+        [-7, -2, 3, 8].forEach((offset) => {
+          graphics.lineBetween(centerX + offset * scale, centerY - 26 * scale, centerX + (offset + 1.4 * mirror) * scale, centerY - 23 * scale);
+          graphics.lineBetween(centerX + offset * scale, centerY - 4 * scale, centerX + (offset - 1.2 * mirror) * scale, centerY - 1 * scale);
+        });
         graphics.fillStyle(0xf0bd5f, 0.96);
         graphics.fillCircle(centerX, centerY - 44 * scale, 4 * scale);
         graphics.fillCircle(centerX - 29 * scale * mirror, centerY - 37 * scale, 3 * scale);
@@ -449,6 +518,10 @@ export class WorldChunk {
         graphics.lineBetween(centerX + 20 * scale, centerY - 1 * scale, centerX + 31 * scale, centerY + 16 * scale);
         graphics.fillStyle(0x6f8d59, 0.72);
         graphics.fillEllipse(centerX - 27 * scale, centerY + 10 * scale, 14 * scale, 6 * scale);
+        graphics.fillStyle(0xb5c088, 0.42);
+        graphics.fillTriangle(centerX - 27 * scale, centerY - 14 * scale, centerX - 18 * scale, centerY - 24 * scale, centerX - 14 * scale, centerY - 11 * scale);
+        graphics.lineStyle(1.2 * scale, 0x9fac91, 0.45);
+        graphics.lineBetween(centerX - 31 * scale, centerY + 6 * scale, centerX - 18 * scale, centerY + 9 * scale);
         break;
       }
       case TerrainFeatureType.Reeds: {
@@ -468,6 +541,11 @@ export class WorldChunk {
         });
         graphics.fillStyle(0x9f7e43, 1);
         [-27, -5, 19, 40].forEach((offset, index) => graphics.fillRoundedRect(centerX + offset * scale - 3, centerY - (43 + (index % 2) * 8) * scale, 6 * scale, 15 * scale, 3 * scale));
+        graphics.lineStyle(1.15 * scale, 0xb8d377, 0.65);
+        [-33, -18, -1, 17, 34].forEach((offset, index) => graphics.lineBetween(
+          centerX + offset * scale, centerY + 17 * scale,
+          centerX + (offset + (index - 2) * 4 * mirror) * scale, centerY - (24 + (index % 3) * 8) * scale
+        ));
         break;
       }
       case TerrainFeatureType.SnowyRock: {
@@ -481,6 +559,9 @@ export class WorldChunk {
         graphics.fillTriangle(centerX + 6 * scale, centerY - 16 * scale, centerX + 22 * scale, centerY - 17 * scale, centerX + 36 * scale, centerY + 1 * scale);
         graphics.lineStyle(2 * scale, 0x3f4a53, 0.86);
         graphics.lineBetween(centerX + 2 * scale, centerY - 18 * scale, centerX - 7 * scale, centerY + 17 * scale);
+        graphics.fillStyle(0xb7d9df, 0.62);
+        graphics.fillCircle(centerX - 25 * scale, centerY - 4 * scale, 3 * scale);
+        graphics.fillCircle(centerX + 24 * scale, centerY + 4 * scale, 2.5 * scale);
         break;
       }
       case TerrainFeatureType.Grass: {
@@ -493,6 +574,8 @@ export class WorldChunk {
         });
         graphics.lineStyle(1.4 * scale, 0xb6d66d, 0.9);
         [-14, 2, 17].forEach((offset, index) => graphics.lineBetween(centerX + offset * scale, centerY + 11 * scale, centerX + (offset + 4 * mirror) * scale, centerY - (28 + index * 4) * scale));
+        graphics.fillStyle(0xe7d95f, 0.88);
+        [-12, 6, 20].forEach((offset, index) => graphics.fillCircle(centerX + offset * scale, centerY - (20 + index * 5) * scale, 2.2 * scale));
         break;
       }
       case TerrainFeatureType.IcePatch: {
@@ -508,6 +591,9 @@ export class WorldChunk {
         graphics.lineBetween(centerX - 2 * scale, centerY + 5 * scale, centerX + 27 * scale, centerY - 16 * scale);
         graphics.lineBetween(centerX - 2 * scale, centerY + 5 * scale, centerX + 15 * scale, centerY + 22 * scale);
         graphics.lineBetween(centerX - 16 * scale, centerY + 19 * scale, centerX - 2 * scale, centerY + 5 * scale);
+        graphics.lineStyle(1.1 * scale, 0xbceff4, 0.72);
+        graphics.lineBetween(centerX - 41 * scale, centerY + 6 * scale, centerX - 15 * scale, centerY + 12 * scale);
+        graphics.lineBetween(centerX + 11 * scale, centerY - 18 * scale, centerX + 37 * scale, centerY - 3 * scale);
         break;
       }
     }
@@ -524,11 +610,11 @@ export class WorldChunk {
         const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
         const worldTileY = this.y * CHUNK_SIZE_TILES + localY;
         const variation = randomAtTile(this.seed, worldTileX, worldTileY, 0x2b8316d9);
-        if (variation < 0.945) {
+        const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
+        const density = surface.biome === Biome.Plains ? 0.66 : surface.biome === Biome.Forest ? 0.76 : 0.84;
+        if (variation < density) {
           continue;
         }
-
-        const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
         if (surface.isWater || (surface.biome !== Biome.Plains && surface.biome !== Biome.Forest && surface.biome !== Biome.Swamp)) {
           continue;
         }
