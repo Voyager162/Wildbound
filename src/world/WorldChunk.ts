@@ -478,15 +478,16 @@ export class WorldChunk {
 
         for (let clump = 0; clump < clumpCount; clump += 1) {
           const offsetX = 4 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7 + clump) * 24;
-          // Taller than the old ground cover, but clearly below the 40px harvestable grass.
-          const height = 15 + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37 + clump) * 11;
-          const lean = (randomAtTile(this.seed, worldTileX, worldTileY, 0x7959e2d1 + clump) - 0.5) * 9;
+          // A pronounced 25–34px field layer reads clearly in motion but remains below the
+          // 40px harvestable clumps, preserving a reliable visual interaction cue.
+          const height = 25 + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37 + clump) * 9;
+          const lean = (randomAtTile(this.seed, worldTileX, worldTileY, 0x7959e2d1 + clump) - 0.5) * 11;
           const rootX = baseX + offsetX;
           const rootY = baseY + 27;
-          graphics.lineStyle(1.9, shadow, 0.76);
+          graphics.lineStyle(2.15, shadow, 0.8);
           graphics.lineBetween(rootX - 2.5, rootY, rootX - 3 + lean * 0.45, rootY - height * 0.64);
           graphics.lineBetween(rootX + 1.5, rootY, rootX + 1.5 + lean * 0.74, rootY - height);
-          graphics.lineStyle(1.25, midtone, 0.86);
+          graphics.lineStyle(1.45, midtone, 0.9);
           graphics.lineBetween(rootX + 4, rootY, rootX + 4 + lean, rootY - height * 0.78);
           graphics.lineStyle(0.75, highlight, 0.64);
           graphics.lineBetween(rootX, rootY - 1, rootX + lean * 0.3, rootY - height * 0.92);

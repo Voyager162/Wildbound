@@ -38,7 +38,7 @@ body {
   z-index: 20;
   pointer-events: none;
   mix-blend-mode: multiply;
-  transition: background 280ms linear;
+  background: transparent;
 }
 
 .debug-overlay {

@@ -1,4 +1,4 @@
-import { BIOME_COLORS, Biome, biomeAtTile, minimapColorAtTile } from '../world/generation/biomeGenerator';
+import { BIOME_COLORS, Biome, biomeAtTile } from '../world/generation/biomeGenerator';
 
 /**
  * A permanently revealed, square world-space area. `tileX` and `tileY` are the
@@ -122,22 +122,24 @@ const BIOME_ORDER: readonly Biome[] = [
 
 const MAX_RENDER_DEVICE_SCALE = 2;
 const MAX_CANVAS_PIXELS = 1_600_000;
-const MAX_ATLAS_PIXELS = 3_200_000;
-const ATLAS_VIEW_MULTIPLIER = 2.2;
+const MAX_ATLAS_PIXELS = 4_200_000;
+const ATLAS_VIEW_MULTIPLIER = 1.7;
 const MIN_VIEWPORT_SIZE = 48;
 const MAP_INNER_PADDING = 14;
 const MAX_REGION_INPUT = 60_000;
 const MAX_LANDMARK_INPUT = 1_500;
 const MAX_ABSOLUTE_TILE_COORDINATE = 10_000_000;
 const MAX_REGION_SIZE_TILES = 4_096;
-const COLOR_CACHE_LIMIT = 360_000;
-const RENDER_TIME_BUDGET_MS = 1.5;
+const RENDER_TIME_BUDGET_MS = 4;
+const INTERACTION_RENDER_DELAY_MS = 140;
 // Fog-map pixels intentionally use the exact sampler used by the circular minimap.
 // This keeps the two map surfaces visually identical rather than introducing a second,
 // softer terrain-palette interpretation for the large chart.
 const TERRAIN_SAMPLE_STEP_PIXELS = 1;
 const DEFAULT_TILES_PER_CSS_PIXEL = 1;
-const MIN_TILES_PER_CSS_PIXEL = 0.08;
+// The chart stays at a useful tile scale; this lets the high-resolution atlas remain sharp
+// without attempting to turn the map into a costly close-up terrain renderer.
+const MIN_TILES_PER_CSS_PIXEL = 0.45;
 const MAX_TILES_PER_CSS_PIXEL = 8;
 const MAX_LANDMARK_LABELS = 16;
 const MAX_LANDMARK_LABEL_LENGTH = 32;
@@ -189,7 +191,6 @@ export class WorldMapOverlay {
   private readonly status: HTMLSpanElement;
   private readonly legendList: HTMLUListElement;
   private readonly resizeObserver: ResizeObserver | null;
-  private readonly colorCache = new Map<string, TerrainMapSample>();
   private renderContext!: CanvasRenderingContext2D;
 
   private open = false;
@@ -203,6 +204,7 @@ export class WorldMapOverlay {
   private renderedGeometry: MapGeometry | null = null;
   private renderJob: RenderJob | null = null;
   private renderFrameId: number | null = null;
+  private interactionRenderTimer: number | null = null;
   private layoutFrameId: number | null = null;
   private mapCenterTileX: number | null = null;
   private mapCenterTileY: number | null = null;
@@ -311,6 +313,7 @@ export class WorldMapOverlay {
 
     if (!open) {
       this.cancelRenderFrame();
+      this.cancelInteractionRender();
       this.renderJob = null;
       return;
     }
@@ -375,6 +378,7 @@ export class WorldMapOverlay {
 
     this.destroyed = true;
     this.cancelRenderFrame();
+    this.cancelInteractionRender();
     if (this.layoutFrameId !== null) {
       window.cancelAnimationFrame(this.layoutFrameId);
       this.layoutFrameId = null;
@@ -393,7 +397,6 @@ export class WorldMapOverlay {
     this.renderJob = null;
     this.latestRequest = null;
     this.renderedGeometry = null;
-    this.colorCache.clear();
     this.element.remove();
   }
 
@@ -751,6 +754,9 @@ export class WorldMapOverlay {
     this.drawAtlasView(viewGeometry);
     this.updateLegend(job.discoveredBiomes);
     this.drawAnnotations(viewGeometry, latest);
+    if (!this.atlasCovers(viewGeometry, latest)) {
+      this.scheduleInteractionRender();
+    }
   };
 
   private buildRevealMask(
@@ -889,19 +895,10 @@ export class WorldMapOverlay {
   private terrainSampleAt(seed: string, tileX: number, tileY: number): TerrainMapSample {
     const sampleTileX = Math.round(tileX * 2) / 2;
     const sampleTileY = Math.round(tileY * 2) / 2;
-    const key = `${seed}:${sampleTileX},${sampleTileY}`;
-    const cached = this.colorCache.get(key);
-    if (cached) {
-      return cached;
-    }
-
     const biome = biomeAtTile(seed, sampleTileX, sampleTileY);
-    const sample = { biome, color: toColor(minimapColorAtTile(seed, sampleTileX, sampleTileY)) };
-    if (this.colorCache.size >= COLOR_CACHE_LIMIT) {
-      this.colorCache.clear();
-    }
-    this.colorCache.set(key, sample);
-    return sample;
+    // This is the same final biome palette as the circular minimap, without duplicate sampling
+    // or allocating string cache keys for every chart pixel.
+    return { biome, color: toColor(BIOME_COLORS[biome]) };
   }
 
   private drawMapBackground(geometry: MapGeometry): void {
@@ -1173,9 +1170,7 @@ export class WorldMapOverlay {
     this.tilesPerCssPixel = clamp(this.tilesPerCssPixel * zoomMultiplier, MIN_TILES_PER_CSS_PIXEL, MAX_TILES_PER_CSS_PIXEL);
     this.mapCenterTileX = focusTileX - (x - geometry.left - geometry.width / 2) * this.tilesPerCssPixel;
     this.mapCenterTileY = focusTileY - (y - geometry.top - geometry.height / 2) * this.tilesPerCssPixel;
-    if (!this.drawCurrentViewFromAtlas()) {
-      this.startRenderJob();
-    }
+    this.refreshInteractiveView();
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
@@ -1200,16 +1195,57 @@ export class WorldMapOverlay {
 
     this.mapCenterTileX = this.dragStart.centerTileX - (event.clientX - this.dragStart.clientX) * this.tilesPerCssPixel;
     this.mapCenterTileY = this.dragStart.centerTileY - (event.clientY - this.dragStart.clientY) * this.tilesPerCssPixel;
-    if (!this.drawCurrentViewFromAtlas()) {
-      this.startRenderJob();
-    }
+    this.refreshInteractiveView();
   };
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
     this.dragStart = null;
     this.viewport.releasePointerCapture?.(event.pointerId);
     this.viewport.classList.remove('is-dragging');
+    this.scheduleInteractionRender();
   };
+
+  private refreshInteractiveView(): void {
+    if (this.drawCurrentViewFromAtlas()) {
+      this.cancelInteractionRender();
+      return;
+    }
+
+    const request = this.latestRequest;
+    const dimensions = this.canvasDimensions;
+    if (request && dimensions) {
+      const geometry = this.createGeometry(request, dimensions);
+      if (geometry) {
+        this.drawAtlasPreview(geometry, request);
+      }
+    }
+    this.scheduleInteractionRender();
+  }
+
+  private drawAtlasPreview(viewGeometry: MapGeometry, request: NormalizedRequest): void {
+    const atlas = this.atlasGeometry;
+    if (!atlas || this.atlasContentSignature !== request.contentSignature || !this.atlasDimensions) {
+      return;
+    }
+
+    const requestedWidth = viewGeometry.width * viewGeometry.tilesPerCssPixel / atlas.tilesPerCssPixel * atlas.renderScale;
+    const requestedHeight = viewGeometry.height * viewGeometry.tilesPerCssPixel / atlas.tilesPerCssPixel * atlas.renderScale;
+    const sourceWidth = Math.min(this.atlasCanvas.width, requestedWidth);
+    const sourceHeight = Math.min(this.atlasCanvas.height, requestedHeight);
+    const requestedX = (viewGeometry.minTileX - atlas.minTileX) / atlas.tilesPerCssPixel * atlas.renderScale;
+    const requestedY = (viewGeometry.minTileY - atlas.minTileY) / atlas.tilesPerCssPixel * atlas.renderScale;
+    const sourceX = clamp(requestedX, 0, Math.max(0, this.atlasCanvas.width - sourceWidth));
+    const sourceY = clamp(requestedY, 0, Math.max(0, this.atlasCanvas.height - sourceHeight));
+    const context = this.terrainContext;
+    context.setTransform(viewGeometry.renderScale, 0, 0, viewGeometry.renderScale, 0, 0);
+    context.clearRect(0, 0, viewGeometry.cssWidth, viewGeometry.cssHeight);
+    context.fillStyle = '#071410';
+    context.fillRect(0, 0, viewGeometry.cssWidth, viewGeometry.cssHeight);
+    context.imageSmoothingEnabled = true;
+    context.drawImage(this.atlasCanvas, sourceX, sourceY, sourceWidth, sourceHeight, viewGeometry.left, viewGeometry.top, viewGeometry.width, viewGeometry.height);
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    this.drawAnnotations(viewGeometry, request);
+  }
 
   private projectTile(geometry: MapGeometry, tileX: number, tileY: number): { x: number; y: number } {
     return {
@@ -1254,11 +1290,40 @@ export class WorldMapOverlay {
     });
   }
 
+  private scheduleInteractionRender(): void {
+    if (this.interactionRenderTimer !== null || !this.open || this.destroyed) {
+      return;
+    }
+
+    this.interactionRenderTimer = window.setTimeout(() => {
+      this.interactionRenderTimer = null;
+      if (!this.open || this.destroyed || !this.latestRequest) {
+        return;
+      }
+      if (this.drawCurrentViewFromAtlas()) {
+        return;
+      }
+      if (this.renderJob) {
+        this.scheduleInteractionRender();
+        return;
+      }
+      this.startRenderJob();
+    }, INTERACTION_RENDER_DELAY_MS);
+  }
+
+  private cancelInteractionRender(): void {
+    if (this.interactionRenderTimer !== null) {
+      window.clearTimeout(this.interactionRenderTimer);
+      this.interactionRenderTimer = null;
+    }
+  }
+
   private readonly handleResize = (): void => {
     this.canvasDimensions = null;
     this.renderedContentSignature = null;
     this.renderedGeometry = null;
     this.renderJob = null;
+    this.cancelInteractionRender();
     if (this.open) {
       this.scheduleLayoutRefresh();
     }
