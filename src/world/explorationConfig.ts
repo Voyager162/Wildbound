@@ -28,11 +28,10 @@ export const AMBIENT_PARTICLE_CELL_SIZE_PIXELS = 96;
 export const AMBIENT_PARTICLE_RADIUS_CELLS_X = 15;
 export const AMBIENT_PARTICLE_RADIUS_CELLS_Y = 10;
 export const AMBIENT_PARTICLE_MAX_COUNT = 140;
-// Five chunks across and five high cover the camera with a little motion buffer. Keeping
-// dynamic foliage inside this window lets the close world feel richly animated without
-// paying to redraw every cached chunk behind the camera.
-export const AMBIENT_CHUNK_RADIUS_X = 2;
-export const AMBIENT_CHUNK_RADIUS_Y = 1;
+// This spans the full wide camera view plus a one-chunk wind buffer. Foliage has already been
+// animated before it crosses onto the screen, avoiding a visible static-to-moving pop at edges.
+export const AMBIENT_CHUNK_RADIUS_X = 3;
+export const AMBIENT_CHUNK_RADIUS_Y = 2;
 export const WATER_ANIMATION_UPDATE_INTERVAL_MS = 90;
 export const WATER_WAVES_PER_CHUNK = 20;
 export const AMBIENT_GRASS_TUFTS_PER_CHUNK = 48;

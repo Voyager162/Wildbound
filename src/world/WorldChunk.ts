@@ -86,6 +86,9 @@ export class WorldChunk {
 
     this.drawTerrain(terrainTexture);
     this.refreshFeatures();
+    // Give a newly streamed chunk its current wind pose immediately. The ambient buffer then
+    // keeps it advancing before it reaches the camera edge.
+    this.updateAmbient(performance.now());
   }
 
   setHarvestAnimation(tileX: number, tileY: number, progress: number): void {
@@ -202,12 +205,21 @@ export class WorldChunk {
         graphics.lineBetween(centerX - 6, centerY - 3, centerX - 13 + shimmerX * 0.62, centerY - 31);
         graphics.lineBetween(centerX + 2, centerY - 18, centerX + 5 + shimmerX * 0.84, centerY - 49);
       } else if (feature.type === TerrainFeatureType.Reeds || feature.type === TerrainFeatureType.Grass) {
-        const height = feature.type === TerrainFeatureType.Reeds ? 43 : 29;
-        const color = feature.type === TerrainFeatureType.Reeds ? 0xa6bd67 : 0xb9de73;
-        graphics.lineStyle(1.5, color, 0.42);
-        [-12, -6, -1, 5, 10].forEach((offset, index) => {
-          const bend = wind * (3 + index) + index * 1.4;
-          graphics.lineBetween(centerX + offset, centerY + 13, centerX + offset + bend, centerY + 13 - height + index * 3);
+        const isReeds = feature.type === TerrainFeatureType.Reeds;
+        const height = isReeds ? 43 : 40;
+        const color = isReeds ? 0xa6bd67 : 0x83be54;
+        const shadowColor = isReeds ? 0x607b44 : 0x286c39;
+        const bladeOffsets = isReeds ? [-12, -6, -1, 5, 10] : [-23, -17, -11, -5, 2, 9, 16, 22];
+        graphics.lineStyle(isReeds ? 1.5 : 2.7, shadowColor, isReeds ? 0.58 : 0.78);
+        bladeOffsets.forEach((offset, index) => {
+          const bladeHeight = height - (index % 3) * (isReeds ? 3 : 5);
+          const bend = wind * (isReeds ? 5 + index : 9 + index * 0.8) + index * (isReeds ? 1.4 : 0.8);
+          graphics.lineBetween(centerX + offset, centerY + 13, centerX + offset + bend, centerY + 13 - bladeHeight);
+        });
+        graphics.lineStyle(isReeds ? 1 : 1.25, color, isReeds ? 0.68 : 0.86);
+        bladeOffsets.filter((_, index) => index % 2 === 0).forEach((offset, index) => {
+          const bend = wind * (isReeds ? 6 + index : 10 + index) + 3;
+          graphics.lineBetween(centerX + offset + 1.5, centerY + 12, centerX + offset + bend, centerY - height + index * 4);
         });
       }
     });
@@ -363,7 +375,10 @@ export class WorldChunk {
     // makes plains, forests, and swamps read as an unbroken living ground cover while retaining
     // taller, interactive grass as distinct features above it.
     const grassyBiome = surface.biome === Biome.Plains || surface.biome === Biome.Forest || surface.biome === Biome.Swamp;
-    if (grassyBiome && vegetation > 0.1 && variation > 0.77 - vegetation * 0.2) {
+    // Plains can have moderate climate moisture by design, so ground grass must be keyed to the
+    // actual biome rather than the forest-weighted vegetation value above.
+    const groundGrassThreshold = surface.biome === Biome.Plains ? 0.34 : surface.biome === Biome.Forest ? 0.43 : 0.5;
+    if (grassyBiome && variation > groundGrassThreshold) {
       const darkGrass = surface.biome === Biome.Swamp ? 0x507b50 : surface.biome === Biome.Forest ? 0x476f3b : 0x5f963e;
       const lightGrass = surface.biome === Biome.Swamp ? 0x83a66a : surface.biome === Biome.Forest ? 0x82a856 : 0x9ac85c;
       context.fillStyle = this.colorToCss(darkGrass);
