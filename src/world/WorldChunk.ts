@@ -235,6 +235,7 @@ export class WorldChunk {
 
     context.clearRect(0, 0, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
     this.featureGraphics.clear();
+    this.drawGroundCover();
     this.features.forEach((feature) => {
       const worldTileX = this.x * CHUNK_SIZE_TILES + feature.localTileX;
       const worldTileY = this.y * CHUNK_SIZE_TILES + feature.localTileY;
@@ -371,41 +372,6 @@ export class WorldChunk {
       return;
     }
 
-    // Low grass belongs to the terrain layer, rather than the harvestable feature layer. This
-    // makes plains, forests, and swamps read as an unbroken living ground cover while retaining
-    // taller, interactive grass as distinct features above it.
-    const grassyBiome = surface.biome === Biome.Plains || surface.biome === Biome.Forest || surface.biome === Biome.Swamp;
-    // Plains can have moderate climate moisture by design, so ground grass must be keyed to the
-    // actual biome rather than the forest-weighted vegetation value above.
-    const groundGrassThreshold = surface.biome === Biome.Plains ? 0.34 : surface.biome === Biome.Forest ? 0.43 : 0.5;
-    if (grassyBiome && variation > groundGrassThreshold) {
-      const darkGrass = surface.biome === Biome.Swamp ? 0x365e41 : surface.biome === Biome.Forest ? 0x2d5b31 : 0x3f7836;
-      const lightGrass = surface.biome === Biome.Swamp ? 0x94b874 : surface.biome === Biome.Forest ? 0x8ec45b : 0xa9d666;
-      const grassPattern = Math.floor(variation * 1000) % 3;
-      if (grassPattern === 0) {
-        context.fillStyle = this.colorToCss(darkGrass);
-        context.fillRect(cellX + 1, cellY + 4, 2, 3);
-        context.fillRect(cellX + 4, cellY + 2, 1, 5);
-        context.fillStyle = this.colorToCss(lightGrass);
-        context.fillRect(cellX + 6, cellY + 1, 1, 6);
-        context.fillRect(cellX + 5, cellY + 3, 1, 3);
-      } else if (grassPattern === 1) {
-        context.fillStyle = this.colorToCss(darkGrass);
-        context.fillRect(cellX + 1, cellY + 2, 1, 5);
-        context.fillRect(cellX + 3, cellY + 4, 2, 3);
-        context.fillStyle = this.colorToCss(lightGrass);
-        context.fillRect(cellX + 5, cellY, 1, 7);
-        context.fillRect(cellX + 7, cellY + 3, 1, 4);
-      } else {
-        context.fillStyle = this.colorToCss(darkGrass);
-        context.fillRect(cellX, cellY + 4, 2, 3);
-        context.fillRect(cellX + 3, cellY + 1, 1, 6);
-        context.fillStyle = this.colorToCss(lightGrass);
-        context.fillRect(cellX + 5, cellY + 3, 2, 4);
-        context.fillRect(cellX + 7, cellY + 1, 1, 5);
-      }
-    }
-
     if (snow > 0.2 && variation > 0.985 - snow * 0.11) {
       context.fillStyle = this.colorToCss(this.shadeColor(surface.color, 0.32));
       context.fillRect(cellX + 1, cellY + 2, 5, 1);
@@ -474,6 +440,58 @@ export class WorldChunk {
     const green = Math.round(Math.min(255, Math.max(0, ((color >> 8) & 0xff) * multiplier)));
     const blue = Math.round(Math.min(255, Math.max(0, (color & 0xff) * multiplier)));
     return (red << 16) | (green << 8) | blue;
+  }
+
+  private drawGroundCover(): void {
+    const graphics = this.featureGraphics;
+    const smooth = (start: number, end: number, value: number): number => {
+      const normalized = Math.max(0, Math.min(1, (value - start) / (end - start)));
+      return normalized * normalized * (3 - 2 * normalized);
+    };
+
+    for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
+      for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
+        const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
+        const worldTileY = this.y * CHUNK_SIZE_TILES + localY;
+        const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
+        if (surface.isWater) {
+          continue;
+        }
+
+        // Climate-weighted coverage fades naturally through biome boundaries instead of changing
+        // with a discrete biome label. It remains non-interactive; tall grass is still a feature.
+        const climateCoverage = smooth(0.28, 0.53, surface.moisture)
+          * (1 - smooth(0.59, 0.77, surface.temperature))
+          * (1 - smooth(0.59, 0.8, surface.elevation))
+          * (1 - smooth(0.1, 0.26, surface.temperature));
+        const placement = randomAtTile(this.seed, worldTileX, worldTileY, 0x6d42aeb9);
+        if (placement > climateCoverage * 0.92) {
+          continue;
+        }
+
+        const clumpCount = placement < climateCoverage * 0.38 ? 3 : placement < climateCoverage * 0.68 ? 2 : 1;
+        const baseX = localX * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING;
+        const baseY = localY * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING;
+        const shadow = this.shadeColor(surface.color, -0.42);
+        const midtone = this.shadeColor(surface.color, 0.12);
+        const highlight = this.shadeColor(surface.color, 0.5);
+
+        for (let clump = 0; clump < clumpCount; clump += 1) {
+          const offsetX = 4 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7 + clump) * 24;
+          const height = 9 + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37 + clump) * 10;
+          const lean = (randomAtTile(this.seed, worldTileX, worldTileY, 0x7959e2d1 + clump) - 0.5) * 7;
+          const rootX = baseX + offsetX;
+          const rootY = baseY + 27;
+          graphics.lineStyle(1.6, shadow, 0.72);
+          graphics.lineBetween(rootX - 2.5, rootY, rootX - 3 + lean * 0.45, rootY - height * 0.64);
+          graphics.lineBetween(rootX + 1.5, rootY, rootX + 1.5 + lean * 0.74, rootY - height);
+          graphics.lineStyle(1.05, midtone, 0.82);
+          graphics.lineBetween(rootX + 4, rootY, rootX + 4 + lean, rootY - height * 0.78);
+          graphics.lineStyle(0.75, highlight, 0.64);
+          graphics.lineBetween(rootX, rootY - 1, rootX + lean * 0.3, rootY - height * 0.92);
+        }
+      }
+    }
   }
 
   private drawFeature(

@@ -93,10 +93,11 @@ interface NormalizedRequest {
 interface RenderJob {
   request: NormalizedRequest;
   geometry: MapGeometry;
-  regions: ExploredMapRegion[];
-  reveals: WorldMapRevealStamp[];
-  nextRegionIndex: number;
-  nextRevealIndex: number;
+  revealMask: Uint8ClampedArray;
+  revealMaskWidth: number;
+  revealMaskScale: number;
+  sampleStep: number;
+  nextY: number;
   discoveredBiomes: Set<Biome>;
 }
 
@@ -180,6 +181,8 @@ export class WorldMapOverlay {
   private readonly terrainContext: CanvasRenderingContext2D;
   private readonly atlasCanvas: HTMLCanvasElement;
   private readonly atlasContext: CanvasRenderingContext2D;
+  private readonly revealMaskCanvas: HTMLCanvasElement;
+  private readonly revealMaskContext: CanvasRenderingContext2D;
   private readonly annotationCanvas: HTMLCanvasElement;
   private readonly annotationContext: CanvasRenderingContext2D;
   private readonly emptyState: HTMLDivElement;
@@ -237,6 +240,7 @@ export class WorldMapOverlay {
     this.terrainCanvas.className = 'world-map-canvas world-map-canvas--terrain';
     this.terrainCanvas.setAttribute('aria-hidden', 'true');
     this.atlasCanvas = document.createElement('canvas');
+    this.revealMaskCanvas = document.createElement('canvas');
     this.annotationCanvas = document.createElement('canvas');
     this.annotationCanvas.className = 'world-map-canvas world-map-canvas--annotations';
     this.annotationCanvas.setAttribute('aria-hidden', 'true');
@@ -269,14 +273,16 @@ export class WorldMapOverlay {
 
     const terrainContext = this.terrainCanvas.getContext('2d');
     const atlasContext = this.atlasCanvas.getContext('2d');
+    const revealMaskContext = this.revealMaskCanvas.getContext('2d');
     const annotationContext = this.annotationCanvas.getContext('2d');
-    if (!terrainContext || !atlasContext || !annotationContext) {
+    if (!terrainContext || !atlasContext || !revealMaskContext || !annotationContext) {
       this.element.remove();
       throw new Error('Wildbound could not create the world map canvas.');
     }
 
     this.terrainContext = terrainContext;
     this.atlasContext = atlasContext;
+    this.revealMaskContext = revealMaskContext;
     this.renderContext = terrainContext;
     this.annotationContext = annotationContext;
     this.updateLegend(new Set());
@@ -306,8 +312,6 @@ export class WorldMapOverlay {
     if (!open) {
       this.cancelRenderFrame();
       this.renderJob = null;
-      this.renderedContentSignature = null;
-      this.renderedGeometry = null;
       return;
     }
 
@@ -561,17 +565,19 @@ export class WorldMapOverlay {
     this.renderContext = this.atlasContext;
     this.drawMapBackground(geometry);
     this.renderContext.setTransform(geometry.renderScale, 0, 0, geometry.renderScale, 0, 0);
+    const revealMask = this.buildRevealMask(
+      geometry,
+      request.reveals,
+      request.reveals.length === 0 ? request.regions : []
+    );
     this.renderJob = {
       request,
       geometry,
-      // Regions remain only as a legacy-save fallback. New cartography consists of exact
-      // circular minimap stamps, so the fog edge is never a grid of rectangles.
-      regions: request.reveals.length === 0
-        ? request.regions.filter((region) => this.regionIntersectsGeometry(region, geometry))
-        : [],
-      reveals: request.reveals.filter((reveal) => this.revealIntersectsGeometry(reveal, geometry)),
-      nextRegionIndex: 0,
-      nextRevealIndex: 0,
+      revealMask,
+      revealMaskWidth: this.revealMaskCanvas.width,
+      revealMaskScale: geometry.renderScale,
+      sampleStep: this.terrainSampleStep(geometry),
+      nextY: Math.floor(geometry.top),
       discoveredBiomes: new Set<Biome>()
     };
     this.scheduleRenderFrame();
@@ -604,7 +610,7 @@ export class WorldMapOverlay {
     const pixelBudgetScale = Math.sqrt(MAX_ATLAS_PIXELS / (logicalWidth * logicalHeight));
     // An integer atlas scale avoids hairline seams between adjacent biome samples. The atlas is
     // intentionally oversized instead of high-DPI: it is a navigation cache, not a new map style.
-    const renderScale = pixelBudgetScale >= 1 ? 1 : Math.max(0.5, pixelBudgetScale);
+    const renderScale = Math.min(MAX_RENDER_DEVICE_SCALE, Math.max(0.5, pixelBudgetScale));
     const pixelWidth = Math.max(1, Math.round(logicalWidth * renderScale));
     const pixelHeight = Math.max(1, Math.round(logicalHeight * renderScale));
     const key = `${logicalWidth}x${logicalHeight}@${pixelWidth}x${pixelHeight}:${viewGeometry.tilesPerCssPixel}`;
@@ -612,6 +618,8 @@ export class WorldMapOverlay {
     if (!this.atlasDimensions || this.atlasDimensions.key !== key) {
       this.atlasCanvas.width = pixelWidth;
       this.atlasCanvas.height = pixelHeight;
+      this.revealMaskCanvas.width = pixelWidth;
+      this.revealMaskCanvas.height = pixelHeight;
       this.atlasDimensions = { cssWidth: logicalWidth, cssHeight: logicalHeight, renderScale: pixelWidth / logicalWidth, key };
     }
 
@@ -661,10 +669,15 @@ export class WorldMapOverlay {
     const viewMaxTileY = viewGeometry.minTileY + viewGeometry.height * viewGeometry.tilesPerCssPixel;
     const atlasMaxTileX = atlas.minTileX + atlas.width * atlas.tilesPerCssPixel;
     const atlasMaxTileY = atlas.minTileY + atlas.height * atlas.tilesPerCssPixel;
+    // A navigation cache may cover a closer zoom spatially while no longer containing enough
+    // source pixels for it. In that case rebuild a sharper atlas instead of magnifying blur.
+    const atlasTilesPerPixel = atlas.tilesPerCssPixel / atlas.renderScale;
+    const viewTilesPerPixel = viewGeometry.tilesPerCssPixel / viewGeometry.renderScale;
     return viewGeometry.minTileX >= atlas.minTileX
       && viewGeometry.minTileY >= atlas.minTileY
       && viewMaxTileX <= atlasMaxTileX
-      && viewMaxTileY <= atlasMaxTileY;
+      && viewMaxTileY <= atlasMaxTileY
+      && atlasTilesPerPixel <= viewTilesPerPixel * 1.06;
   }
 
   private drawCurrentViewFromAtlas(): boolean {
@@ -698,28 +711,12 @@ export class WorldMapOverlay {
     }
 
     const startedAt = performance.now();
-    while (
-      job.nextRegionIndex < job.regions.length
-      && performance.now() - startedAt < RENDER_TIME_BUDGET_MS
-    ) {
-      this.paintExploredRegion(job.geometry, job.request.seed, job.regions[job.nextRegionIndex], job.discoveredBiomes);
-      job.nextRegionIndex += 1;
+    while (job.nextY < job.geometry.top + job.geometry.height && performance.now() - startedAt < RENDER_TIME_BUDGET_MS) {
+      this.paintMaskedTerrainRow(job);
+      job.nextY += job.sampleStep;
     }
 
-    if (job.nextRegionIndex < job.regions.length) {
-      this.scheduleRenderFrame();
-      return;
-    }
-
-    while (
-      job.nextRevealIndex < job.reveals.length
-      && performance.now() - startedAt < RENDER_TIME_BUDGET_MS
-    ) {
-      this.paintExplorationStamp(job.geometry, job.request.seed, job.reveals[job.nextRevealIndex], job.discoveredBiomes);
-      job.nextRevealIndex += 1;
-    }
-
-    if (job.nextRevealIndex < job.reveals.length) {
+    if (job.nextY < job.geometry.top + job.geometry.height) {
       this.scheduleRenderFrame();
       return;
     }
@@ -727,6 +724,10 @@ export class WorldMapOverlay {
     this.renderJob = null;
     this.renderContext.setTransform(1, 0, 0, 1, 0, 0);
     this.renderContext = this.terrainContext;
+    this.atlasContext.save();
+    this.atlasContext.globalCompositeOperation = 'destination-in';
+    this.atlasContext.drawImage(this.revealMaskCanvas, 0, 0);
+    this.atlasContext.restore();
     const latest = this.latestRequest;
     if (!latest || latest.contentSignature !== job.request.contentSignature || !this.open) {
       this.startRenderJob();
@@ -745,6 +746,72 @@ export class WorldMapOverlay {
     this.updateLegend(job.discoveredBiomes);
     this.drawAnnotations(viewGeometry, latest);
   };
+
+  private buildRevealMask(
+    geometry: MapGeometry,
+    reveals: readonly WorldMapRevealStamp[],
+    regions: readonly ExploredMapRegion[]
+  ): Uint8ClampedArray {
+    const context = this.revealMaskContext;
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, this.revealMaskCanvas.width, this.revealMaskCanvas.height);
+    context.setTransform(geometry.renderScale, 0, 0, geometry.renderScale, 0, 0);
+    context.fillStyle = '#ffffff';
+
+    regions.forEach((region) => {
+      if (!this.regionIntersectsGeometry(region, geometry)) {
+        return;
+      }
+      const projected = this.projectRegion(geometry, region);
+      context.fillRect(projected.left, projected.top, projected.right - projected.left, projected.bottom - projected.top);
+    });
+    reveals.forEach((reveal) => {
+      if (!this.revealIntersectsGeometry(reveal, geometry)) {
+        return;
+      }
+      const center = this.projectTile(geometry, reveal.tileX, reveal.tileY);
+      context.beginPath();
+      context.arc(center.x, center.y, reveal.radiusTiles / geometry.tilesPerCssPixel, 0, Math.PI * 2);
+      context.fill();
+    });
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    return context.getImageData(0, 0, this.revealMaskCanvas.width, this.revealMaskCanvas.height).data;
+  }
+
+  private terrainSampleStep(geometry: MapGeometry): number {
+    const tilesPerRenderedPixel = geometry.tilesPerCssPixel / geometry.renderScale;
+    if (tilesPerRenderedPixel <= 0.7) {
+      return 1;
+    }
+    if (tilesPerRenderedPixel <= 1.8) {
+      return 2;
+    }
+    if (tilesPerRenderedPixel <= 4) {
+      return 3;
+    }
+    return 4;
+  }
+
+  private paintMaskedTerrainRow(job: RenderJob): void {
+    const { geometry, revealMask, revealMaskWidth, revealMaskScale, sampleStep } = job;
+    const y = job.nextY;
+    const bottom = Math.min(geometry.top + geometry.height, y + sampleStep);
+    const context = this.renderContext;
+    for (let x = Math.floor(geometry.left); x < geometry.left + geometry.width; x += sampleStep) {
+      const maskX = Math.min(this.revealMaskCanvas.width - 1, Math.floor((x + sampleStep * 0.5) * revealMaskScale));
+      const maskY = Math.min(this.revealMaskCanvas.height - 1, Math.floor((y + sampleStep * 0.5) * revealMaskScale));
+      if (revealMask[(maskY * revealMaskWidth + maskX) * 4 + 3] === 0) {
+        continue;
+      }
+
+      const tileX = geometry.minTileX + (x + sampleStep * 0.5 - geometry.left) * geometry.tilesPerCssPixel;
+      const tileY = geometry.minTileY + (y + sampleStep * 0.5 - geometry.top) * geometry.tilesPerCssPixel;
+      const sample = this.terrainSampleAt(job.request.seed, tileX, tileY);
+      job.discoveredBiomes.add(sample.biome);
+      context.fillStyle = sample.color;
+      context.fillRect(x, y, Math.min(sampleStep, geometry.left + geometry.width - x), bottom - y);
+    }
+  }
 
   private paintExploredRegion(
     geometry: MapGeometry,
@@ -1172,6 +1239,9 @@ export class WorldMapOverlay {
         return;
       }
 
+      if (this.drawCurrentViewFromAtlas()) {
+        return;
+      }
       this.startRenderJob();
     });
   }
