@@ -1,7 +1,8 @@
-﻿import Phaser from 'phaser';
+import Phaser from 'phaser';
 import { generateChunkFeatures, type TerrainFeature, TerrainFeatureType } from './generation/featureGenerator';
+import { TOPOGRAPHY_GENERATION_VERSION } from './generation/topographyGenerator';
 import { randomAtTile } from './generation/noise';
-import { surfaceAtTile, TerrainType, type TerrainSurface } from './generation/terrainGenerator';
+import { surfaceAtTile, type TerrainSurface } from './generation/terrainGenerator';
 import { SessionWorldState } from './SessionWorldState';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 
@@ -9,6 +10,8 @@ import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldCon
 // keeping the renderer to a single terrain draw call for each static chunk.
 const VISUAL_TERRAIN_CELL_SIZE = 8;
 const VISUAL_CELLS_PER_TILE = WORLD_TILE_SIZE / VISUAL_TERRAIN_CELL_SIZE;
+const FEATURE_TEXTURE_PADDING = 128;
+const FEATURE_TEXTURE_SIZE = CHUNK_SIZE_PIXELS + FEATURE_TEXTURE_PADDING * 2;
 
 interface WaterRipple {
   worldX: number;
@@ -21,6 +24,9 @@ export class WorldChunk {
   private readonly textureKey: string;
   private readonly terrainImage: Phaser.GameObjects.Image;
   private readonly waterGraphics: Phaser.GameObjects.Graphics;
+  // Complex feature vectors are baked into one texture per chunk, avoiding per-frame Graphics triangulation.
+  private readonly featureTextureKey: string;
+  private readonly featureImage: Phaser.GameObjects.Image;
   private readonly featureGraphics: Phaser.GameObjects.Graphics;
   private readonly features: TerrainFeature[];
   private hasWater = false;
@@ -35,15 +41,26 @@ export class WorldChunk {
     readonly y: number
   ) {
     this.key = `${x},${y}`;
-    this.textureKey = `terrain:${seed}:${x}:${y}`;
+    this.textureKey = `terrain:v${TOPOGRAPHY_GENERATION_VERSION}:${seed}:${x}:${y}`;
     const terrainTexture = scene.textures.createCanvas(this.textureKey, CHUNK_SIZE_PIXELS, CHUNK_SIZE_PIXELS);
     if (!terrainTexture) {
       throw new Error('Wildbound could not create a terrain texture.');
     }
 
+    this.featureTextureKey = `features:v${TOPOGRAPHY_GENERATION_VERSION}:${seed}:${x}:${y}`;
+    const featureTexture = scene.textures.createCanvas(this.featureTextureKey, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
+    if (!featureTexture) {
+      throw new Error('Wildbound could not create a feature texture.');
+    }
+
     this.terrainImage = scene.add.image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.textureKey).setOrigin(0);
     this.waterGraphics = scene.add.graphics().setDepth(0.25);
-    this.featureGraphics = scene.add.graphics().setDepth(1);
+    this.featureImage = scene.add
+      .image(x * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, y * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, this.featureTextureKey)
+      .setOrigin(0)
+      .setDepth(1);
+    // This is an off-screen scratch pad only. It is immediately baked into featureImage's texture.
+    this.featureGraphics = scene.add.graphics().setVisible(false);
     this.features = generateChunkFeatures(seed, x, y);
 
     this.drawTerrain(terrainTexture);
@@ -84,9 +101,14 @@ export class WorldChunk {
   }
 
   refreshFeatures(): void {
-    const worldX = this.x * CHUNK_SIZE_PIXELS;
-    const worldY = this.y * CHUNK_SIZE_PIXELS;
+    const texture = this.scene.textures.get(this.featureTextureKey);
+    const canvas = texture.getSourceImage() as HTMLCanvasElement;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Wildbound could not update a feature texture.');
+    }
 
+    context.clearRect(0, 0, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
     this.featureGraphics.clear();
     this.features.forEach((feature) => {
       const worldTileX = this.x * CHUNK_SIZE_TILES + feature.localTileX;
@@ -96,19 +118,26 @@ export class WorldChunk {
         const offset = this.harvestingTileKey === this.tileKey(worldTileX, worldTileY) ? this.harvestOffset : 0;
         this.drawFeature(
           feature.type,
-          worldX + feature.localTileX * WORLD_TILE_SIZE,
-          worldY + feature.localTileY * WORLD_TILE_SIZE,
-          offset
+          feature.localTileX * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING,
+          feature.localTileY * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING,
+          offset,
+          worldTileX,
+          worldTileY
         );
       }
     });
+
+    this.featureGraphics.generateTexture(this.featureTextureKey, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
+    this.featureGraphics.clear();
   }
 
   destroy(): void {
     this.terrainImage.destroy();
     this.waterGraphics.destroy();
+    this.featureImage.destroy();
     this.featureGraphics.destroy();
     this.scene.textures.remove(this.textureKey);
+    this.scene.textures.remove(this.featureTextureKey);
   }
 
   private drawTerrain(texture: Phaser.Textures.CanvasTexture): void {
@@ -136,7 +165,8 @@ export class WorldChunk {
             const cellX = localX * WORLD_TILE_SIZE + visualX * VISUAL_TERRAIN_CELL_SIZE;
             const cellY = localY * WORLD_TILE_SIZE + visualY * VISUAL_TERRAIN_CELL_SIZE;
 
-            context.fillStyle = this.colorToCss(surface.color);
+            // A restrained deterministic tint restores the subtle pixel-color variation without changing world data.
+            context.fillStyle = this.colorToCss(this.terrainCellColor(surface.color, variation));
             context.fillRect(cellX, cellY, VISUAL_TERRAIN_CELL_SIZE, VISUAL_TERRAIN_CELL_SIZE);
             this.drawTerrainDetail(context, surface, variation, cellX, cellY);
 
@@ -155,9 +185,6 @@ export class WorldChunk {
       }
     }
 
-    context.strokeStyle = 'rgba(24, 44, 35, 0.16)';
-    context.lineWidth = 1;
-    context.strokeRect(0.5, 0.5, CHUNK_SIZE_PIXELS - 1, CHUNK_SIZE_PIXELS - 1);
     texture.refresh();
 
     this.waterGraphics.clear();
@@ -174,171 +201,250 @@ export class WorldChunk {
     cellX: number,
     cellY: number
   ): void {
-    switch (surface.terrain) {
-      case TerrainType.Grass:
-        if (!surface.isWater && variation > 0.945) {
-          context.fillStyle = variation > 0.98 ? '#9fcd61' : '#356f3c';
-          context.fillRect(cellX + 2, cellY + 3, 1, 4);
-          context.fillRect(cellX + 4, cellY + 1, 1, 6);
-          context.fillRect(cellX + 6, cellY + 4, 1, 3);
-        }
-        break;
-      case TerrainType.Forest:
-        if (variation > 0.89) {
-          context.fillStyle = variation > 0.96 ? '#6ea758' : '#24583a';
-          context.fillRect(cellX + 1, cellY + 1, 3, 3);
-          context.fillRect(cellX + 4, cellY + 3, 3, 3);
-        }
-        break;
-      case TerrainType.Desert:
-        if (variation > 0.87) {
-          context.fillStyle = variation > 0.965 ? '#86633d' : '#e5c979';
-          context.fillRect(cellX + 1, cellY + 3, 6, 1);
-          if (variation > 0.965) {
-            context.fillRect(cellX + 3, cellY + 1, 2, 5);
-          }
-        }
-        break;
-      case TerrainType.Swamp:
-        if (!surface.isWater && variation > 0.88) {
-          context.fillStyle = variation > 0.965 ? '#503d2c' : '#78944c';
-          context.fillRect(cellX + 2, cellY + 2, 3, 2);
-          context.fillRect(cellX + 5, cellY + 4, 2, 2);
-        }
-        break;
-      case TerrainType.Dirt:
-        if (variation > 0.86) {
-          context.fillStyle = variation > 0.95 ? '#b7a074' : '#665943';
-          context.fillRect(cellX + 1, cellY + 5, 6, 1);
-          if (variation > 0.95) {
-            context.fillRect(cellX + 4, cellY + 2, 3, 1);
-          }
-        }
-        break;
-      case TerrainType.Mountain:
-        if (variation > 0.8) {
-          context.fillStyle = variation > 0.94 ? '#b6c1c1' : '#3f4b54';
-          context.beginPath();
-          context.moveTo(cellX + 1, cellY + 7);
-          context.lineTo(cellX + 4, cellY + 1);
-          context.lineTo(cellX + 7, cellY + 7);
-          context.fill();
-        }
-        break;
-      case TerrainType.Snow:
-        if (variation > 0.87) {
-          context.fillStyle = variation > 0.96 ? '#91d2e2' : '#ffffff';
-          context.fillRect(cellX + 1, cellY + 2, 5, 1);
-          context.fillRect(cellX + 3, cellY + 1, 1, 4);
-        }
-        break;
-      case TerrainType.Sand:
-        if (!surface.isWater && variation > 0.88) {
-          context.fillStyle = variation > 0.97 ? '#ae8951' : '#f0d98e';
-          context.fillRect(cellX + 1, cellY + 3, 6, 1);
-        }
-        break;
-      case TerrainType.Water:
-        // Animated water highlights are rendered in waterGraphics after the texture is baked.
-        break;
+    if (surface.isWater) {
+      return;
+    }
+
+
+    const smooth = (start: number, end: number, value: number): number => {
+      const normalized = Math.max(0, Math.min(1, (value - start) / (end - start)));
+      return normalized * normalized * (3 - 2 * normalized);
+    };
+
+    // Detail density follows continuous climate weights, so flecks and plants fade through a
+    // border instead of suddenly switching when a discrete biome label changes.
+    const snow = Math.max(
+      1 - smooth(0.14, 0.34, surface.temperature),
+      smooth(0.72, 0.92, surface.elevation) * (1 - smooth(0.5, 0.68, surface.temperature))
+    );
+    const rock = smooth(0.6, 0.9, surface.elevation) * (1 - snow * 0.4);
+    const dry = smooth(0.6, 0.76, surface.temperature) * (1 - smooth(0.28, 0.46, surface.moisture));
+    const vegetation = smooth(0.38, 0.72, surface.moisture)
+      * (1 - dry * 0.85)
+      * (1 - rock * 0.62)
+      * (1 - snow);
+
+    if (surface.elevation < 0.39) {
+      if (variation > 0.91) {
+        context.fillStyle = variation > 0.97 ? '#a9864f' : '#eed692';
+        context.fillRect(cellX + 2, cellY + 4, 3, 1);
+      }
+      return;
+    }
+
+    if (snow > 0.2 && variation > 0.985 - snow * 0.11) {
+      context.fillStyle = this.colorToCss(this.shadeColor(surface.color, 0.32));
+      context.fillRect(cellX + 1, cellY + 2, 5, 1);
+      context.fillRect(cellX + 3, cellY + 1, 1, 4);
+      return;
+    }
+
+    if (rock > 0.18 && variation > 0.985 - rock * 0.12) {
+      context.fillStyle = this.colorToCss(this.shadeColor(surface.color, -0.32));
+      context.beginPath();
+      context.moveTo(cellX + 1, cellY + 7);
+      context.lineTo(cellX + 4, cellY + 2);
+      context.lineTo(cellX + 7, cellY + 7);
+      context.fill();
+      return;
+    }
+
+    if (dry > 0.2 && variation > 0.985 - dry * 0.1) {
+      context.fillStyle = this.colorToCss(this.shadeColor(surface.color, dry > 0.65 ? -0.22 : 0.2));
+      context.fillRect(cellX + 1, cellY + 4, 6, 1);
+      return;
+    }
+
+    if (vegetation > 0.16 && variation > 0.99 - vegetation * 0.08) {
+      context.fillStyle = this.colorToCss(this.shadeColor(surface.color, vegetation > 0.58 ? -0.3 : 0.26));
+      context.fillRect(cellX + 2, cellY + 3, 1, 4);
+      context.fillRect(cellX + 4, cellY + 1, 1, 6);
+      context.fillRect(cellX + 6, cellY + 4, 1, 3);
     }
   }
-
   private colorToCss(color: number): string {
     return `#${color.toString(16).padStart(6, '0')}`;
   }
 
-  private drawFeature(type: TerrainFeatureType, tileX: number, tileY: number, animationOffset: number): void {
-    const centerX = tileX + WORLD_TILE_SIZE / 2 + animationOffset;
-    const centerY = tileY + WORLD_TILE_SIZE / 2;
+  private terrainCellColor(color: number, variation: number): number {
+    // Tints come from the continuously blended local color, never a discrete terrain label.
+    const base = this.shadeColor(color, (variation - 0.5) * 0.09);
 
-    switch (type) {
-      case TerrainFeatureType.Tree:
-        this.featureGraphics.fillStyle(0x3f2819, 0.42);
-        this.featureGraphics.fillEllipse(centerX, centerY + 28, 42, 13);
-        this.featureGraphics.fillStyle(0x5d3823, 1);
-        this.featureGraphics.fillRect(centerX - 7, centerY + 4, 14, 34);
-        this.featureGraphics.fillStyle(0x95613b, 1);
-        this.featureGraphics.fillRect(centerX - 3, centerY + 4, 5, 34);
-        this.featureGraphics.lineStyle(2, 0x402618, 0.8);
-        this.featureGraphics.lineBetween(centerX + 2, centerY + 10, centerX + 2, centerY + 33);
-        this.featureGraphics.fillStyle(0x123d29, 1);
-        this.featureGraphics.fillCircle(centerX, centerY - 13, 29);
-        this.featureGraphics.fillCircle(centerX - 20, centerY - 8, 20);
-        this.featureGraphics.fillCircle(centerX + 20, centerY - 8, 20);
-        this.featureGraphics.fillCircle(centerX - 10, centerY - 30, 19);
-        this.featureGraphics.fillCircle(centerX + 13, centerY - 28, 18);
-        this.featureGraphics.fillStyle(0x2e7942, 1);
-        this.featureGraphics.fillCircle(centerX - 8, centerY - 23, 20);
-        this.featureGraphics.fillCircle(centerX + 15, centerY - 19, 17);
-        this.featureGraphics.fillCircle(centerX - 25, centerY - 8, 12);
-        break;
-      case TerrainFeatureType.Cactus:
-        this.featureGraphics.fillStyle(0x2d6337, 0.42);
-        this.featureGraphics.fillEllipse(centerX, centerY + 25, 34, 11);
-        this.featureGraphics.fillStyle(0x397d45, 1);
-        this.featureGraphics.fillRoundedRect(centerX - 7, centerY - 28, 14, 56, 5);
-        this.featureGraphics.fillRoundedRect(centerX - 27, centerY - 8, 20, 11, 4);
-        this.featureGraphics.fillRoundedRect(centerX - 27, centerY - 22, 9, 25, 4);
-        this.featureGraphics.fillRoundedRect(centerX + 7, centerY + 2, 20, 11, 4);
-        this.featureGraphics.fillRoundedRect(centerX + 18, centerY - 13, 9, 26, 4);
-        this.featureGraphics.lineStyle(2, 0xa7d36d, 0.78);
-        this.featureGraphics.lineBetween(centerX, centerY - 24, centerX, centerY + 24);
-        this.featureGraphics.lineBetween(centerX - 22, centerY - 18, centerX - 22, centerY - 2);
-        this.featureGraphics.lineBetween(centerX + 22, centerY - 9, centerX + 22, centerY + 8);
-        break;
-      case TerrainFeatureType.Rock:
-        this.featureGraphics.fillStyle(0x30383f, 0.42);
-        this.featureGraphics.fillEllipse(centerX, centerY + 24, 52, 15);
-        this.featureGraphics.fillStyle(0x515b65, 1);
-        this.featureGraphics.fillTriangle(centerX - 26, centerY + 20, centerX - 11, centerY - 25, centerX + 28, centerY + 19);
-        this.featureGraphics.fillStyle(0x73808a, 1);
-        this.featureGraphics.fillTriangle(centerX - 11, centerY + 16, centerX + 3, centerY - 20, centerX + 19, centerY + 16);
-        this.featureGraphics.fillStyle(0x8e9aa3, 0.75);
-        this.featureGraphics.fillTriangle(centerX + 3, centerY - 20, centerX + 10, centerY - 4, centerX + 19, centerY + 16);
-        this.featureGraphics.lineStyle(3, 0x3e464e, 0.85);
-        this.featureGraphics.lineBetween(centerX + 2, centerY - 16, centerX - 3, centerY + 15);
-        break;
-      case TerrainFeatureType.Reeds:
-        this.featureGraphics.fillStyle(0x263f2e, 0.35);
-        this.featureGraphics.fillEllipse(centerX, centerY + 25, 48, 13);
-        this.featureGraphics.lineStyle(4, 0x2c5c35, 1);
-        this.featureGraphics.lineBetween(centerX - 20, centerY + 25, centerX - 22, centerY - 27);
-        this.featureGraphics.lineBetween(centerX - 10, centerY + 25, centerX - 7, centerY - 36);
-        this.featureGraphics.lineBetween(centerX, centerY + 25, centerX + 2, centerY - 41);
-        this.featureGraphics.lineBetween(centerX + 12, centerY + 25, centerX + 15, centerY - 32);
-        this.featureGraphics.lineBetween(centerX + 22, centerY + 25, centerX + 25, centerY - 24);
-        this.featureGraphics.fillStyle(0x8da855, 1);
-        this.featureGraphics.fillCircle(centerX - 7, centerY - 36, 3);
-        this.featureGraphics.fillCircle(centerX + 2, centerY - 41, 3);
-        this.featureGraphics.fillCircle(centerX + 15, centerY - 32, 3);
-        break;
-      case TerrainFeatureType.SnowyRock:
-        this.featureGraphics.fillStyle(0x4b555d, 0.42);
-        this.featureGraphics.fillEllipse(centerX, centerY + 24, 52, 15);
-        this.featureGraphics.fillStyle(0x626c75, 1);
-        this.featureGraphics.fillCircle(centerX - 13, centerY + 7, 20);
-        this.featureGraphics.fillCircle(centerX + 13, centerY + 9, 21);
-        this.featureGraphics.fillStyle(0xf2f7f8, 1);
-        this.featureGraphics.fillCircle(centerX - 15, centerY - 1, 14);
-        this.featureGraphics.fillCircle(centerX + 8, centerY - 2, 14);
-        this.featureGraphics.fillStyle(0xcddce2, 1);
-        this.featureGraphics.fillCircle(centerX + 21, centerY + 6, 8);
-        break;
-      case TerrainFeatureType.IcePatch:
-        this.featureGraphics.fillStyle(0x5d91aa, 0.35);
-        this.featureGraphics.fillEllipse(centerX, centerY + 6, 60, 38);
-        this.featureGraphics.fillStyle(0xaee7f5, 0.9);
-        this.featureGraphics.fillEllipse(centerX, centerY, 54, 32);
-        this.featureGraphics.lineStyle(3, 0xe7fbff, 0.88);
-        this.featureGraphics.lineBetween(centerX - 18, centerY - 6, centerX + 4, centerY + 4);
-        this.featureGraphics.lineBetween(centerX + 4, centerY + 4, centerX + 19, centerY - 11);
-        this.featureGraphics.lineBetween(centerX + 4, centerY + 4, centerX + 10, centerY + 15);
-        this.featureGraphics.lineBetween(centerX - 8, centerY + 12, centerX + 4, centerY + 4);
-        break;
+    if (variation < 0.18) {
+      return this.mixColor(base, this.shadeColor(base, -0.34), 0.18);
     }
+
+    if (variation > 0.82) {
+      return this.mixColor(base, this.shadeColor(base, 0.34), 0.18);
+    }
+
+    return base;
+  }
+  private mixColor(first: number, second: number, amount: number): number {
+    const mixChannel = (shift: number): number => {
+      const start = (first >> shift) & 0xff;
+      const end = (second >> shift) & 0xff;
+      return Math.round(start + (end - start) * amount);
+    };
+
+    return (mixChannel(16) << 16) | (mixChannel(8) << 8) | mixChannel(0);
   }
 
+  private shadeColor(color: number, amount: number): number {
+    const multiplier = 1 + amount;
+    const red = Math.round(Math.min(255, Math.max(0, ((color >> 16) & 0xff) * multiplier)));
+    const green = Math.round(Math.min(255, Math.max(0, ((color >> 8) & 0xff) * multiplier)));
+    const blue = Math.round(Math.min(255, Math.max(0, (color & 0xff) * multiplier)));
+    return (red << 16) | (green << 8) | blue;
+  }
+
+  private drawFeature(
+    type: TerrainFeatureType,
+    tileX: number,
+    tileY: number,
+    animationOffset: number,
+    worldTileX = Math.floor(tileX / WORLD_TILE_SIZE),
+    worldTileY = Math.floor(tileY / WORLD_TILE_SIZE)
+  ): void {
+    const centerX = tileX + WORLD_TILE_SIZE / 2 + animationOffset;
+    const centerY = tileY + WORLD_TILE_SIZE / 2;
+    const variation = randomAtTile(this.seed, worldTileX, worldTileY, 0x6ac4d9e3);
+    const scale = 0.92 + variation * 0.16;
+    const mirror = variation > 0.5 ? 1 : -1;
+    const graphics = this.featureGraphics;
+
+    const groundPatch = (width: number, depth: number, color: number, alpha = 0.32): void => {
+      graphics.fillStyle(0x17271c, alpha);
+      graphics.fillEllipse(centerX + 4, centerY + depth * 0.3, width, depth);
+      graphics.fillStyle(color, 0.46);
+      graphics.fillEllipse(centerX, centerY + depth * 0.14, width * 0.82, depth * 0.58);
+    };
+
+    switch (type) {
+      case TerrainFeatureType.Tree: {
+        const canopy = 39 * scale;
+        groundPatch(104 * scale, 30 * scale, 0x40592c, 0.34);
+        graphics.fillStyle(0x2f4925, 0.92);
+        graphics.fillEllipse(centerX - 20 * mirror, centerY + 28, 64 * scale, 13 * scale);
+        graphics.fillStyle(0x4b2f1d, 1);
+        graphics.fillRoundedRect(centerX - 9 * scale, centerY - 4, 18 * scale, 49 * scale, 5 * scale);
+        graphics.fillStyle(0x8c5932, 1);
+        graphics.fillRoundedRect(centerX - 3 * scale, centerY - 3, 6 * scale, 45 * scale, 3 * scale);
+        graphics.lineStyle(3 * scale, 0x3a2418, 0.9);
+        graphics.lineBetween(centerX - 2 * scale, centerY + 16, centerX - 23 * scale * mirror, centerY + 36 * scale);
+        graphics.lineBetween(centerX + 3 * scale, centerY + 20, centerX + 24 * scale * mirror, centerY + 37 * scale);
+        graphics.lineBetween(centerX, centerY + 8, centerX + 18 * scale * mirror, centerY - 10 * scale);
+        graphics.fillStyle(0x0e3927, 1);
+        graphics.fillCircle(centerX - 26 * scale, centerY - 17 * scale, canopy * 0.7);
+        graphics.fillCircle(centerX + 25 * scale, centerY - 19 * scale, canopy * 0.72);
+        graphics.fillCircle(centerX - 7 * scale, centerY - 43 * scale, canopy * 0.76);
+        graphics.fillCircle(centerX + 20 * scale, centerY - 50 * scale, canopy * 0.64);
+        graphics.fillCircle(centerX - 31 * scale, centerY - 42 * scale, canopy * 0.52);
+        graphics.fillStyle(0x1f6035, 1);
+        graphics.fillCircle(centerX - 21 * scale, centerY - 25 * scale, canopy * 0.57);
+        graphics.fillCircle(centerX + 19 * scale, centerY - 30 * scale, canopy * 0.62);
+        graphics.fillCircle(centerX - 3 * scale, centerY - 54 * scale, canopy * 0.54);
+        graphics.fillStyle(0x4b8c42, 0.88);
+        graphics.fillCircle(centerX - 18 * scale, centerY - 39 * scale, canopy * 0.27);
+        graphics.fillCircle(centerX + 15 * scale, centerY - 46 * scale, canopy * 0.22);
+        graphics.fillCircle(centerX + 31 * scale, centerY - 16 * scale, canopy * 0.2);
+        break;
+      }
+      case TerrainFeatureType.Cactus: {
+        groundPatch(74 * scale, 23 * scale, 0x806f39, 0.3);
+        graphics.fillStyle(0x1f4d32, 0.9);
+        graphics.fillEllipse(centerX, centerY + 24 * scale, 42 * scale, 12 * scale);
+        graphics.fillStyle(0x327740, 1);
+        graphics.fillRoundedRect(centerX - 9 * scale, centerY - 42 * scale, 18 * scale, 69 * scale, 8 * scale);
+        graphics.fillRoundedRect(centerX - 34 * scale * mirror, centerY - 17 * scale, 27 * scale, 13 * scale, 5 * scale);
+        graphics.fillRoundedRect(centerX - 34 * scale * mirror, centerY - 34 * scale, 11 * scale, 30 * scale, 5 * scale);
+        graphics.fillRoundedRect(centerX + 8 * scale * mirror, centerY + 1 * scale, 28 * scale, 13 * scale, 5 * scale);
+        graphics.fillRoundedRect(centerX + 24 * scale * mirror, centerY - 20 * scale, 12 * scale, 34 * scale, 5 * scale);
+        graphics.lineStyle(2 * scale, 0x93bd62, 0.86);
+        [-5, 0, 5].forEach((offset) => graphics.lineBetween(centerX + offset * scale, centerY - 36 * scale, centerX + offset * scale, centerY + 20 * scale));
+        graphics.fillStyle(0xf0bd5f, 0.96);
+        graphics.fillCircle(centerX, centerY - 44 * scale, 4 * scale);
+        graphics.fillCircle(centerX - 29 * scale * mirror, centerY - 37 * scale, 3 * scale);
+        break;
+      }
+      case TerrainFeatureType.Rock: {
+        groundPatch(100 * scale, 28 * scale, 0x4d4c3e, 0.3);
+        graphics.fillStyle(0x303b42, 1);
+        graphics.fillTriangle(centerX - 44 * scale, centerY + 20 * scale, centerX - 19 * scale, centerY - 38 * scale, centerX + 47 * scale, centerY + 19 * scale);
+        graphics.fillStyle(0x586671, 1);
+        graphics.fillTriangle(centerX - 19 * scale, centerY - 38 * scale, centerX + 7 * scale, centerY - 26 * scale, centerX + 19 * scale, centerY + 18 * scale);
+        graphics.fillStyle(0x7b8990, 0.96);
+        graphics.fillTriangle(centerX + 7 * scale, centerY - 26 * scale, centerX + 33 * scale, centerY - 6 * scale, centerX + 19 * scale, centerY + 18 * scale);
+        graphics.fillStyle(0xa3adad, 0.62);
+        graphics.fillTriangle(centerX - 10 * scale, centerY - 28 * scale, centerX + 7 * scale, centerY - 26 * scale, centerX - 2 * scale, centerY - 6 * scale);
+        graphics.lineStyle(3 * scale, 0x263138, 0.84);
+        graphics.lineBetween(centerX + 3 * scale, centerY - 20 * scale, centerX - 5 * scale, centerY + 17 * scale);
+        graphics.lineBetween(centerX + 20 * scale, centerY - 1 * scale, centerX + 31 * scale, centerY + 16 * scale);
+        graphics.fillStyle(0x6f8d59, 0.72);
+        graphics.fillEllipse(centerX - 27 * scale, centerY + 10 * scale, 14 * scale, 6 * scale);
+        break;
+      }
+      case TerrainFeatureType.Reeds: {
+        groundPatch(108 * scale, 25 * scale, 0x496b47, 0.3);
+        graphics.fillStyle(0x3a6441, 0.8);
+        graphics.fillEllipse(centerX, centerY + 18 * scale, 68 * scale, 15 * scale);
+        const reedOffsets = [-37, -27, -16, -5, 7, 19, 31, 40];
+        graphics.lineStyle(4 * scale, 0x2d6037, 1);
+        reedOffsets.forEach((offset, index) => {
+          const height = (54 + (index % 3) * 11) * scale;
+          const lean = (index - 3.5) * 2.3 * mirror;
+          graphics.lineBetween(centerX + offset * scale, centerY + 20 * scale, centerX + (offset + lean) * scale, centerY + 20 * scale - height);
+        });
+        graphics.lineStyle(2 * scale, 0x83a84e, 0.95);
+        reedOffsets.filter((_, index) => index % 2 === 0).forEach((offset, index) => {
+          graphics.lineBetween(centerX + offset * scale, centerY + 12 * scale, centerX + (offset - 8 * mirror) * scale, centerY - (17 + index * 5) * scale);
+        });
+        graphics.fillStyle(0x9f7e43, 1);
+        [-27, -5, 19, 40].forEach((offset, index) => graphics.fillRoundedRect(centerX + offset * scale - 3, centerY - (43 + (index % 2) * 8) * scale, 6 * scale, 15 * scale, 3 * scale));
+        break;
+      }
+      case TerrainFeatureType.SnowyRock: {
+        groundPatch(102 * scale, 28 * scale, 0x9bb8c0, 0.32);
+        graphics.fillStyle(0x4c5964, 1);
+        graphics.fillTriangle(centerX - 43 * scale, centerY + 20 * scale, centerX - 12 * scale, centerY - 37 * scale, centerX + 45 * scale, centerY + 19 * scale);
+        graphics.fillStyle(0x74828b, 1);
+        graphics.fillTriangle(centerX - 12 * scale, centerY - 37 * scale, centerX + 22 * scale, centerY - 17 * scale, centerX + 16 * scale, centerY + 18 * scale);
+        graphics.fillStyle(0xe5f0f1, 1);
+        graphics.fillTriangle(centerX - 24 * scale, centerY - 16 * scale, centerX - 12 * scale, centerY - 37 * scale, centerX + 15 * scale, centerY - 18 * scale);
+        graphics.fillTriangle(centerX + 6 * scale, centerY - 16 * scale, centerX + 22 * scale, centerY - 17 * scale, centerX + 36 * scale, centerY + 1 * scale);
+        graphics.lineStyle(2 * scale, 0x3f4a53, 0.86);
+        graphics.lineBetween(centerX + 2 * scale, centerY - 18 * scale, centerX - 7 * scale, centerY + 17 * scale);
+        break;
+      }
+      case TerrainFeatureType.Grass: {
+        groundPatch(66 * scale, 18 * scale, 0x496d33, 0.25);
+        const blades = [-23, -16, -9, -2, 6, 14, 22];
+        graphics.lineStyle(3 * scale, 0x286c39, 1);
+        blades.forEach((offset, index) => {
+          const bend = (index - 3) * 3 * mirror;
+          graphics.lineBetween(centerX + offset * scale, centerY + 12 * scale, centerX + (offset + bend) * scale, centerY - (25 + (index % 3) * 6) * scale);
+        });
+        graphics.lineStyle(1.4 * scale, 0xb6d66d, 0.9);
+        [-14, 2, 17].forEach((offset, index) => graphics.lineBetween(centerX + offset * scale, centerY + 11 * scale, centerX + (offset + 4 * mirror) * scale, centerY - (28 + index * 4) * scale));
+        break;
+      }
+      case TerrainFeatureType.IcePatch: {
+        groundPatch(118 * scale, 50 * scale, 0x6c9eab, 0.34);
+        graphics.fillStyle(0x527e9b, 0.92);
+        graphics.fillEllipse(centerX, centerY + 2 * scale, 108 * scale, 60 * scale);
+        graphics.fillStyle(0x9fdae8, 0.96);
+        graphics.fillEllipse(centerX - 3 * scale, centerY - 2 * scale, 96 * scale, 49 * scale);
+        graphics.fillStyle(0xd8f8fb, 0.72);
+        graphics.fillEllipse(centerX - 14 * scale, centerY - 9 * scale, 44 * scale, 15 * scale);
+        graphics.lineStyle(3 * scale, 0xe8fdff, 0.92);
+        graphics.lineBetween(centerX - 32 * scale, centerY - 8 * scale, centerX - 2 * scale, centerY + 5 * scale);
+        graphics.lineBetween(centerX - 2 * scale, centerY + 5 * scale, centerX + 27 * scale, centerY - 16 * scale);
+        graphics.lineBetween(centerX - 2 * scale, centerY + 5 * scale, centerX + 15 * scale, centerY + 22 * scale);
+        graphics.lineBetween(centerX - 16 * scale, centerY + 19 * scale, centerX - 2 * scale, centerY + 5 * scale);
+        break;
+      }
+    }
+  }
   private tileKey(tileX: number, tileY: number): string {
     return `${tileX},${tileY}`;
   }

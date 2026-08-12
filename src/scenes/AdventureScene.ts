@@ -1,4 +1,4 @@
-﻿import Phaser from 'phaser';
+import Phaser from 'phaser';
 import type { InventorySlot } from '../player/Inventory';
 import { Inventory, INVENTORY_SLOT_COUNT } from '../player/Inventory';
 import { FacingDirection, getInteractionTarget } from '../player/interaction';
@@ -13,7 +13,8 @@ import { DropManager } from '../world/DropManager';
 import { biomeAtTile, climateAtTile } from '../world/generation/biomeGenerator';
 import { featureAtTile } from '../world/generation/featureGenerator';
 import { isTraversableWaterAt } from '../world/generation/terrainGenerator';
-import { resourceForFeature, resourceLabel } from '../world/resources';
+import type { TopographySample } from '../world/generation/topographyGenerator';
+import { RESOURCE_COLORS, resourceForFeature, resourceLabel } from '../world/resources';
 import { SessionWorldState } from '../world/SessionWorldState';
 import type { DroppedItem } from '../world/SessionWorldState';
 import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
@@ -22,11 +23,12 @@ const BASE_PLAYER_SPEED = 220;
 const PLAYER_SPEED = BASE_PLAYER_SPEED * (PLAYER_SPEED_SCALE / 50);
 const SWIM_SPEED_MULTIPLIER = 0.42;
 const PLAYER_SIZE = 32;
+// Visual-only scale: collision and interaction coordinates remain at the existing gameplay size.
+const PLAYER_AVATAR_SCALE = 1.32;
 const HARVEST_DURATION_MS = 1000;
 const HARVEST_RING_RADIUS = 16;
 const CAMERA_WORLD_VIEW_WIDTH = 2560;
 const CAMERA_WORLD_VIEW_HEIGHT = 1440;
-const MINIMAP_UPDATE_INTERVAL_MS = 250;
 const DEBUG_UPDATE_INTERVAL_MS = 250;
 const DROP_INTERACTION_INTERVAL_MS = 120;
 const SAVE_INTERVAL_MS = 900;
@@ -46,8 +48,9 @@ export class AdventureScene extends Phaser.Scene {
   private inventoryOverlay!: InventoryOverlay;
   private minimapOverlay!: MinimapOverlay;
   private debugElement!: HTMLPreElement;
-  private interactionHighlight!: Phaser.GameObjects.Ellipse;
+  private interactionHighlight!: Phaser.GameObjects.Arc;
   private dropHighlight!: Phaser.GameObjects.Ellipse;
+  private dropHintPanel!: Phaser.GameObjects.Graphics;
   private dropHint!: Phaser.GameObjects.Text;
   private harvestProgressGraphics!: Phaser.GameObjects.Graphics;
   private isDebugVisible = false;
@@ -56,6 +59,8 @@ export class AdventureScene extends Phaser.Scene {
   private worldSeed = WORLD_SEED;
   private facing = FacingDirection.Down;
   private isSwimming = false;
+  private terrainSurface = 'ground';
+  private currentTopography: TopographySample | null = null;
   private interactionTarget: InteractionTarget | null = null;
   private nearbyDrop: DroppedItem | null = null;
   private harvestTarget: InteractionTarget | null = null;
@@ -63,7 +68,8 @@ export class AdventureScene extends Phaser.Scene {
   private harvestRequiresMouseRelease = false;
   private lastInteractionTileX = Number.NaN;
   private lastInteractionTileY = Number.NaN;
-  private lastMinimapUpdateMs = Number.NEGATIVE_INFINITY;
+  private lastSwimmingTileX = Number.NaN;
+  private lastSwimmingTileY = Number.NaN;
   private lastDebugUpdateMs = Number.NEGATIVE_INFINITY;
   private lastDropInteractionMs = Number.NEGATIVE_INFINITY;
   private lastSaveAttemptMs = Number.NEGATIVE_INFINITY;
@@ -80,20 +86,26 @@ export class AdventureScene extends Phaser.Scene {
     this.sessionWorldState = new SessionWorldState();
     this.inventory = new Inventory();
     this.player = this.add.rectangle(WORLD_TILE_SIZE / 2, WORLD_TILE_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE).setVisible(false);
-    this.playerAvatar = this.add.graphics().setDepth(10);
+    this.playerAvatar = this.add.graphics().setDepth(10).setScale(PLAYER_AVATAR_SCALE);
     this.harvestProgressGraphics = this.add.graphics().setDepth(15);
     this.interactionHighlight = this.add
-      .ellipse(0, 0, 88, 88, 0xf5d76e, 0.12)
+      .circle(0, 0, 62, 0xf5d76e, 0.09)
       .setStrokeStyle(3, 0xffec8b, 0.95)
-      .setDepth(0.5)
+      .setDepth(8)
       .setVisible(false);
     this.dropHighlight = this.add
       .ellipse(0, 0, 30, 30, 0x7de6ff, 0.09)
       .setStrokeStyle(2, 0xa9f4ff, 0.92)
       .setDepth(8.5)
       .setVisible(false);
+    this.dropHintPanel = this.add.graphics().setDepth(10.8).setVisible(false);
     this.dropHint = this.add
-      .text(0, 0, 'E', { fontFamily: 'system-ui, sans-serif', fontSize: '12px', color: '#e9fdff' })
+      .text(0, 0, '', {
+        fontFamily: 'Cascadia Mono, Consolas, system-ui, sans-serif',
+        fontSize: '12px',
+        color: '#f4fff6',
+        fontStyle: '700'
+      })
       .setOrigin(0.5)
       .setDepth(11)
       .setVisible(false);
@@ -149,14 +161,17 @@ export class AdventureScene extends Phaser.Scene {
 
     this.updateFacing(horizontal, vertical);
     if (isMoving) {
+      const currentTopography = this.currentTopography
+        ?? this.chunkManager.getTopographyAt(this.player.x, this.player.y);
       const length = Math.hypot(horizontal, vertical);
       const speed = PLAYER_SPEED * (this.isSwimming ? SWIM_SPEED_MULTIPLIER : 1);
-      this.player.x += (horizontal / length) * speed * (delta / 1000);
-      this.player.y += (vertical / length) * speed * (delta / 1000);
+      this.movePlayer((horizontal / length) * speed * (delta / 1000), (vertical / length) * speed * (delta / 1000));
+      this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
+      this.terrainSurface = this.currentTopography.surface;
       this.markSaveDirty();
     }
 
-    this.isSwimming = isTraversableWaterAt(this.worldSeed, worldToTile(this.player.x), worldToTile(this.player.y));
+    this.updateSwimmingState();
     this.updatePlayerAvatar(delta, isMoving);
     this.chunkManager.update(this.player.x, this.player.y);
     this.chunkManager.updateWaterAnimation(time);
@@ -192,7 +207,9 @@ export class AdventureScene extends Phaser.Scene {
     this.chunkManager = new ChunkManager(this, this.worldSeed, this.sessionWorldState);
     this.dropManager = new DropManager(this, this.sessionWorldState);
     this.worldReady = true;
-    this.isSwimming = isTraversableWaterAt(this.worldSeed, worldToTile(this.player.x), worldToTile(this.player.y));
+    this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
+    this.terrainSurface = this.currentTopography.surface;
+    this.updateSwimmingState(true);
     this.chunkManager.update(this.player.x, this.player.y);
     this.updatePlayerAvatar(0, false);
     this.updateInteractionTarget(true);
@@ -205,6 +222,21 @@ export class AdventureScene extends Phaser.Scene {
     }
   }
 
+  private updateSwimmingState(force = false): void {
+    const tileX = worldToTile(this.player.x);
+    const tileY = worldToTile(this.player.y);
+    if (!force && tileX === this.lastSwimmingTileX && tileY === this.lastSwimmingTileY) {
+      return;
+    }
+
+    this.lastSwimmingTileX = tileX;
+    this.lastSwimmingTileY = tileY;
+    this.isSwimming = isTraversableWaterAt(this.worldSeed, tileX, tileY);
+  }
+
+  private movePlayer(deltaX: number, deltaY: number): void {
+    this.player.setPosition(this.player.x + deltaX, this.player.y + deltaY);
+  }
   private isDown(direction: keyof MovementKeys): boolean {
     return Boolean(this.cursors[direction]?.isDown || this.movementKeys[direction].isDown);
   }
@@ -329,74 +361,105 @@ export class AdventureScene extends Phaser.Scene {
   private drawPlayerAvatar(animationFrame: number): void {
     const avatar = this.playerAvatar;
     const direction = this.facingVector();
-    const stride = this.isSwimming ? Math.sin(animationFrame / 3 * Math.PI * 2) * 2 : animationFrame === 1 ? 3 : -3;
-    const sideFacing = Math.abs(direction.x) > 0.45;
-    const diagonalFacing = Math.abs(direction.x) > 0.45 && Math.abs(direction.y) > 0.45;
+    const stride = this.isSwimming
+      ? Math.sin(animationFrame / 3 * Math.PI * 2) * 2
+      : animationFrame === 1 ? 3 : -3;
 
     avatar.clear();
     avatar.fillStyle(this.isSwimming ? 0x4ca7bd : 0x152129, this.isSwimming ? 0.45 : 0.32);
-    avatar.fillEllipse(0, this.isSwimming ? 8 : 14, this.isSwimming ? 35 : 24, this.isSwimming ? 11 : 8);
+    avatar.fillEllipse(0, this.isSwimming ? 9 : 15, this.isSwimming ? 39 : 29, this.isSwimming ? 12 : 9);
 
     if (this.isSwimming) {
       avatar.fillStyle(0x5ebfd2, 0.64);
-      avatar.fillEllipse(0, 5, 28, 10);
+      avatar.fillEllipse(0, 5, 31, 11);
       avatar.fillStyle(0x65a8d8, 1);
-      avatar.fillRoundedRect(-8, -4, 16, 13, 4);
+      avatar.fillRoundedRect(-10, -5, 20, 15, 4);
+      avatar.fillStyle(0xd8f3ff, 0.78);
+      avatar.fillRect(-7, -2, 14, 2);
       avatar.fillStyle(0xe1ae86, 1);
-      avatar.fillCircle(0, -12, 8);
-      avatar.fillStyle(0x3a2720, 1);
-      avatar.fillRect(-7, -19, 14, 5);
-      avatar.fillCircle(-5, -16, 3);
-      avatar.fillCircle(5, -16, 3);
-      avatar.fillStyle(0xe1ae86, 1);
-      avatar.fillRoundedRect(-13 + direction.x * 3, -2 + stride, 6, 8, 3);
-      avatar.fillRoundedRect(7 + direction.x * 3, -2 - stride, 6, 8, 3);
-      if (direction.y >= 0 || diagonalFacing) {
-        avatar.fillStyle(0x263238, 1);
-        avatar.fillCircle(direction.x * 2 - 2, -12 + direction.y * 2, 1.2);
-        avatar.fillCircle(direction.x * 2 + 3, -12 + direction.y * 2, 1.2);
-      }
+      avatar.fillRoundedRect(-14 + direction.x * 3, -2 + stride, 7, 8, 3);
+      avatar.fillRoundedRect(7 + direction.x * 3, -2 - stride, 7, 8, 3);
+      this.drawDirectionalHead(direction, true);
       return;
     }
 
-    avatar.fillStyle(0x27394a, 1);
-    avatar.fillRoundedRect(-8, -6, 16, 16, 4);
+    avatar.fillStyle(0x182634, 1);
+    avatar.fillRoundedRect(-10, -7, 20, 19, 4);
     avatar.fillStyle(0x1c2a37, 1);
-    avatar.fillRect(-7, 9, 5, 10 + stride);
-    avatar.fillRect(3, 9, 5, 10 - stride);
+    avatar.fillRect(-9, 9, 7, 11 + stride);
+    avatar.fillRect(3, 9, 7, 11 - stride);
+    avatar.fillStyle(0x0d151d, 1);
+    avatar.fillRect(-10, 18 + stride, 9, 4);
+    avatar.fillRect(2, 18 - stride, 9, 4);
     avatar.fillStyle(0x65a8d8, 1);
-    avatar.fillRoundedRect(-7, -5, 14, 13, 3);
+    avatar.fillRoundedRect(-9, -6, 18, 15, 3);
+    avatar.fillStyle(0xd8f3ff, 0.72);
+    avatar.fillRect(-7, -3, 14, 2);
+    avatar.fillStyle(0x3d6f98, 1);
+    avatar.fillRect(-9, 7, 18, 3);
     avatar.fillStyle(0xe1ae86, 1);
-    avatar.fillCircle(0, -13, 8);
-    avatar.fillStyle(0x3a2720, 1);
-    avatar.fillRect(-7, -20, 14, 5);
-    avatar.fillCircle(-5, -17, 3);
-    avatar.fillCircle(5, -17, 3);
-    avatar.fillStyle(0xe1ae86, 1);
-    avatar.fillRoundedRect(-13 + direction.x * 3, -3 + stride * 0.45, 5, 12, 2);
-    avatar.fillRoundedRect(8 + direction.x * 3, -3 - stride * 0.45, 5, 12, 2);
-
-    if (direction.y >= 0 || diagonalFacing) {
-      avatar.fillStyle(0x263238, 1);
-      const eyeOffset = sideFacing ? direction.x * 3 : 0;
-      avatar.fillCircle(-3 + eyeOffset, -13 + direction.y * 1.5, 1.2);
-      avatar.fillCircle(3 + eyeOffset, -13 + direction.y * 1.5, 1.2);
-      if (direction.y > 0) {
-        avatar.lineStyle(1, 0x7b4e3b, 0.9);
-        avatar.lineBetween(-2 + eyeOffset, -8, 2 + eyeOffset, -8);
-      }
-    } else {
-      avatar.fillStyle(0x3a2720, 1);
-      avatar.fillCircle(0, -14, 7);
-    }
+    avatar.fillRoundedRect(-14 + direction.x * 3, -3 + stride * 0.45, 6, 12, 2);
+    avatar.fillRoundedRect(8 + direction.x * 3, -3 - stride * 0.45, 6, 12, 2);
+    this.drawDirectionalHead(direction, false);
   }
 
-  private updateMinimap(time: number, force = false): void {
-    if (!force && time - this.lastMinimapUpdateMs < MINIMAP_UPDATE_INTERVAL_MS) {
+  private drawDirectionalHead(direction: Phaser.Math.Vector2, swimming: boolean): void {
+    const avatar = this.playerAvatar;
+    const headY = swimming ? -12 : -13;
+    const isBackFacing = direction.y < -0.35;
+    const isFrontFacing = direction.y > 0.35;
+
+    if (isBackFacing) {
+      // Up, up-left, and up-right show a clear full back-of-hair silhouette with no facial features.
+      avatar.fillStyle(0x3a2720, 1);
+      avatar.fillCircle(0, headY, 10);
+      avatar.fillRoundedRect(-9, headY - 6, 18, 14, 6);
+      avatar.fillStyle(0x684432, 1);
+      avatar.fillCircle(-4, headY - 4, 3);
+      avatar.fillCircle(3, headY - 5, 3);
+      avatar.lineStyle(1.5, 0x201510, 0.75);
+      avatar.lineBetween(-6, headY + 2, -5, headY + 8);
+      avatar.lineBetween(0, headY + 1, 0, headY + 9);
+      avatar.lineBetween(6, headY + 2, 5, headY + 8);
       return;
     }
 
-    this.lastMinimapUpdateMs = time;
+    avatar.fillStyle(0xe1ae86, 1);
+    avatar.fillCircle(0, headY, 9);
+
+    if (!isFrontFacing) {
+      // Left and right are true profiles: one eye/nose face forward, and the hair sits behind it.
+      const faceDirection = direction.x >= 0 ? 1 : -1;
+      avatar.fillStyle(0x3a2720, 1);
+      avatar.fillCircle(-faceDirection * 5, headY - 1, 8);
+      // Keep the back-hair shape mirrored; the old left-facing rect was placed beyond the head.
+      const hairX = faceDirection > 0 ? -10 : -1;
+      avatar.fillRoundedRect(hairX, headY - 7, 11, 10, 5);
+      avatar.fillStyle(0x684432, 1);
+      avatar.fillCircle(-faceDirection * 6, headY - 4, 3);
+      avatar.fillStyle(0x263238, 1);
+      avatar.fillCircle(faceDirection * 4, headY - 2, 1.5);
+      avatar.fillStyle(0x7b4e3b, 1);
+      avatar.fillTriangle(faceDirection * 9, headY, faceDirection * 6, headY + 2, faceDirection * 6, headY - 2);
+      return;
+    }
+
+    // Down, down-left, and down-right show the face clearly, with a hair cap and bangs above it.
+    avatar.fillStyle(0x3a2720, 1);
+    avatar.fillRoundedRect(-9, headY - 9, 18, 8, 5);
+    avatar.fillCircle(-6, headY - 5, 4);
+    avatar.fillCircle(6, headY - 5, 4);
+    avatar.fillStyle(0x684432, 1);
+    avatar.fillRect(-5, headY - 8, 3, 4);
+    avatar.fillRect(2, headY - 8, 3, 4);
+    avatar.fillStyle(0x263238, 1);
+    const faceOffset = direction.x * 1.4;
+    avatar.fillCircle(-3 + faceOffset, headY - 1, 1.5);
+    avatar.fillCircle(3 + faceOffset, headY - 1, 1.5);
+    avatar.lineStyle(1.4, 0x7b4e3b, 0.95);
+    avatar.lineBetween(-2 + faceOffset, headY + 4, 2 + faceOffset, headY + 4);
+  }
+  private updateMinimap(_time: number, _force = false): void {
     this.minimapOverlay.draw(
       this.worldSeed,
       this.player.x / WORLD_TILE_SIZE,
@@ -443,14 +506,42 @@ export class AdventureScene extends Phaser.Scene {
     this.nearbyDrop = this.dropManager.findNearest(this.player.x, this.player.y);
     if (!this.nearbyDrop) {
       this.dropHighlight.setVisible(false);
+      this.dropHintPanel.clear().setVisible(false);
       this.dropHint.setVisible(false);
       return;
     }
 
     this.dropHighlight.setPosition(this.nearbyDrop.worldX, this.nearbyDrop.worldY).setVisible(true);
-    this.dropHint.setPosition(this.nearbyDrop.worldX, this.nearbyDrop.worldY - 18).setVisible(true);
+    this.drawDropHint(this.nearbyDrop);
   }
 
+  private drawDropHint(drop: DroppedItem): void {
+    const label = `${resourceLabel(drop.resource)}  E`;
+    const x = drop.worldX;
+    const y = drop.worldY - 34;
+    this.dropHint.setText(label).setPosition(x + 4, y).setVisible(true);
+
+    const paddingX = 10;
+    const paddingY = 5;
+    const width = Math.max(72, this.dropHint.width + paddingX * 2 + 14);
+    const height = Math.max(26, this.dropHint.height + paddingY * 2);
+    const left = x - width / 2;
+    const top = y - height / 2;
+    const dotX = left + 13;
+
+    this.dropHintPanel.clear();
+    this.dropHintPanel.fillStyle(0x07130f, 0.9);
+    this.dropHintPanel.fillRoundedRect(left, top, width, height, 7);
+    this.dropHintPanel.lineStyle(1.5, 0xbfe9c6, 0.9);
+    this.dropHintPanel.strokeRoundedRect(left, top, width, height, 7);
+    this.dropHintPanel.fillStyle(RESOURCE_COLORS[drop.resource], 1);
+    this.dropHintPanel.fillCircle(dotX, y, 4);
+    this.dropHintPanel.lineStyle(1, 0xffffff, 0.72);
+    this.dropHintPanel.strokeCircle(dotX, y, 5.5);
+    this.dropHintPanel.fillStyle(0x07130f, 0.9);
+    this.dropHintPanel.fillTriangle(x - 6, top + height - 1, x + 6, top + height - 1, x, top + height + 7);
+    this.dropHintPanel.setVisible(true);
+  }
   private pickupNearbyDrop(): boolean {
     const drop = this.dropManager.findNearest(this.player.x, this.player.y);
     if (!drop) {
@@ -564,9 +655,12 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     const direction = this.facingVector();
+    const requestedDropX = this.player.x + direction.x * 68;
+    const requestedDropY = this.player.y + direction.y * 68;
+    const dropPosition = { x: requestedDropX, y: requestedDropY };
     const drop = this.sessionWorldState.createDropAt(
-      this.player.x + direction.x * 68,
-      this.player.y + direction.y * 68,
+      dropPosition.x,
+      dropPosition.y,
       slot.resource,
       slot.amount
     );
@@ -691,6 +785,7 @@ export class AdventureScene extends Phaser.Scene {
       `Target      ${target}`,
       `Facing      ${this.facing}`,
       `Movement    ${this.isSwimming ? 'swimming' : 'walking'}`,
+      `Terrain     ${this.terrainSurface}`,
       `Harvested   ${this.sessionWorldState.harvestedFeatureCount}`,
       `Drops       ${this.sessionWorldState.dropCount}`,
       `Inventory   ${usedInventorySlots}/${INVENTORY_SLOT_COUNT} slots`,

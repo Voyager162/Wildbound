@@ -33,6 +33,12 @@ export const BIOME_COLORS: Record<Biome, number> = {
 
 const biomeNoiseScale = (baseScale: number): number => baseScale * (BIOME_SIZE_SCALE / 50);
 
+// Ocean is deliberately broader than the shore. Water gameplay and the biome label use this same boundary.
+export const OCEAN_ELEVATION_MAX = 0.28;
+export const BEACH_ELEVATION_MAX = 0.36;
+export const HILL_ELEVATION_MIN = 0.62;
+export const MOUNTAIN_ELEVATION_MIN = 0.76;
+
 // Large climate wavelengths make each biome a region to explore instead of a small patch.
 export const climateAtTile = (seed: string, tileX: number, tileY: number): ClimateSample => ({
   elevation: coherentNoise(seed, tileX, tileY, biomeNoiseScale(512), 0x63d83595),
@@ -40,14 +46,12 @@ export const climateAtTile = (seed: string, tileX: number, tileY: number): Clima
   temperature: coherentNoise(seed, tileX, tileY, biomeNoiseScale(640), 0x4f1bbcdc)
 });
 
-export const biomeAtTile = (seed: string, tileX: number, tileY: number): Biome => {
-  const { elevation, moisture, temperature } = climateAtTile(seed, tileX, tileY);
-
-  if (elevation < 0.22) {
+export const biomeForClimate = ({ elevation, moisture, temperature }: ClimateSample): Biome => {
+  if (elevation < OCEAN_ELEVATION_MAX) {
     return Biome.Ocean;
   }
 
-  if (elevation < 0.3) {
+  if (elevation < BEACH_ELEVATION_MAX) {
     return Biome.Beach;
   }
 
@@ -55,11 +59,11 @@ export const biomeAtTile = (seed: string, tileX: number, tileY: number): Biome =
     return Biome.Snow;
   }
 
-  if (elevation > 0.84) {
+  if (elevation > MOUNTAIN_ELEVATION_MIN) {
     return Biome.Mountains;
   }
 
-  if (elevation > 0.7) {
+  if (elevation > HILL_ELEVATION_MIN) {
     return Biome.Hills;
   }
 
@@ -77,3 +81,12 @@ export const biomeAtTile = (seed: string, tileX: number, tileY: number): Biome =
 
   return Biome.Plains;
 };
+
+// The minimap uses final gameplay biomes directly: if a pixel is blue, that world tile is swim-water.
+// Smoothness comes from dense world sampling, not from blurring unrelated biome colors together.
+export const minimapColorAtTile = (seed: string, tileX: number, tileY: number): number => {
+  const biome = biomeForClimate(climateAtTile(seed, tileX, tileY));
+  return BIOME_COLORS[biome];
+};
+export const biomeAtTile = (seed: string, tileX: number, tileY: number): Biome =>
+  biomeForClimate(climateAtTile(seed, tileX, tileY));

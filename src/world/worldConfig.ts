@@ -1,10 +1,10 @@
 export const WORLD_TILE_SIZE = 32;
 
 // Keep the default seed in one place until world selection and save data exist.
-export const WORLD_SEED = '1234ddw';
+export const WORLD_SEED = 'waoefiu';
 
 // 1-100 biome wavelength control: higher values create larger biome regions; 50 preserves the base medium scale.
-export const BIOME_SIZE_SCALE = 20;
+export const BIOME_SIZE_SCALE = 50;
 
 // 16 x 16 tiles keeps each streamed chunk to a compact 512 x 512 pixel area.
 export const CHUNK_SIZE_TILES = 16;

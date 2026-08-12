@@ -145,12 +145,22 @@ body {
   touch-action: none;
 }
 
+.inventory-item {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  transform-origin: center;
+}
+
 .inventory-slot:hover {
   border-color: #d8edbf;
   background: linear-gradient(135deg, #3a5b45, #213d2c);
 }
 
-.inventory-slot:active {
+.inventory-slot:active,
+.inventory-slot.is-dragging {
   cursor: grabbing;
 }
 
@@ -181,6 +191,15 @@ body {
 .inventory-slot:active .resource-icon {
   transform: scale(0.92);
   transition-duration: 55ms;
+}
+
+.inventory-slot.is-dragging {
+  border-color: #f7e99a;
+  background: linear-gradient(135deg, #263c2f, #17261d);
+}
+
+.inventory-slot.is-dragging .inventory-item {
+  filter: drop-shadow(0 12px 10px rgba(0, 0, 0, 0.42));
 }
 
 .resource-icon__detail {
@@ -304,29 +323,6 @@ body {
   transform: rotate(25deg);
 }
 
-.inventory-drag-ghost {
-  position: fixed;
-  z-index: 100;
-  display: flex;
-  align-items: end;
-  gap: 4px;
-  min-width: 44px;
-  min-height: 44px;
-  padding: 5px;
-  border: 1px solid #e4f6c5;
-  border-radius: 8px;
-  background: rgba(17, 44, 29, 0.96);
-  color: white;
-  font: 800 14px/1 "Cascadia Mono", Consolas, monospace;
-  pointer-events: none;
-  will-change: transform;
-  transition: transform 70ms cubic-bezier(0.16, 0.8, 0.28, 1);
-}
-
-.inventory-drag-ghost .resource-icon {
-  transform: scale(0.78);
-  transform-origin: bottom left;
-}
 
 @media (max-width: 500px) {
   .minimap-overlay {

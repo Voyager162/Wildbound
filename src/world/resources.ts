@@ -34,6 +34,7 @@ export const resourceForFeature = (feature: TerrainFeatureType): ResourceType =>
     case TerrainFeatureType.SnowyRock:
       return ResourceType.Stone;
     case TerrainFeatureType.Reeds:
+    case TerrainFeatureType.Grass:
       return ResourceType.Fiber;
     case TerrainFeatureType.IcePatch:
       return ResourceType.IceShard;

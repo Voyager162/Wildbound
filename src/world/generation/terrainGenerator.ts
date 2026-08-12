@@ -1,6 +1,7 @@
-﻿import { biomeAtTile, Biome, climateAtTile } from './biomeGenerator';
+import { BEACH_ELEVATION_MAX, biomeForClimate, Biome, climateAtTile, OCEAN_ELEVATION_MAX } from './biomeGenerator';
 import { coherentNoise, randomAtTile } from './noise';
-import { CHUNK_SIZE_TILES } from '../worldConfig';
+import { sampleTopographyVisual, type TopographySample } from './topographyGenerator';
+import { CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from '../worldConfig';
 
 export enum TerrainType {
   Grass = 'grass',
@@ -23,6 +24,7 @@ export interface TerrainSurface {
   elevation: number;
   moisture: number;
   temperature: number;
+  topography: TopographySample;
 }
 
 export const TERRAIN_COLORS: Record<TerrainType, number> = {
@@ -84,63 +86,77 @@ const smoothRange = (start: number, end: number, value: number): number => {
   return normalized * normalized * (3 - 2 * normalized);
 };
 
-const landColor = (biome: Biome): number => {
-  switch (biome) {
-    case Biome.Forest:
-      return TERRAIN_COLORS[TerrainType.Forest];
-    case Biome.Desert:
-      return TERRAIN_COLORS[TerrainType.Desert];
-    case Biome.Swamp:
-      return TERRAIN_COLORS[TerrainType.Swamp];
-    case Biome.Hills:
-      return TERRAIN_COLORS[TerrainType.Dirt];
-    case Biome.Mountains:
-      return TERRAIN_COLORS[TerrainType.Mountain];
-    case Biome.Snow:
-      return TERRAIN_COLORS[TerrainType.Snow];
-    default:
-      return TERRAIN_COLORS[TerrainType.Grass];
-  }
+// Biome labels are still useful for gameplay, but terrain color is derived from the continuous
+// climate values. This gives every visual boundary the same gradual treatment as a shoreline.
+const blendedLandColor = (climate: ReturnType<typeof climateAtTile>): number => {
+  const { elevation, moisture, temperature } = climate;
+  let color = TERRAIN_COLORS[TerrainType.Grass];
+
+  const forestAmount = smoothRange(0.46, 0.67, moisture) * (1 - smoothRange(0.62, 0.8, temperature));
+  const desertAmount = smoothRange(0.6, 0.76, temperature) * (1 - smoothRange(0.28, 0.46, moisture));
+  const swampAmount = smoothRange(0.7, 0.84, moisture)
+    * smoothRange(0.36, 0.55, temperature)
+    * (1 - smoothRange(0.58, 0.74, elevation));
+  color = blendColor(color, TERRAIN_COLORS[TerrainType.Forest], forestAmount);
+  color = blendColor(color, TERRAIN_COLORS[TerrainType.Desert], desertAmount);
+  color = blendColor(color, TERRAIN_COLORS[TerrainType.Swamp], swampAmount);
+
+  const hillAmount = smoothRange(0.6, 0.78, elevation);
+  const mountainAmount = smoothRange(0.76, 0.92, elevation);
+  color = blendColor(color, TERRAIN_COLORS[TerrainType.Dirt], hillAmount);
+  color = blendColor(color, TERRAIN_COLORS[TerrainType.Mountain], mountainAmount);
+
+  const coldSnow = 1 - smoothRange(0.14, 0.34, temperature);
+  const highSnow = smoothRange(0.72, 0.92, elevation) * (1 - smoothRange(0.5, 0.68, temperature));
+  color = blendColor(color, TERRAIN_COLORS[TerrainType.Snow], Math.max(coldSnow, highSnow));
+
+  return color;
 };
 
 // This returns deterministic visual terrain data. Gameplay and saving still use only global
 // coordinates and the seed, so chunks can be unloaded and recreated without visual drift.
 export const surfaceAtTile = (seed: string, tileX: number, tileY: number): TerrainSurface => {
   const climate = climateAtTile(seed, tileX, tileY);
-  const biome = biomeAtTile(seed, tileX, tileY);
+  const biome = biomeForClimate(climate);
   const microVariation = coherentNoise(seed, tileX, tileY, 22, 0x3a4172d1) - 0.5;
   const swampPool = coherentNoise(seed, tileX, tileY, 28, 0x31b69f13);
   const terrain = terrainForBiome[biome];
-  let color = landColor(biome);
+  const topography = sampleTopographyVisual(
+    seed,
+    tileX * WORLD_TILE_SIZE,
+    tileY * WORLD_TILE_SIZE,
+    climate
+  );
+  const regionalLandColor = blendedLandColor(climate);
+  let color = regionalLandColor;
   let isWater = biome === Biome.Ocean;
   let isShallowWater = false;
 
-  // Smooth elevation bands make coastlines blend rather than stepping abruptly between biomes.
+  // Ocean is the only swim-water biome. Beaches retain the same continuous shore palette but
+  // stay walkable, so the minimap, F3 label, and movement state never disagree at a shoreline.
   const deepWater = 0x1f5d91;
   const shallowWater = 0x3c94b0;
   const beachSand = 0xdbc37f;
-  if (climate.elevation < 0.27) {
-    color = blendColor(deepWater, shallowWater, smoothRange(0.08, 0.27, climate.elevation));
+  if (biome === Biome.Ocean) {
+    color = blendColor(deepWater, shallowWater, smoothRange(0.08, OCEAN_ELEVATION_MAX, climate.elevation));
     isWater = true;
-    isShallowWater = climate.elevation > 0.2;
-  } else if (climate.elevation < 0.35) {
-    const shoreAmount = smoothRange(0.27, 0.35, climate.elevation);
-    color = blendColor(shallowWater, beachSand, smoothRange(0.27, 0.31, climate.elevation));
-    color = blendColor(color, landColor(biome), smoothRange(0.31, 0.35, climate.elevation));
-    isWater = shoreAmount < 0.2;
-    isShallowWater = shoreAmount < 0.55;
+    isShallowWater = climate.elevation > OCEAN_ELEVATION_MAX - 0.08;
+  } else if (biome === Biome.Beach) {
+    color = blendColor(beachSand, regionalLandColor, smoothRange(OCEAN_ELEVATION_MAX + 0.025, BEACH_ELEVATION_MAX, climate.elevation));
+    isWater = false;
+    isShallowWater = false;
   } else if (biome === Biome.Swamp && swampPool > 0.64) {
+    // Swamp pools are shallow swim-water; surrounding swamp ground remains walkable.
     const poolAmount = smoothRange(0.64, 0.82, swampPool);
-    color = blendColor(TERRAIN_COLORS[TerrainType.Swamp], 0x367f8b, poolAmount);
+    color = blendColor(regionalLandColor, 0x367f8b, poolAmount);
     isWater = true;
     isShallowWater = true;
-  } else if (biome === Biome.Hills) {
-    color = blendColor(TERRAIN_COLORS[TerrainType.Grass], TERRAIN_COLORS[TerrainType.Dirt], smoothRange(0.62, 0.76, climate.elevation));
-  } else if (biome === Biome.Mountains) {
-    color = blendColor(TERRAIN_COLORS[TerrainType.Dirt], TERRAIN_COLORS[TerrainType.Mountain], smoothRange(0.74, 0.92, climate.elevation));
-  } else if (biome === Biome.Snow) {
-    const iceAmount = smoothRange(0.68, 0.92, climate.elevation) * smoothRange(0.08, 0.36, 0.4 - climate.temperature);
-    color = blendColor(TERRAIN_COLORS[TerrainType.Snow], 0xaed9e5, iceAmount);
+  }
+
+  if (!isWater) {
+    const rollingShade = (topography.height - climate.elevation) * 0.35 + (topography.contour < 0.075 ? -0.07 : 0);
+    color = shadeColor(color, rollingShade);
+
   }
 
   return {
@@ -151,7 +167,8 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
     isShallowWater,
     elevation: climate.elevation,
     moisture: climate.moisture,
-    temperature: climate.temperature
+    temperature: climate.temperature,
+    topography
   };
 };
 

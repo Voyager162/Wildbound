@@ -1,4 +1,5 @@
-﻿import Phaser from 'phaser';
+import Phaser from 'phaser';
+import { sampleTopography, type TopographySample } from './generation/topographyGenerator';
 import { SessionWorldState } from './SessionWorldState';
 import { WorldChunk } from './WorldChunk';
 import {
@@ -53,6 +54,10 @@ export class ChunkManager {
 
     this.lastWaterAnimationTime = time;
     this.chunks.forEach((chunk) => chunk.updateWaterAnimation(time));
+  }
+
+  getTopographyAt(worldX: number, worldY: number): TopographySample {
+    return sampleTopography(this.seed, worldX, worldY);
   }
 
   setHarvestAnimation(tileX: number, tileY: number, progress: number): void {
