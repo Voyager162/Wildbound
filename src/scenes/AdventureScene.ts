@@ -260,11 +260,11 @@ export class AdventureScene extends Phaser.Scene {
 
     this.chunkManager = new ChunkManager(this, this.worldSeed, this.sessionWorldState);
     this.dropManager = new DropManager(this, this.sessionWorldState);
+    this.chunkManager.prime(this.player.x, this.player.y);
     this.worldReady = true;
     this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
     this.terrainSurface = this.currentTopography.surface;
     this.updateSwimmingState(true);
-    this.chunkManager.update(this.player.x, this.player.y);
     this.updatePlayerAvatar(0, false);
     this.updateInteractionTarget(true);
     this.updateDropInteraction(0, true);
