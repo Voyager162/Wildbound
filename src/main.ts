@@ -21,4 +21,23 @@ const config: Phaser.Types.Core.GameConfig = {
   scene: [AdventureScene]
 };
 
-new Phaser.Game(config);
+const game = new Phaser.Game(config);
+const gameElement = document.getElementById('game');
+
+// Electron's fullscreen transition does not reliably trigger Phaser's automatic parent-size
+// measurement on every Windows display setup. Observing the actual container keeps the canvas
+// backing size and CSS display size in sync for regular, maximized, and fullscreen windows.
+if (gameElement && typeof ResizeObserver !== 'undefined') {
+  const resizeGame = (): void => {
+    const bounds = gameElement.getBoundingClientRect();
+    const width = Math.max(1, Math.floor(bounds.width));
+    const height = Math.max(1, Math.floor(bounds.height));
+    if (game.scale.width !== width || game.scale.height !== height) {
+      game.scale.resize(width, height);
+    }
+  };
+  new ResizeObserver(resizeGame).observe(gameElement);
+  window.addEventListener('resize', resizeGame);
+  window.addEventListener('fullscreenchange', resizeGame);
+  resizeGame();
+}

@@ -28,8 +28,10 @@ body {
   background: #101820;
 }
 
-#game canvas:not(.minimap-overlay) {
+#game > canvas:not(.minimap-overlay) {
   display: block;
+  width: 100% !important;
+  height: 100% !important;
 }
 
 .day-night-overlay {

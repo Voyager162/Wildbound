@@ -7,6 +7,12 @@ import { surfaceAtTile, type TerrainSurface } from './generation/terrainGenerato
 import { SessionWorldState } from './SessionWorldState';
 import { WATER_WAVES_PER_CHUNK } from './explorationConfig';
 import { AMBIENT_GRASS_TUFTS_PER_CHUNK } from './explorationConfig';
+import {
+  GROUND_GRASS_BASE_HEIGHT_PIXELS,
+  GROUND_GRASS_FREQUENCY_SCALE,
+  GROUND_GRASS_HEIGHT_VARIATION_PIXELS,
+  GROUND_GRASS_SIZE_SCALE
+} from './worldVisualConfig';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 
 // Terrain is baked into one texture per chunk. The 8px visual cells retain detail while
@@ -464,12 +470,15 @@ export class WorldChunk {
           * (1 - smooth(0.59, 0.77, surface.temperature))
           * (1 - smooth(0.59, 0.8, surface.elevation))
           * (1 - smooth(0.1, 0.26, surface.temperature));
+        // Every viable grassy climate gets a dependable base layer, with the continuous climate
+        // weight still making the density ebb away naturally at dry, cold, high, and wet edges.
+        const density = Math.min(0.96, (0.28 + climateCoverage * 0.72) * GROUND_GRASS_FREQUENCY_SCALE);
         const placement = randomAtTile(this.seed, worldTileX, worldTileY, 0x6d42aeb9);
-        if (placement > climateCoverage * 0.92) {
+        if (placement > density) {
           continue;
         }
 
-        const clumpCount = placement < climateCoverage * 0.38 ? 3 : placement < climateCoverage * 0.68 ? 2 : 1;
+        const clumpCount = placement < density * 0.34 ? 3 : placement < density * 0.7 ? 2 : 1;
         const baseX = localX * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING;
         const baseY = localY * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING;
         const shadow = this.shadeColor(surface.color, -0.42);
@@ -478,9 +487,10 @@ export class WorldChunk {
 
         for (let clump = 0; clump < clumpCount; clump += 1) {
           const offsetX = 4 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7 + clump) * 24;
-          // A pronounced 25–34px field layer reads clearly in motion but remains below the
-          // 40px harvestable clumps, preserving a reliable visual interaction cue.
-          const height = 25 + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37 + clump) * 9;
+          // Keep decorative grass below the 40px harvestable clumps at the default scale.
+          const height = (GROUND_GRASS_BASE_HEIGHT_PIXELS
+            + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37 + clump) * GROUND_GRASS_HEIGHT_VARIATION_PIXELS)
+            * GROUND_GRASS_SIZE_SCALE;
           const lean = (randomAtTile(this.seed, worldTileX, worldTileY, 0x7959e2d1 + clump) - 0.5) * 11;
           const rootX = baseX + offsetX;
           const rootY = baseY + 27;
