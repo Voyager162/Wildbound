@@ -18,6 +18,7 @@ export interface SessionWorldStateData {
   // This keeps a long-running save compact while still making every journey permanent.
   exploredRegionKeys?: string[];
   explorationRegionSizeTiles?: number;
+  explorationRevealStampKeys?: string[];
   worldTimeMs?: number;
 }
 
@@ -45,6 +46,7 @@ export class SessionWorldState {
   private readonly harvestedFeatureKeys = new Set<string>();
   private readonly drops = new Map<string, DroppedItem>();
   private readonly exploredRegionKeys = new Set<string>();
+  private readonly explorationRevealStampKeys = new Set<string>();
   private nextDropId = 0;
   private savedWorldTimeMs: number | null = null;
 
@@ -135,6 +137,33 @@ export class SessionWorldState {
     return this.exploredRegionKeys.has(this.regionKey(regionX, regionY));
   }
 
+  revealMapStamp(tileX: number, tileY: number, spacingTiles: number): boolean {
+    if (!Number.isFinite(tileX) || !Number.isFinite(tileY) || !Number.isInteger(spacingTiles) || spacingTiles < 1) {
+      return false;
+    }
+
+    const stampX = Math.floor(tileX / spacingTiles) * spacingTiles + spacingTiles / 2;
+    const stampY = Math.floor(tileY / spacingTiles) * spacingTiles + spacingTiles / 2;
+    const key = this.regionKey(stampX, stampY);
+    if (this.explorationRevealStampKeys.has(key)) {
+      return false;
+    }
+
+    this.explorationRevealStampKeys.add(key);
+    return true;
+  }
+
+  getExplorationRevealStamps(): Array<readonly [number, number]> {
+    const stamps: Array<readonly [number, number]> = [];
+    this.explorationRevealStampKeys.forEach((key) => {
+      const [tileX, tileY] = this.parseRegionKey(key);
+      if (tileX !== null && tileY !== null) {
+        stamps.push([tileX, tileY]);
+      }
+    });
+    return stamps;
+  }
+
   getExploredRegions(): Array<readonly [number, number]> {
     const regions: Array<readonly [number, number]> = [];
     this.exploredRegionKeys.forEach((key) => {
@@ -170,6 +199,7 @@ export class SessionWorldState {
       nextDropId: this.nextDropId,
       exploredRegionKeys: Array.from(this.exploredRegionKeys),
       explorationRegionSizeTiles: EXPLORATION_SAVE_REGION_SIZE_TILES,
+      explorationRevealStampKeys: Array.from(this.explorationRevealStampKeys),
       worldTimeMs: this.savedWorldTimeMs ?? undefined
     };
   }
@@ -178,6 +208,7 @@ export class SessionWorldState {
     this.harvestedFeatureKeys.clear();
     this.drops.clear();
     this.exploredRegionKeys.clear();
+    this.explorationRevealStampKeys.clear();
     this.nextDropId = 0;
     this.savedWorldTimeMs = null;
 
@@ -225,6 +256,19 @@ export class SessionWorldState {
               ));
             }
           }
+        }
+      });
+    }
+
+    if (Array.isArray(state.explorationRevealStampKeys)) {
+      state.explorationRevealStampKeys.forEach((key) => {
+        if (typeof key !== 'string') {
+          return;
+        }
+
+        const [tileX, tileY] = this.parseRegionKey(key);
+        if (tileX !== null && tileY !== null) {
+          this.explorationRevealStampKeys.add(this.regionKey(tileX, tileY));
         }
       });
     }

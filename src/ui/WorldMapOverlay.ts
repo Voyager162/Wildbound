@@ -11,6 +11,13 @@ export interface ExploredMapRegion {
   sizeTiles: number;
 }
 
+/** A saved minimap-sized circular reveal. Terrain remains deterministic, so only its center and radius persist. */
+export interface WorldMapRevealStamp {
+  tileX: number;
+  tileY: number;
+  radiusTiles: number;
+}
+
 /**
  * The small, already-discovered slice of a procedural landmark needed by the
  * map. Landmark generation remains independent from this UI layer.
@@ -29,6 +36,7 @@ export interface WorldMapDrawRequest {
   playerTileX: number;
   playerTileY: number;
   regions: readonly ExploredMapRegion[];
+  reveals: readonly WorldMapRevealStamp[];
   landmarks: readonly WorldMapLandmarkMarker[];
 }
 
@@ -65,11 +73,18 @@ interface NormalizedLandmarks {
   truncated: boolean;
 }
 
+interface NormalizedReveals {
+  reveals: WorldMapRevealStamp[];
+  signature: string;
+  truncated: boolean;
+}
+
 interface NormalizedRequest {
   seed: string;
   playerTileX: number;
   playerTileY: number;
   regions: ExploredMapRegion[];
+  reveals: WorldMapRevealStamp[];
   landmarks: WorldMapLandmarkMarker[];
   contentSignature: string;
   regionsTruncated: boolean;
@@ -80,7 +95,9 @@ interface RenderJob {
   request: NormalizedRequest;
   geometry: MapGeometry;
   regions: ExploredMapRegion[];
+  reveals: WorldMapRevealStamp[];
   nextRegionIndex: number;
+  nextRevealIndex: number;
   discoveredBiomes: Set<Biome>;
 }
 
@@ -116,8 +133,8 @@ const RENDER_TIME_BUDGET_MS = 3.5;
 // Samples use the exact continuous terrain palette from world chunks rather than a
 // single biome swatch for each fog-of-war region.
 const TERRAIN_SAMPLE_STEP_PIXELS = 1;
-const DEFAULT_TILES_PER_CSS_PIXEL = 0.32;
-const MIN_TILES_PER_CSS_PIXEL = 0.045;
+const DEFAULT_TILES_PER_CSS_PIXEL = 1;
+const MIN_TILES_PER_CSS_PIXEL = 0.08;
 const MAX_TILES_PER_CSS_PIXEL = 8;
 const MAX_LANDMARK_LABELS = 16;
 const MAX_LANDMARK_LABEL_LENGTH = 32;
@@ -347,6 +364,7 @@ export class WorldMapOverlay {
 
   private normalizeRequest(request: WorldMapDrawRequest): NormalizedRequest {
     const normalizedRegions = this.normalizeRegions(request.regions);
+    const normalizedReveals = this.normalizeReveals(request.reveals);
     const normalizedLandmarks = this.normalizeLandmarks(request.landmarks);
     const seed = typeof request.seed === 'string' ? request.seed : '';
 
@@ -355,11 +373,49 @@ export class WorldMapOverlay {
       playerTileX: isFiniteNumber(request.playerTileX) ? request.playerTileX : 0,
       playerTileY: isFiniteNumber(request.playerTileY) ? request.playerTileY : 0,
       regions: normalizedRegions.regions,
+      reveals: normalizedReveals.reveals,
       landmarks: normalizedLandmarks.landmarks,
-      contentSignature: `${seed}\u0000${normalizedRegions.signature}`,
-      regionsTruncated: normalizedRegions.truncated,
+      contentSignature: `${seed}\u0000${normalizedRegions.signature}\u0000${normalizedReveals.signature}`,
+      regionsTruncated: normalizedRegions.truncated || normalizedReveals.truncated,
       landmarksTruncated: normalizedLandmarks.truncated
     };
+  }
+
+  private normalizeReveals(input: readonly WorldMapRevealStamp[]): NormalizedReveals {
+    const reveals: WorldMapRevealStamp[] = [];
+    const uniqueKeys = new Set<string>();
+    let sum = 0;
+    let xor = 0;
+    const inputLength = Array.isArray(input) ? input.length : 0;
+    const limit = Math.min(inputLength, MAX_REGION_INPUT);
+
+    for (let index = 0; index < limit; index += 1) {
+      const reveal = input[index];
+      if (!reveal || !isFiniteNumber(reveal.tileX) || !isFiniteNumber(reveal.tileY) || !isFiniteNumber(reveal.radiusTiles)) {
+        continue;
+      }
+
+      const tileX = Math.round(reveal.tileX);
+      const tileY = Math.round(reveal.tileY);
+      const radiusTiles = Math.round(reveal.radiusTiles);
+      if (radiusTiles < 1 || radiusTiles > MAX_REGION_SIZE_TILES || Math.abs(tileX) > MAX_ABSOLUTE_TILE_COORDINATE || Math.abs(tileY) > MAX_ABSOLUTE_TILE_COORDINATE) {
+        continue;
+      }
+
+      const key = `${tileX},${tileY},${radiusTiles}`;
+      if (uniqueKeys.has(key)) {
+        continue;
+      }
+
+      uniqueKeys.add(key);
+      const normalized = { tileX, tileY, radiusTiles };
+      reveals.push(normalized);
+      const hash = regionHash({ tileX, tileY, sizeTiles: radiusTiles });
+      sum = (sum + hash) >>> 0;
+      xor = (xor ^ hash) >>> 0;
+    }
+
+    return { reveals, signature: `${reveals.length}:${sum.toString(36)}:${xor.toString(36)}`, truncated: inputLength > limit };
   }
 
   private normalizeRegions(input: readonly ExploredMapRegion[]): NormalizedRegions {
@@ -481,15 +537,21 @@ export class WorldMapOverlay {
     this.renderJob = {
       request,
       geometry,
-      regions: request.regions.filter((region) => this.regionIntersectsGeometry(region, geometry)),
+      // Regions remain only as a legacy-save fallback. New cartography consists of exact
+      // circular minimap stamps, so the fog edge is never a grid of rectangles.
+      regions: request.reveals.length === 0
+        ? request.regions.filter((region) => this.regionIntersectsGeometry(region, geometry))
+        : [],
+      reveals: request.reveals.filter((reveal) => this.revealIntersectsGeometry(reveal, geometry)),
       nextRegionIndex: 0,
+      nextRevealIndex: 0,
       discoveredBiomes: new Set<Biome>()
     };
     this.scheduleRenderFrame();
   }
 
   private createGeometry(request: NormalizedRequest, dimensions: CanvasDimensions): MapGeometry | null {
-    if (request.regions.length === 0 || this.mapCenterTileX === null || this.mapCenterTileY === null) {
+    if ((request.regions.length === 0 && request.reveals.length === 0) || this.mapCenterTileX === null || this.mapCenterTileY === null) {
       return null;
     }
     const left = MAP_INNER_PADDING;
@@ -536,6 +598,19 @@ export class WorldMapOverlay {
       return;
     }
 
+    while (
+      job.nextRevealIndex < job.reveals.length
+      && performance.now() - startedAt < RENDER_TIME_BUDGET_MS
+    ) {
+      this.paintExplorationStamp(job.geometry, job.request.seed, job.reveals[job.nextRevealIndex], job.discoveredBiomes);
+      job.nextRevealIndex += 1;
+    }
+
+    if (job.nextRevealIndex < job.reveals.length) {
+      this.scheduleRenderFrame();
+      return;
+    }
+
     this.renderJob = null;
     this.terrainContext.setTransform(1, 0, 0, 1, 0, 0);
     const latest = this.latestRequest;
@@ -577,6 +652,40 @@ export class WorldMapOverlay {
         discoveredBiomes.add(sample.biome);
         context.fillStyle = sample.color;
         context.fillRect(x, y, Math.min(TERRAIN_SAMPLE_STEP_PIXELS, right - x), Math.min(TERRAIN_SAMPLE_STEP_PIXELS, bottom - y));
+      }
+    }
+  }
+
+  private paintExplorationStamp(
+    geometry: MapGeometry,
+    seed: string,
+    reveal: WorldMapRevealStamp,
+    discoveredBiomes: Set<Biome>
+  ): void {
+    const center = this.projectTile(geometry, reveal.tileX, reveal.tileY);
+    const radius = reveal.radiusTiles / geometry.tilesPerCssPixel;
+    const left = Math.max(Math.ceil(geometry.left), Math.floor(center.x - radius));
+    const right = Math.min(Math.floor(geometry.left + geometry.width), Math.ceil(center.x + radius));
+    const top = Math.max(Math.ceil(geometry.top), Math.floor(center.y - radius));
+    const bottom = Math.min(Math.floor(geometry.top + geometry.height), Math.ceil(center.y + radius));
+    if (right <= left || bottom <= top) {
+      return;
+    }
+
+    const radiusSquared = radius * radius;
+    const context = this.terrainContext;
+    for (let y = top; y < bottom; y += TERRAIN_SAMPLE_STEP_PIXELS) {
+      const offsetY = y + 0.5 - center.y;
+      const horizontalRadius = Math.sqrt(Math.max(0, radiusSquared - offsetY * offsetY));
+      const rowLeft = Math.max(left, Math.ceil(center.x - horizontalRadius));
+      const rowRight = Math.min(right, Math.floor(center.x + horizontalRadius));
+      for (let x = rowLeft; x < rowRight; x += TERRAIN_SAMPLE_STEP_PIXELS) {
+        const tileX = geometry.minTileX + (x + 0.5 - geometry.left) * geometry.tilesPerCssPixel;
+        const tileY = geometry.minTileY + (y + 0.5 - geometry.top) * geometry.tilesPerCssPixel;
+        const sample = this.terrainSampleAt(seed, tileX, tileY);
+        discoveredBiomes.add(sample.biome);
+        context.fillStyle = sample.color;
+        context.fillRect(x, y, 1, 1);
       }
     }
   }
@@ -837,6 +946,15 @@ export class WorldMapOverlay {
       && region.tileX + region.sizeTiles > geometry.minTileX
       && region.tileY < maxTileY
       && region.tileY + region.sizeTiles > geometry.minTileY;
+  }
+
+  private revealIntersectsGeometry(reveal: WorldMapRevealStamp, geometry: MapGeometry): boolean {
+    const maxTileX = geometry.minTileX + geometry.width * geometry.tilesPerCssPixel;
+    const maxTileY = geometry.minTileY + geometry.height * geometry.tilesPerCssPixel;
+    return reveal.tileX + reveal.radiusTiles > geometry.minTileX
+      && reveal.tileX - reveal.radiusTiles < maxTileX
+      && reveal.tileY + reveal.radiusTiles > geometry.minTileY
+      && reveal.tileY - reveal.radiusTiles < maxTileY;
   }
 
   private readonly handleWheel = (event: WheelEvent): void => {

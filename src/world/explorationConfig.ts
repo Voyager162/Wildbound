@@ -5,6 +5,9 @@
 export const EXPLORATION_REGION_SIZE_TILES = 4;
 export const EXPLORATION_REVEAL_RADIUS_REGIONS = 6;
 export const EXPLORATION_SAVE_REGION_SIZE_TILES = EXPLORATION_REGION_SIZE_TILES;
+// Permanent cartography records the player-visible minimap as overlapping circular stamps.
+export const EXPLORATION_REVEAL_STAMP_RADIUS_TILES = 360;
+export const EXPLORATION_REVEAL_STAMP_SPACING_TILES = 96;
 
 // World time advances continuously in real time. Twelve minutes gives each lighting phase room to
 // breathe while still making a complete cycle easy to experience in one play session.
@@ -15,7 +18,7 @@ export const DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS = 40;
 
 // Animated environmental details are deliberately throttled. Chunks retain their baked terrain and
 // feature textures; these values govern only lightweight Graphics overlays.
-export const AMBIENT_SWAY_UPDATE_INTERVAL_MS = 60;
+export const AMBIENT_SWAY_UPDATE_INTERVAL_MS = 80;
 export const AMBIENT_PARTICLE_UPDATE_INTERVAL_MS = 55;
 export const AMBIENT_PARTICLE_CELL_SIZE_PIXELS = 96;
 // The visible camera view is 2560 x 1440 world pixels, so these radii cover it with a small
@@ -27,6 +30,10 @@ export const AMBIENT_PARTICLE_MAX_COUNT = 180;
 // dynamic foliage inside this window lets the close world feel richly animated without
 // paying to redraw every cached chunk behind the camera.
 export const AMBIENT_CHUNK_RADIUS_X = 2;
-export const AMBIENT_CHUNK_RADIUS_Y = 2;
+export const AMBIENT_CHUNK_RADIUS_Y = 1;
 export const WATER_ANIMATION_UPDATE_INTERVAL_MS = 45;
-export const WATER_WAVES_PER_CHUNK = 54;
+export const WATER_WAVES_PER_CHUNK = 36;
+export const AMBIENT_GRASS_TUFTS_PER_CHUNK = 48;
+// Stream one full baked chunk per frame after the initial area. Chunk rendering is deterministic,
+// but distributing it prevents regular stalls when the player crosses a chunk boundary.
+export const CHUNK_BUILDS_PER_FRAME = 1;

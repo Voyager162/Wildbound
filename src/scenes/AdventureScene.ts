@@ -25,6 +25,8 @@ import {
   DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS,
   EXPLORATION_REGION_SIZE_TILES,
   EXPLORATION_REVEAL_RADIUS_REGIONS,
+  EXPLORATION_REVEAL_STAMP_RADIUS_TILES,
+  EXPLORATION_REVEAL_STAMP_SPACING_TILES,
   WORLD_TIME_SAVE_INTERVAL_MS
 } from '../world/explorationConfig';
 import { landmarkAtTile, landmarksIntersectingTiles } from '../world/generation/landmarkGenerator';
@@ -459,7 +461,12 @@ export class AdventureScene extends Phaser.Scene {
       regionY,
       EXPLORATION_REVEAL_RADIUS_REGIONS
     );
-    if (revealedNewRegion) {
+    const revealedMapStamp = this.sessionWorldState.revealMapStamp(
+      tileX,
+      tileY,
+      EXPLORATION_REVEAL_STAMP_SPACING_TILES
+    );
+    if (revealedNewRegion || revealedMapStamp) {
       this.markSaveDirty();
       if (this.worldMapOpen) {
         this.updateWorldMap();
@@ -473,6 +480,11 @@ export class AdventureScene extends Phaser.Scene {
       tileX: regionX * EXPLORATION_REGION_SIZE_TILES,
       tileY: regionY * EXPLORATION_REGION_SIZE_TILES,
       sizeTiles: EXPLORATION_REGION_SIZE_TILES
+    }));
+    const reveals = this.sessionWorldState.getExplorationRevealStamps().map(([tileX, tileY]) => ({
+      tileX,
+      tileY,
+      radiusTiles: EXPLORATION_REVEAL_STAMP_RADIUS_TILES
     }));
     const landmarksById = new Map<string, ReturnType<typeof landmarksIntersectingTiles>[number]>();
 
@@ -500,6 +512,7 @@ export class AdventureScene extends Phaser.Scene {
       playerTileX: this.player.x / WORLD_TILE_SIZE,
       playerTileY: this.player.y / WORLD_TILE_SIZE,
       regions,
+      reveals,
       landmarks: Array.from(landmarksById.values())
     });
   }

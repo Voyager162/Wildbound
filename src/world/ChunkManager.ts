@@ -5,6 +5,7 @@ import {
   AMBIENT_CHUNK_RADIUS_Y,
   AMBIENT_PARTICLE_UPDATE_INTERVAL_MS,
   AMBIENT_SWAY_UPDATE_INTERVAL_MS,
+  CHUNK_BUILDS_PER_FRAME,
   WATER_ANIMATION_UPDATE_INTERVAL_MS
 } from './explorationConfig';
 import { LandmarkManager } from './LandmarkManager';
@@ -20,6 +21,8 @@ import {
 
 export class ChunkManager {
   private readonly chunks = new Map<string, WorldChunk>();
+  private readonly pendingChunkCoordinates: Array<{ x: number; y: number }> = [];
+  private readonly pendingChunkKeys = new Set<string>();
   private activeChunkX = Number.NaN;
   private activeChunkY = Number.NaN;
   private lastWaterAnimationTime = Number.NEGATIVE_INFINITY;
@@ -58,14 +61,16 @@ export class ChunkManager {
     const nextChunkY = worldToChunk(playerWorldY);
 
     if (nextChunkX === this.activeChunkX && nextChunkY === this.activeChunkY) {
+      this.processPendingChunks();
       return;
     }
 
     this.activeChunkX = nextChunkX;
     this.activeChunkY = nextChunkY;
-    this.loadNearbyChunks();
+    this.queueNearbyChunks();
     this.unloadDistantChunks();
     this.landmarkManager.update(this.activeChunkX, this.activeChunkY);
+    this.processPendingChunks();
   }
 
   updateWaterAnimation(time: number): void {
@@ -133,19 +138,56 @@ export class ChunkManager {
   destroy(): void {
     this.chunks.forEach((chunk) => chunk.destroy());
     this.chunks.clear();
+    this.pendingChunkCoordinates.length = 0;
+    this.pendingChunkKeys.clear();
     this.ambientParticleManager.destroy();
     this.landmarkManager.destroy();
   }
 
-  private loadNearbyChunks(): void {
+  private queueNearbyChunks(): void {
+    const candidates: Array<{ x: number; y: number; distance: number }> = [];
     for (let y = this.activeChunkY - CHUNK_LOAD_RADIUS; y <= this.activeChunkY + CHUNK_LOAD_RADIUS; y += 1) {
       for (let x = this.activeChunkX - CHUNK_LOAD_RADIUS; x <= this.activeChunkX + CHUNK_LOAD_RADIUS; x += 1) {
         const key = `${x},${y}`;
 
-        if (!this.chunks.has(key)) {
-          this.chunks.set(key, new WorldChunk(this.scene, this.seed, this.sessionState, x, y));
+        if (!this.chunks.has(key) && !this.pendingChunkKeys.has(key)) {
+          candidates.push({ x, y, distance: Math.abs(x - this.activeChunkX) + Math.abs(y - this.activeChunkY) });
         }
       }
+    }
+
+    candidates
+      .sort((first, second) => first.distance - second.distance)
+      .forEach(({ x, y }) => {
+        this.pendingChunkCoordinates.push({ x, y });
+        this.pendingChunkKeys.add(`${x},${y}`);
+      });
+    this.pendingChunkCoordinates.sort((first, second) => (
+      Math.abs(first.x - this.activeChunkX) + Math.abs(first.y - this.activeChunkY)
+      - Math.abs(second.x - this.activeChunkX) - Math.abs(second.y - this.activeChunkY)
+    ));
+  }
+
+  private processPendingChunks(): void {
+    let built = 0;
+    while (built < CHUNK_BUILDS_PER_FRAME && this.pendingChunkCoordinates.length > 0) {
+      const coordinate = this.pendingChunkCoordinates.shift();
+      if (!coordinate) {
+        return;
+      }
+
+      const key = `${coordinate.x},${coordinate.y}`;
+      this.pendingChunkKeys.delete(key);
+      const distance = Math.max(
+        Math.abs(coordinate.x - this.activeChunkX),
+        Math.abs(coordinate.y - this.activeChunkY)
+      );
+      if (distance > CHUNK_UNLOAD_RADIUS || this.chunks.has(key)) {
+        continue;
+      }
+
+      this.chunks.set(key, new WorldChunk(this.scene, this.seed, this.sessionState, coordinate.x, coordinate.y));
+      built += 1;
     }
   }
 

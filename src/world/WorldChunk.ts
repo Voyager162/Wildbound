@@ -6,6 +6,7 @@ import { randomAtTile } from './generation/noise';
 import { surfaceAtTile, type TerrainSurface } from './generation/terrainGenerator';
 import { SessionWorldState } from './SessionWorldState';
 import { WATER_WAVES_PER_CHUNK } from './explorationConfig';
+import { AMBIENT_GRASS_TUFTS_PER_CHUNK } from './explorationConfig';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 
 // Terrain is baked into one texture per chunk. The 8px visual cells retain detail while
@@ -375,9 +376,13 @@ export class WorldChunk {
 
     if (vegetation > 0.16 && variation > 0.99 - vegetation * 0.08) {
       context.fillStyle = this.colorToCss(this.shadeColor(surface.color, vegetation > 0.58 ? -0.3 : 0.26));
-      context.fillRect(cellX + 2, cellY + 3, 1, 4);
-      context.fillRect(cellX + 4, cellY + 1, 1, 6);
-      context.fillRect(cellX + 6, cellY + 4, 1, 3);
+      context.fillRect(cellX + 1, cellY + 4, 1, 3);
+      context.fillRect(cellX + 2, cellY + 2, 1, 5);
+      context.fillRect(cellX + 4, cellY, 1, 7);
+      context.fillRect(cellX + 6, cellY + 3, 1, 4);
+      context.fillStyle = this.colorToCss(this.shadeColor(surface.color, 0.24));
+      context.fillRect(cellX + 3, cellY + 2, 1, 3);
+      context.fillRect(cellX + 5, cellY + 4, 1, 2);
     }
   }
   private colorToCss(color: number): string {
@@ -631,7 +636,16 @@ export class WorldChunk {
             height: 8 + Math.floor(variation * 10),
             color: surface.biome === Biome.Swamp ? 0x6e9c62 : surface.biome === Biome.Forest ? 0x65964d : 0x79af4f
           });
+          if (tufts.length >= AMBIENT_GRASS_TUFTS_PER_CHUNK) {
+            break;
+          }
         }
+        if (tufts.length >= AMBIENT_GRASS_TUFTS_PER_CHUNK) {
+          break;
+        }
+      }
+      if (tufts.length >= AMBIENT_GRASS_TUFTS_PER_CHUNK) {
+        break;
       }
     }
 
