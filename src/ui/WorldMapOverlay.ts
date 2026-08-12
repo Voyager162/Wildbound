@@ -1,5 +1,4 @@
-import { BIOME_COLORS, Biome } from '../world/generation/biomeGenerator';
-import { surfaceAtTile } from '../world/generation/terrainGenerator';
+import { BIOME_COLORS, Biome, biomeAtTile, minimapColorAtTile } from '../world/generation/biomeGenerator';
 
 /**
  * A permanently revealed, square world-space area. `tileX` and `tileY` are the
@@ -122,6 +121,8 @@ const BIOME_ORDER: readonly Biome[] = [
 
 const MAX_RENDER_DEVICE_SCALE = 2;
 const MAX_CANVAS_PIXELS = 1_600_000;
+const MAX_ATLAS_PIXELS = 5_200_000;
+const ATLAS_VIEW_MULTIPLIER = 2.6;
 const MIN_VIEWPORT_SIZE = 48;
 const MAP_INNER_PADDING = 14;
 const MAX_REGION_INPUT = 60_000;
@@ -130,8 +131,9 @@ const MAX_ABSOLUTE_TILE_COORDINATE = 10_000_000;
 const MAX_REGION_SIZE_TILES = 4_096;
 const COLOR_CACHE_LIMIT = 360_000;
 const RENDER_TIME_BUDGET_MS = 3.5;
-// Samples use the exact continuous terrain palette from world chunks rather than a
-// single biome swatch for each fog-of-war region.
+// Fog-map pixels intentionally use the exact sampler used by the circular minimap.
+// This keeps the two map surfaces visually identical rather than introducing a second,
+// softer terrain-palette interpretation for the large chart.
 const TERRAIN_SAMPLE_STEP_PIXELS = 1;
 const DEFAULT_TILES_PER_CSS_PIXEL = 1;
 const MIN_TILES_PER_CSS_PIXEL = 0.08;
@@ -176,6 +178,8 @@ export class WorldMapOverlay {
   private readonly viewport: HTMLDivElement;
   private readonly terrainCanvas: HTMLCanvasElement;
   private readonly terrainContext: CanvasRenderingContext2D;
+  private readonly atlasCanvas: HTMLCanvasElement;
+  private readonly atlasContext: CanvasRenderingContext2D;
   private readonly annotationCanvas: HTMLCanvasElement;
   private readonly annotationContext: CanvasRenderingContext2D;
   private readonly emptyState: HTMLDivElement;
@@ -183,11 +187,15 @@ export class WorldMapOverlay {
   private readonly legendList: HTMLUListElement;
   private readonly resizeObserver: ResizeObserver | null;
   private readonly colorCache = new Map<string, TerrainMapSample>();
+  private renderContext!: CanvasRenderingContext2D;
 
   private open = false;
   private destroyed = false;
   private latestRequest: NormalizedRequest | null = null;
   private canvasDimensions: CanvasDimensions | null = null;
+  private atlasDimensions: CanvasDimensions | null = null;
+  private atlasGeometry: MapGeometry | null = null;
+  private atlasContentSignature: string | null = null;
   private renderedContentSignature: string | null = null;
   private renderedGeometry: MapGeometry | null = null;
   private renderJob: RenderJob | null = null;
@@ -228,6 +236,7 @@ export class WorldMapOverlay {
     this.terrainCanvas = document.createElement('canvas');
     this.terrainCanvas.className = 'world-map-canvas world-map-canvas--terrain';
     this.terrainCanvas.setAttribute('aria-hidden', 'true');
+    this.atlasCanvas = document.createElement('canvas');
     this.annotationCanvas = document.createElement('canvas');
     this.annotationCanvas.className = 'world-map-canvas world-map-canvas--annotations';
     this.annotationCanvas.setAttribute('aria-hidden', 'true');
@@ -259,13 +268,16 @@ export class WorldMapOverlay {
     parent.append(this.element);
 
     const terrainContext = this.terrainCanvas.getContext('2d');
+    const atlasContext = this.atlasCanvas.getContext('2d');
     const annotationContext = this.annotationCanvas.getContext('2d');
-    if (!terrainContext || !annotationContext) {
+    if (!terrainContext || !atlasContext || !annotationContext) {
       this.element.remove();
       throw new Error('Wildbound could not create the world map canvas.');
     }
 
     this.terrainContext = terrainContext;
+    this.atlasContext = atlasContext;
+    this.renderContext = terrainContext;
     this.annotationContext = annotationContext;
     this.updateLegend(new Set());
 
@@ -322,6 +334,19 @@ export class WorldMapOverlay {
 
     if (!this.ensureCanvasSize()) {
       this.scheduleLayoutRefresh();
+      return;
+    }
+
+    const dimensions = this.canvasDimensions;
+    if (!dimensions) {
+      return;
+    }
+    const viewGeometry = this.createGeometry(normalized, dimensions);
+    if (viewGeometry && this.atlasCovers(viewGeometry, normalized)) {
+      this.renderedContentSignature = normalized.contentSignature;
+      this.renderedGeometry = viewGeometry;
+      this.drawAtlasView(viewGeometry);
+      this.drawAnnotations(viewGeometry, normalized);
       return;
     }
 
@@ -521,8 +546,8 @@ export class WorldMapOverlay {
     this.renderedGeometry = null;
     this.clearAnnotations(dimensions);
 
-    const geometry = this.createGeometry(request, dimensions);
-    if (!geometry) {
+    const viewGeometry = this.createGeometry(request, dimensions);
+    if (!viewGeometry) {
       this.renderJob = null;
       this.drawBlankMap(dimensions);
       this.emptyState.classList.add('is-visible');
@@ -532,8 +557,10 @@ export class WorldMapOverlay {
     }
 
     this.emptyState.classList.remove('is-visible');
+    const geometry = this.createAtlasGeometry(viewGeometry);
+    this.renderContext = this.atlasContext;
     this.drawMapBackground(geometry);
-    this.terrainContext.setTransform(geometry.renderScale, 0, 0, geometry.renderScale, 0, 0);
+    this.renderContext.setTransform(geometry.renderScale, 0, 0, geometry.renderScale, 0, 0);
     this.renderJob = {
       request,
       geometry,
@@ -569,6 +596,92 @@ export class WorldMapOverlay {
       minTileY: this.mapCenterTileY - height * this.tilesPerCssPixel / 2,
       tilesPerCssPixel: this.tilesPerCssPixel
     };
+  }
+
+  private createAtlasGeometry(viewGeometry: MapGeometry): MapGeometry {
+    const logicalWidth = Math.round(viewGeometry.width * ATLAS_VIEW_MULTIPLIER);
+    const logicalHeight = Math.round(viewGeometry.height * ATLAS_VIEW_MULTIPLIER);
+    const pixelBudgetScale = Math.sqrt(MAX_ATLAS_PIXELS / (logicalWidth * logicalHeight));
+    // An integer atlas scale avoids hairline seams between adjacent biome samples. The atlas is
+    // intentionally oversized instead of high-DPI: it is a navigation cache, not a new map style.
+    const renderScale = pixelBudgetScale >= 1 ? 1 : Math.max(0.5, pixelBudgetScale);
+    const pixelWidth = Math.max(1, Math.round(logicalWidth * renderScale));
+    const pixelHeight = Math.max(1, Math.round(logicalHeight * renderScale));
+    const key = `${logicalWidth}x${logicalHeight}@${pixelWidth}x${pixelHeight}:${viewGeometry.tilesPerCssPixel}`;
+
+    if (!this.atlasDimensions || this.atlasDimensions.key !== key) {
+      this.atlasCanvas.width = pixelWidth;
+      this.atlasCanvas.height = pixelHeight;
+      this.atlasDimensions = { cssWidth: logicalWidth, cssHeight: logicalHeight, renderScale: pixelWidth / logicalWidth, key };
+    }
+
+    const dimensions = this.atlasDimensions;
+    return {
+      ...dimensions,
+      left: 0,
+      top: 0,
+      width: logicalWidth,
+      height: logicalHeight,
+      minTileX: this.mapCenterTileX! - logicalWidth * viewGeometry.tilesPerCssPixel / 2,
+      minTileY: this.mapCenterTileY! - logicalHeight * viewGeometry.tilesPerCssPixel / 2,
+      tilesPerCssPixel: viewGeometry.tilesPerCssPixel
+    };
+  }
+
+  private drawAtlasView(viewGeometry: MapGeometry): void {
+    const atlas = this.atlasGeometry;
+    if (!atlas || !this.atlasDimensions) {
+      return;
+    }
+
+    const sourceX = (viewGeometry.minTileX - atlas.minTileX) / atlas.tilesPerCssPixel * atlas.renderScale;
+    const sourceY = (viewGeometry.minTileY - atlas.minTileY) / atlas.tilesPerCssPixel * atlas.renderScale;
+    const sourceWidth = viewGeometry.width * viewGeometry.tilesPerCssPixel / atlas.tilesPerCssPixel * atlas.renderScale;
+    const sourceHeight = viewGeometry.height * viewGeometry.tilesPerCssPixel / atlas.tilesPerCssPixel * atlas.renderScale;
+    const context = this.terrainContext;
+    context.setTransform(viewGeometry.renderScale, 0, 0, viewGeometry.renderScale, 0, 0);
+    context.clearRect(0, 0, viewGeometry.cssWidth, viewGeometry.cssHeight);
+    context.fillStyle = '#071410';
+    context.fillRect(0, 0, viewGeometry.cssWidth, viewGeometry.cssHeight);
+    // Match the circular minimap's final canvas presentation: crisp biome colors with
+    // smooth display scaling, rather than exposing the atlas's individual sample pixels.
+    context.imageSmoothingEnabled = true;
+    context.drawImage(this.atlasCanvas, sourceX, sourceY, sourceWidth, sourceHeight, viewGeometry.left, viewGeometry.top, viewGeometry.width, viewGeometry.height);
+    context.imageSmoothingEnabled = true;
+    context.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  private atlasCovers(viewGeometry: MapGeometry, request: NormalizedRequest): boolean {
+    const atlas = this.atlasGeometry;
+    if (!atlas || this.atlasContentSignature !== request.contentSignature) {
+      return false;
+    }
+
+    const viewMaxTileX = viewGeometry.minTileX + viewGeometry.width * viewGeometry.tilesPerCssPixel;
+    const viewMaxTileY = viewGeometry.minTileY + viewGeometry.height * viewGeometry.tilesPerCssPixel;
+    const atlasMaxTileX = atlas.minTileX + atlas.width * atlas.tilesPerCssPixel;
+    const atlasMaxTileY = atlas.minTileY + atlas.height * atlas.tilesPerCssPixel;
+    return viewGeometry.minTileX >= atlas.minTileX
+      && viewGeometry.minTileY >= atlas.minTileY
+      && viewMaxTileX <= atlasMaxTileX
+      && viewMaxTileY <= atlasMaxTileY;
+  }
+
+  private drawCurrentViewFromAtlas(): boolean {
+    if (!this.latestRequest || !this.canvasDimensions) {
+      return false;
+    }
+
+    const viewGeometry = this.createGeometry(this.latestRequest, this.canvasDimensions);
+    if (!viewGeometry || !this.atlasCovers(viewGeometry, this.latestRequest)) {
+      return false;
+    }
+
+    this.renderedContentSignature = this.latestRequest.contentSignature;
+    this.renderedGeometry = viewGeometry;
+    this.drawAtlasView(viewGeometry);
+    this.drawAnnotations(viewGeometry, this.latestRequest);
+    return true;
   }
 
   private scheduleRenderFrame(): void {
@@ -612,17 +725,25 @@ export class WorldMapOverlay {
     }
 
     this.renderJob = null;
-    this.terrainContext.setTransform(1, 0, 0, 1, 0, 0);
+    this.renderContext.setTransform(1, 0, 0, 1, 0, 0);
+    this.renderContext = this.terrainContext;
     const latest = this.latestRequest;
     if (!latest || latest.contentSignature !== job.request.contentSignature || !this.open) {
       this.startRenderJob();
       return;
     }
 
+    this.atlasContentSignature = job.request.contentSignature;
+    this.atlasGeometry = job.geometry;
+    const viewGeometry = this.createGeometry(latest, this.canvasDimensions!);
+    if (!viewGeometry) {
+      return;
+    }
     this.renderedContentSignature = job.request.contentSignature;
-    this.renderedGeometry = job.geometry;
+    this.renderedGeometry = viewGeometry;
+    this.drawAtlasView(viewGeometry);
     this.updateLegend(job.discoveredBiomes);
-    this.drawAnnotations(job.geometry, latest);
+    this.drawAnnotations(viewGeometry, latest);
   };
 
   private paintExploredRegion(
@@ -640,7 +761,7 @@ export class WorldMapOverlay {
       return;
     }
 
-    const context = this.terrainContext;
+    const context = this.renderContext;
     // Exploration is stored as compact regions, but revealed terrain itself is painted from
     // dense deterministic surface samples. The world map therefore shows the same soft
     // shoreline and climate transitions as the terrain under the player.
@@ -673,7 +794,7 @@ export class WorldMapOverlay {
     }
 
     const radiusSquared = radius * radius;
-    const context = this.terrainContext;
+    const context = this.renderContext;
     for (let y = top; y < bottom; y += TERRAIN_SAMPLE_STEP_PIXELS) {
       const offsetY = y + 0.5 - center.y;
       const horizontalRadius = Math.sqrt(Math.max(0, radiusSquared - offsetY * offsetY));
@@ -691,16 +812,16 @@ export class WorldMapOverlay {
   }
 
   private terrainSampleAt(seed: string, tileX: number, tileY: number): TerrainMapSample {
-    const sampleTileX = Math.round(tileX * 4) / 4;
-    const sampleTileY = Math.round(tileY * 4) / 4;
+    const sampleTileX = Math.round(tileX * 2) / 2;
+    const sampleTileY = Math.round(tileY * 2) / 2;
     const key = `${seed}:${sampleTileX},${sampleTileY}`;
     const cached = this.colorCache.get(key);
     if (cached) {
       return cached;
     }
 
-    const surface = surfaceAtTile(seed, sampleTileX, sampleTileY);
-    const sample = { biome: surface.biome, color: toColor(surface.color) };
+    const biome = biomeAtTile(seed, sampleTileX, sampleTileY);
+    const sample = { biome, color: toColor(minimapColorAtTile(seed, sampleTileX, sampleTileY)) };
     if (this.colorCache.size >= COLOR_CACHE_LIMIT) {
       this.colorCache.clear();
     }
@@ -709,7 +830,7 @@ export class WorldMapOverlay {
   }
 
   private drawMapBackground(geometry: MapGeometry): void {
-    const context = this.terrainContext;
+    const context = this.renderContext;
     context.setTransform(geometry.renderScale, 0, 0, geometry.renderScale, 0, 0);
     context.clearRect(0, 0, geometry.cssWidth, geometry.cssHeight);
     context.fillStyle = '#071410';
@@ -977,7 +1098,9 @@ export class WorldMapOverlay {
     this.tilesPerCssPixel = clamp(this.tilesPerCssPixel * zoomMultiplier, MIN_TILES_PER_CSS_PIXEL, MAX_TILES_PER_CSS_PIXEL);
     this.mapCenterTileX = focusTileX - (x - geometry.left - geometry.width / 2) * this.tilesPerCssPixel;
     this.mapCenterTileY = focusTileY - (y - geometry.top - geometry.height / 2) * this.tilesPerCssPixel;
-    this.startRenderJob();
+    if (!this.drawCurrentViewFromAtlas()) {
+      this.startRenderJob();
+    }
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
@@ -1002,7 +1125,9 @@ export class WorldMapOverlay {
 
     this.mapCenterTileX = this.dragStart.centerTileX - (event.clientX - this.dragStart.clientX) * this.tilesPerCssPixel;
     this.mapCenterTileY = this.dragStart.centerTileY - (event.clientY - this.dragStart.clientY) * this.tilesPerCssPixel;
-    this.startRenderJob();
+    if (!this.drawCurrentViewFromAtlas()) {
+      this.startRenderJob();
+    }
   };
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
