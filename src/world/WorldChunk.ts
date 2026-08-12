@@ -5,8 +5,13 @@ import { TOPOGRAPHY_GENERATION_VERSION } from './generation/topographyGenerator'
 import { randomAtTile } from './generation/noise';
 import { surfaceAtTile, type TerrainSurface } from './generation/terrainGenerator';
 import { SessionWorldState } from './SessionWorldState';
-import { WATER_WAVES_PER_CHUNK } from './explorationConfig';
-import { AMBIENT_GRASS_TUFTS_PER_CHUNK } from './explorationConfig';
+import {
+  AMBIENT_GRASS_TUFTS_PER_CHUNK,
+  OCEAN_SURF_TRAVEL_PIXELS,
+  OCEAN_WATER_CURRENT_PIXELS_PER_SECOND,
+  SWAMP_WATER_CURRENT_PIXELS_PER_SECOND,
+  WATER_WAVES_PER_CHUNK
+} from './explorationConfig';
 import {
   GROUND_GRASS_BASE_HEIGHT_PIXELS,
   GROUND_GRASS_FREQUENCY_SCALE,
@@ -22,6 +27,7 @@ const VISUAL_TERRAIN_CELL_SIZE = 8;
 const VISUAL_CELLS_PER_TILE = WORLD_TILE_SIZE / VISUAL_TERRAIN_CELL_SIZE;
 const FEATURE_TEXTURE_PADDING = 128;
 const FEATURE_TEXTURE_SIZE = CHUNK_SIZE_PIXELS + FEATURE_TEXTURE_PADDING * 2;
+const WATER_MOTION_TEXTURE_SIZE = 192;
 
 interface WaterWave {
   worldX: number;
@@ -32,6 +38,8 @@ interface WaterWave {
   alpha: number;
   amplitude: number;
   shoreAmount: number;
+  shoreNormalX: number;
+  shoreNormalY: number;
 }
 
 interface AmbientGrassTuft {
@@ -47,6 +55,15 @@ export class WorldChunk {
   private readonly textureKey: string;
   private readonly terrainImage: Phaser.GameObjects.Image;
   private readonly waterGraphics: Phaser.GameObjects.Graphics;
+  private oceanWaterSurface: Phaser.GameObjects.TileSprite | null = null;
+  private oceanWaterHighlights: Phaser.GameObjects.TileSprite | null = null;
+  private swampWaterSurface: Phaser.GameObjects.TileSprite | null = null;
+  private swampWaterHighlights: Phaser.GameObjects.TileSprite | null = null;
+  private oceanWaterMaskImage: Phaser.GameObjects.Image | null = null;
+  private swampWaterMaskImage: Phaser.GameObjects.Image | null = null;
+  private readonly waterBitmapMasks: Phaser.Display.Masks.BitmapMask[] = [];
+  private oceanWaterMaskTextureKey: string | null = null;
+  private swampWaterMaskTextureKey: string | null = null;
   private readonly ambientGraphics: Phaser.GameObjects.Graphics;
   // Complex feature vectors are baked into one texture per chunk, avoiding per-frame Graphics triangulation.
   private readonly featureTextureKey: string;
@@ -128,6 +145,7 @@ export class WorldChunk {
     }
 
     const seconds = time / 1000;
+    this.updateWaterSurfaceLayers(seconds);
     const graphics = this.waterGraphics;
     graphics.clear();
 
@@ -137,10 +155,15 @@ export class WorldChunk {
     // list, keeping their pools calm while oceans have broad flow bands, ripples, and foam.
     this.waterWaves.forEach((wave) => {
       const cycle = seconds * wave.speed + wave.phase;
-      const currentX = Math.sin(cycle) * wave.amplitude + Math.cos(cycle * 0.42) * wave.amplitude * 0.62;
-      const currentY = Math.cos(cycle * 1.37) * 2.45 + Math.sin(cycle * 0.62) * 1.45;
+      let currentX = Math.sin(cycle) * wave.amplitude + Math.cos(cycle * 0.42) * wave.amplitude * 0.62;
+      let currentY = Math.cos(cycle * 1.37) * 2.45 + Math.sin(cycle * 0.62) * 1.45;
       const swell = (Math.sin(cycle * 1.8) + 1) * 0.5;
       const crestAlpha = wave.alpha * (0.5 + swell * 0.46);
+      // At an ocean shore, the local water-depth gradient points toward the sea. Oscillating in
+      // the opposite direction sends each bright surf line onto the beach and draws it back out.
+      const shorePulse = Math.sin(cycle * 1.18) * (2 + wave.shoreAmount * OCEAN_SURF_TRAVEL_PIXELS);
+      currentX -= wave.shoreNormalX * shorePulse;
+      currentY -= wave.shoreNormalY * shorePulse;
       const ribbonColor = wave.shoreAmount > 0.42 ? 0x8cdbda : 0x3b9fbd;
       // A soft, wide band makes the whole water surface visibly drift before the fine crest
       // lines become noticeable. The offset is intentionally stronger than the crest itself.
@@ -201,6 +224,31 @@ export class WorldChunk {
         graphics.fillCircle(wave.worldX + wave.width * 0.44 + currentX, wave.worldY + currentY - 1.5, 1.25);
       }
     });
+  }
+
+  private updateWaterSurfaceLayers(seconds: number): void {
+    const chunkPhaseX = this.x * 43.7 + this.y * 17.3;
+    const chunkPhaseY = this.y * 31.1 - this.x * 11.9;
+
+    // These are masked TileSprites, not repainted terrain canvases. The broad colored water
+    // marks therefore move continuously across every visible water cell at effectively constant
+    // cost, including quiet swamp pools.
+    if (this.oceanWaterSurface) {
+      this.oceanWaterSurface.tilePositionX = chunkPhaseX + seconds * OCEAN_WATER_CURRENT_PIXELS_PER_SECOND;
+      this.oceanWaterSurface.tilePositionY = chunkPhaseY - seconds * 9;
+    }
+    if (this.oceanWaterHighlights) {
+      this.oceanWaterHighlights.tilePositionX = chunkPhaseX * 0.62 - seconds * OCEAN_WATER_CURRENT_PIXELS_PER_SECOND * 0.56;
+      this.oceanWaterHighlights.tilePositionY = chunkPhaseY * 0.78 + seconds * 6;
+    }
+    if (this.swampWaterSurface) {
+      this.swampWaterSurface.tilePositionX = chunkPhaseX * 0.44 + seconds * SWAMP_WATER_CURRENT_PIXELS_PER_SECOND;
+      this.swampWaterSurface.tilePositionY = chunkPhaseY * 0.58 + seconds * 3.5;
+    }
+    if (this.swampWaterHighlights) {
+      this.swampWaterHighlights.tilePositionX = chunkPhaseX * 0.34 - seconds * SWAMP_WATER_CURRENT_PIXELS_PER_SECOND * 0.56;
+      this.swampWaterHighlights.tilePositionY = chunkPhaseY * 0.42 + seconds * 2.25;
+    }
   }
 
   updateAmbient(time: number): void {
@@ -313,11 +361,24 @@ export class WorldChunk {
   destroy(): void {
     this.terrainImage.destroy();
     this.waterGraphics.destroy();
+    this.oceanWaterSurface?.destroy();
+    this.oceanWaterHighlights?.destroy();
+    this.swampWaterSurface?.destroy();
+    this.swampWaterHighlights?.destroy();
+    this.waterBitmapMasks.forEach((mask) => mask.destroy());
+    this.oceanWaterMaskImage?.destroy();
+    this.swampWaterMaskImage?.destroy();
     this.ambientGraphics.destroy();
     this.featureImage.destroy();
     this.featureGraphics.destroy();
     this.scene.textures.remove(this.textureKey);
     this.scene.textures.remove(this.featureTextureKey);
+    if (this.oceanWaterMaskTextureKey) {
+      this.scene.textures.remove(this.oceanWaterMaskTextureKey);
+    }
+    if (this.swampWaterMaskTextureKey) {
+      this.scene.textures.remove(this.swampWaterMaskTextureKey);
+    }
   }
 
   private drawTerrain(texture: Phaser.Textures.CanvasTexture): void {
@@ -325,6 +386,24 @@ export class WorldChunk {
     const worldX = this.x * CHUNK_SIZE_PIXELS;
     const worldY = this.y * CHUNK_SIZE_PIXELS;
     const waveCandidates: Array<WaterWave & { priority: number }> = [];
+    // Compact alpha masks are built once while the baked terrain is sampled. The two TileSprites
+    // above them can then flow across all water pixels without rebuilding a chunk canvas each tick.
+    const waterMaskSize = CHUNK_SIZE_PIXELS / VISUAL_TERRAIN_CELL_SIZE;
+    const oceanWaterMaskKey = `ocean-water-mask:v1:${this.seed}:${this.x}:${this.y}`;
+    const swampWaterMaskKey = `swamp-water-mask:v1:${this.seed}:${this.x}:${this.y}`;
+    const oceanWaterMaskTexture = this.scene.textures.createCanvas(oceanWaterMaskKey, waterMaskSize, waterMaskSize);
+    const swampWaterMaskTexture = this.scene.textures.createCanvas(swampWaterMaskKey, waterMaskSize, waterMaskSize);
+    if (!oceanWaterMaskTexture || !swampWaterMaskTexture) {
+      throw new Error('Wildbound could not create a water surface mask.');
+    }
+    const oceanWaterMaskContext = oceanWaterMaskTexture.getContext();
+    const swampWaterMaskContext = swampWaterMaskTexture.getContext();
+    oceanWaterMaskContext.clearRect(0, 0, waterMaskSize, waterMaskSize);
+    swampWaterMaskContext.clearRect(0, 0, waterMaskSize, waterMaskSize);
+    oceanWaterMaskContext.fillStyle = '#ffffff';
+    swampWaterMaskContext.fillStyle = '#ffffff';
+    let hasOceanWaterSurface = false;
+    let hasSwampWaterSurface = false;
 
     for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
@@ -350,10 +429,22 @@ export class WorldChunk {
             context.fillRect(cellX, cellY, VISUAL_TERRAIN_CELL_SIZE, VISUAL_TERRAIN_CELL_SIZE);
             this.drawTerrainDetail(context, surface, variation, cellX, cellY);
 
-            if (surface.waterVisualAmount > 0.08 && !surface.isSwampWater) {
+            if (surface.waterVisualAmount > 0.16) {
               this.hasWater = true;
+              const maskX = localX * VISUAL_CELLS_PER_TILE + visualX;
+              const maskY = localY * VISUAL_CELLS_PER_TILE + visualY;
+
+              if (surface.isSwampWater) {
+                hasSwampWaterSurface = true;
+                swampWaterMaskContext.fillRect(maskX, maskY, 1, 1);
+                continue;
+              }
+
+              hasOceanWaterSurface = true;
+              oceanWaterMaskContext.fillRect(maskX, maskY, 1, 1);
               if (variation > 0.942 + surface.waterVisualAmount * 0.014) {
                 const shoreAmount = 1 - surface.waterVisualAmount;
+                const shoreNormal = this.oceanShoreNormal(sampleTileX, sampleTileY);
                 waveCandidates.push({
                   worldX: worldX + cellX + 1,
                   worldY: worldY + cellY + 4,
@@ -364,6 +455,8 @@ export class WorldChunk {
                     * (0.5 + surface.waterVisualAmount * 0.5),
                   amplitude: 4.2 + randomAtTile(this.seed, worldTileX, worldTileY, 0x9a0372c7) * 7.2,
                   shoreAmount,
+                  shoreNormalX: shoreNormal.x,
+                  shoreNormalY: shoreNormal.y,
                   // Retain broad ocean currents, but reserve enough candidates for visibly
                   // animated foam along a coast.
                   priority: randomAtTile(this.seed, worldTileX * VISUAL_CELLS_PER_TILE + visualX, worldTileY * VISUAL_CELLS_PER_TILE + visualY, 0xf5e91d3b)
@@ -377,12 +470,144 @@ export class WorldChunk {
     }
 
     texture.refresh();
+    this.createWaterSurfaceLayers(
+      oceanWaterMaskTexture,
+      swampWaterMaskTexture,
+      oceanWaterMaskKey,
+      swampWaterMaskKey,
+      hasOceanWaterSurface,
+      hasSwampWaterSurface
+    );
 
     waveCandidates
       .sort((first, second) => second.priority - first.priority)
       .slice(0, WATER_WAVES_PER_CHUNK)
       .forEach(({ priority: _priority, ...wave }) => this.waterWaves.push(wave));
     this.updateWaterAnimation(0);
+  }
+
+  private oceanShoreNormal(tileX: number, tileY: number): { x: number; y: number } {
+    const offset = 0.6 / VISUAL_CELLS_PER_TILE;
+    const oceanAmountAt = (sampleX: number, sampleY: number): number => {
+      const surface = surfaceAtTile(this.seed, sampleX, sampleY);
+      return surface.isSwampWater ? 0 : surface.waterVisualAmount;
+    };
+    const gradientX = oceanAmountAt(tileX + offset, tileY) - oceanAmountAt(tileX - offset, tileY);
+    const gradientY = oceanAmountAt(tileX, tileY + offset) - oceanAmountAt(tileX, tileY - offset);
+    const length = Math.hypot(gradientX, gradientY);
+    return length > 0.001 ? { x: gradientX / length, y: gradientY / length } : { x: 0, y: 0 };
+  }
+
+  private createWaterSurfaceLayers(
+    oceanMaskTexture: Phaser.Textures.CanvasTexture,
+    swampMaskTexture: Phaser.Textures.CanvasTexture,
+    oceanMaskKey: string,
+    swampMaskKey: string,
+    hasOceanWaterSurface: boolean,
+    hasSwampWaterSurface: boolean
+  ): void {
+    if (!hasOceanWaterSurface && !hasSwampWaterSurface) {
+      this.scene.textures.remove(oceanMaskKey);
+      this.scene.textures.remove(swampMaskKey);
+      return;
+    }
+
+    const textureKey = this.ensureWaterMotionTexture();
+    const worldX = this.x * CHUNK_SIZE_PIXELS;
+    const worldY = this.y * CHUNK_SIZE_PIXELS;
+    const createMaskImage = (maskKey: string): Phaser.GameObjects.Image => this.scene.add
+      .image(worldX, worldY, maskKey)
+      .setOrigin(0)
+      .setScale(VISUAL_TERRAIN_CELL_SIZE)
+      // The source stays behind the opaque terrain image, but still provides a hardware-friendly
+      // alpha mask for the moving TileSprites above it.
+      .setDepth(-1);
+    const createLayer = (maskImage: Phaser.GameObjects.Image, tint: number, alpha: number, depth: number): Phaser.GameObjects.TileSprite => {
+      const mask = new Phaser.Display.Masks.BitmapMask(this.scene, maskImage);
+      this.waterBitmapMasks.push(mask);
+      return this.scene.add
+        .tileSprite(worldX, worldY, CHUNK_SIZE_PIXELS, CHUNK_SIZE_PIXELS, textureKey)
+        .setOrigin(0)
+        .setDepth(depth)
+        .setTint(tint)
+        .setAlpha(alpha)
+        .setMask(mask);
+    };
+
+    if (hasOceanWaterSurface) {
+      oceanMaskTexture.refresh();
+      this.oceanWaterMaskTextureKey = oceanMaskKey;
+      this.oceanWaterMaskImage = createMaskImage(oceanMaskKey);
+      this.oceanWaterSurface = createLayer(this.oceanWaterMaskImage, 0x4eb8ca, 0.86, 0.12);
+      this.oceanWaterHighlights = createLayer(this.oceanWaterMaskImage, 0xc5fcf2, 0.48, 0.14);
+    } else {
+      this.scene.textures.remove(oceanMaskKey);
+    }
+
+    if (hasSwampWaterSurface) {
+      swampMaskTexture.refresh();
+      this.swampWaterMaskTextureKey = swampMaskKey;
+      this.swampWaterMaskImage = createMaskImage(swampMaskKey);
+      this.swampWaterSurface = createLayer(this.swampWaterMaskImage, 0x5ca68c, 0.7, 0.12);
+      this.swampWaterHighlights = createLayer(this.swampWaterMaskImage, 0xb8dbc0, 0.32, 0.14);
+    } else {
+      this.scene.textures.remove(swampMaskKey);
+    }
+  }
+
+  private ensureWaterMotionTexture(): string {
+    const textureKey = `water-motion:v2:${this.seed}`;
+    if (this.scene.textures.exists(textureKey)) {
+      return textureKey;
+    }
+
+    const texture = this.scene.textures.createCanvas(textureKey, WATER_MOTION_TEXTURE_SIZE, WATER_MOTION_TEXTURE_SIZE);
+    if (!texture) {
+      throw new Error('Wildbound could not create a water motion texture.');
+    }
+
+    const context = texture.getContext();
+    context.clearRect(0, 0, WATER_MOTION_TEXTURE_SIZE, WATER_MOTION_TEXTURE_SIZE);
+    context.lineCap = 'round';
+
+    // Large translucent color bands give the water body an unmistakable slow current. Fine
+    // crests and little rings on top make that current read as ripples rather than a flat scroll.
+    for (let ribbon = 0; ribbon < 13; ribbon += 1) {
+      const phase = randomAtTile(this.seed, ribbon, 0, 0x2d1f7a83) * Math.PI * 2;
+      const y = 6 + ribbon * 15;
+      context.strokeStyle = `rgba(255, 255, 255, ${(0.13 + randomAtTile(this.seed, ribbon, 0, 0x33f47d11) * 0.11).toFixed(3)})`;
+      context.lineWidth = 7 + randomAtTile(this.seed, ribbon, 0, 0x406b8a59) * 7;
+      context.beginPath();
+      for (let x = -18; x <= WATER_MOTION_TEXTURE_SIZE + 18; x += 12) {
+        const waveY = y
+          + Math.sin(x * 0.056 + phase) * 3.4
+          + Math.sin(x * 0.114 + phase * 1.9) * 1.8;
+        if (x === -18) {
+          context.moveTo(x, waveY);
+        } else {
+          context.lineTo(x, waveY);
+        }
+      }
+      context.stroke();
+
+      context.strokeStyle = `rgba(255, 255, 255, ${(0.24 + randomAtTile(this.seed, ribbon, 0, 0x5382ce07) * 0.2).toFixed(3)})`;
+      context.lineWidth = 1 + randomAtTile(this.seed, ribbon, 0, 0x5c8da319) * 1.25;
+      context.stroke();
+    }
+
+    for (let ripple = 0; ripple < 20; ripple += 1) {
+      const centerX = randomAtTile(this.seed, ripple, 0, 0x6f62a907) * WATER_MOTION_TEXTURE_SIZE;
+      const centerY = randomAtTile(this.seed, ripple, 0, 0x7a15df41) * WATER_MOTION_TEXTURE_SIZE;
+      const width = 5 + randomAtTile(this.seed, ripple, 0, 0x88d23a7b) * 14;
+      context.strokeStyle = `rgba(255, 255, 255, ${(0.12 + randomAtTile(this.seed, ripple, 0, 0x9542cb3d) * 0.2).toFixed(3)})`;
+      context.lineWidth = 0.8 + randomAtTile(this.seed, ripple, 0, 0xa6d34f1d) * 0.8;
+      context.beginPath();
+      context.ellipse(centerX, centerY, width, width * 0.38, 0, 0, Math.PI * 2);
+      context.stroke();
+    }
+
+    texture.refresh();
+    return textureKey;
   }
 
   private drawTerrainDetail(

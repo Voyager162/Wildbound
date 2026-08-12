@@ -91,6 +91,13 @@ const smoothRange = (start: number, end: number, value: number): number => {
   return normalized * normalized * (3 - 2 * normalized);
 };
 
+// This intentionally has no biome-label branch. It lets wetlands, their colors, and their pools
+// taper through a climate boundary rather than stepping when biomeForClimate changes its label.
+const swampClimateAmount = (climate: ReturnType<typeof climateAtTile>): number =>
+  smoothRange(0.7, 0.84, climate.moisture)
+    * smoothRange(0.36, 0.55, climate.temperature)
+    * (1 - smoothRange(0.58, 0.74, climate.elevation));
+
 // Biome labels are still useful for gameplay, but terrain color is derived from the continuous
 // climate values. This gives every visual boundary the same gradual treatment as a shoreline.
 const blendedLandColor = (climate: ReturnType<typeof climateAtTile>): number => {
@@ -99,9 +106,7 @@ const blendedLandColor = (climate: ReturnType<typeof climateAtTile>): number => 
 
   const forestAmount = smoothRange(0.46, 0.67, moisture) * (1 - smoothRange(0.62, 0.8, temperature));
   const desertAmount = smoothRange(0.6, 0.76, temperature) * (1 - smoothRange(0.28, 0.46, moisture));
-  const swampAmount = smoothRange(0.7, 0.84, moisture)
-    * smoothRange(0.36, 0.55, temperature)
-    * (1 - smoothRange(0.58, 0.74, elevation));
+  const swampAmount = swampClimateAmount(climate);
   color = blendColor(color, TERRAIN_COLORS[TerrainType.Forest], forestAmount);
   color = blendColor(color, TERRAIN_COLORS[TerrainType.Desert], desertAmount);
   color = blendColor(color, TERRAIN_COLORS[TerrainType.Swamp], swampAmount);
@@ -125,6 +130,7 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
   const biome = biomeForClimate(climate);
   const microVariation = coherentNoise(seed, tileX, tileY, 22, 0x3a4172d1) - 0.5;
   const swampPool = coherentNoise(seed, tileX, tileY, 28, 0x31b69f13);
+  const swampAmount = swampClimateAmount(climate);
   const terrain = terrainForBiome[biome];
   const topography = sampleTopographyVisual(
     seed,
@@ -158,15 +164,18 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
     color = blendColor(shoreLandColor, waterColor, waterVisualAmount);
     isWater = biome === Biome.Ocean;
     isShallowWater = isWater && climate.elevation > OCEAN_ELEVATION_MAX - 0.08;
-  } else if (biome === Biome.Swamp && swampPool > 0.64) {
-    // Swamp pools are shallow swim-water; their color eases in over a broad noise range rather
-    // than flipping at the gameplay boundary.
-    const poolAmount = smoothRange(0.64, 0.82, swampPool);
-    color = blendColor(regionalLandColor, 0x367f8b, poolAmount);
-    isSwampWater = true;
-    isWater = true;
-    isShallowWater = true;
-    waterVisualAmount = poolAmount;
+  } else {
+    // Pool coverage is constrained by continuous swamp climate rather than the discrete Swamp
+    // label. This specifically prevents blue water from stopping in a hard line at a swamp
+    // biome border. The gameplay water threshold sits well inside the visible blend.
+    const poolAmount = smoothRange(0.64, 0.82, swampPool) * smoothRange(0.08, 0.42, swampAmount);
+    if (poolAmount > 0.001) {
+      color = blendColor(regionalLandColor, 0x367f8b, poolAmount);
+      isSwampWater = true;
+      isWater = poolAmount > 0.34;
+      isShallowWater = isWater;
+      waterVisualAmount = poolAmount;
+    }
   }
 
   // Fade ground-only shading as the shore becomes water so its discontinuity cannot form an

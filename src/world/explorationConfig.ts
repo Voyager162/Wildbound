@@ -38,6 +38,11 @@ export const WATER_ANIMATION_UPDATE_INTERVAL_MS = 33;
 // A mix of broad travelling bands and small ripple sources makes the current legible from a
 // distance without turning every visual terrain cell into a live object.
 export const WATER_WAVES_PER_CHUNK = 30;
+// Water-surface texture motion is GPU-friendly TileSprite scrolling. Keep swamp water slower and
+// quieter; only ocean shores receive the stronger in-and-out surf pulse.
+export const OCEAN_WATER_CURRENT_PIXELS_PER_SECOND = 25;
+export const SWAMP_WATER_CURRENT_PIXELS_PER_SECOND = 8;
+export const OCEAN_SURF_TRAVEL_PIXELS = 8.5;
 // The continuous terrain layer supplies field density; this smaller cap reserves animation work
 // for the most noticeable nearby tufts.
 export const AMBIENT_GRASS_TUFTS_PER_CHUNK = 32;
