@@ -11,10 +11,13 @@ import {
   SWAMP_WATER_CURRENT_PIXELS_PER_SECOND
 } from './explorationConfig';
 import { WATER_WAVES_PER_VISIBLE_CHUNK } from './ambientPerformanceConfig';
+import { GROUND_FOLIAGE_WIND_PIPELINE } from './FoliageWindPipeline';
 import {
-  FEATURE_FOLIAGE_WIND_PIPELINE,
-  GROUND_FOLIAGE_WIND_PIPELINE
-} from './FoliageWindPipeline';
+  createAnimatedFoliageSprite,
+  isAnimatedFoliage,
+  type AnimatedFoliageSprite,
+  updateAnimatedFoliageSprite
+} from './FoliageSpriteLibrary';
 import {
   GROUND_GRASS_BASE_HEIGHT_PIXELS,
   GROUND_GRASS_FREQUENCY_SCALE,
@@ -44,6 +47,10 @@ interface WaterWave {
   shoreNormalY: number;
 }
 
+interface AnimatedFeatureFoliage {
+  sprite: AnimatedFoliageSprite;
+}
+
 export class WorldChunk {
   readonly key: string;
   private readonly textureKey: string;
@@ -61,13 +68,11 @@ export class WorldChunk {
   // Complex feature vectors are baked into one texture per chunk, avoiding per-frame Graphics triangulation.
   private readonly featureTextureKey: string;
   private readonly featureImage: Phaser.GameObjects.Image;
-  private readonly featureFoliageTextureKey: string;
-  private readonly featureFoliageImage: Phaser.GameObjects.Image;
   private readonly groundCoverTextureKey: string;
   private readonly groundCoverImage: Phaser.GameObjects.Image;
   private readonly featureGraphics: Phaser.GameObjects.Graphics;
-  private readonly featureFoliageGraphics: Phaser.GameObjects.Graphics;
   private readonly features: TerrainFeature[];
+  private readonly animatedFeatureFoliage = new Map<string, AnimatedFeatureFoliage>();
   private readonly waterWaves: WaterWave[] = [];
   private hasWater = false;
   private renderVisible = true;
@@ -93,15 +98,6 @@ export class WorldChunk {
     if (!featureTexture) {
       throw new Error('Wildbound could not create a feature texture.');
     }
-    this.featureFoliageTextureKey = `feature-foliage:v${TOPOGRAPHY_GENERATION_VERSION}:${seed}:${x}:${y}`;
-    const featureFoliageTexture = scene.textures.createCanvas(
-      this.featureFoliageTextureKey,
-      FEATURE_TEXTURE_SIZE,
-      FEATURE_TEXTURE_SIZE
-    );
-    if (!featureFoliageTexture) {
-      throw new Error('Wildbound could not create a feature foliage texture.');
-    }
     this.groundCoverTextureKey = `ground-cover:v${TOPOGRAPHY_GENERATION_VERSION}:${seed}:${x}:${y}`;
     const groundCoverTexture = scene.textures.createCanvas(
       this.groundCoverTextureKey,
@@ -121,23 +117,18 @@ export class WorldChunk {
       .image(x * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, y * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, this.featureTextureKey)
       .setOrigin(0)
       .setDepth(1);
-    this.featureFoliageImage = scene.add
-      .image(x * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, y * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, this.featureFoliageTextureKey)
-      .setOrigin(0)
-      .setDepth(1.05);
     if (scene.game.renderer instanceof Phaser.Renderer.WebGL.WebGLRenderer) {
       this.groundCoverImage.setPipeline(GROUND_FOLIAGE_WIND_PIPELINE);
-      this.featureFoliageImage.setPipeline(FEATURE_FOLIAGE_WIND_PIPELINE);
     }
     // This is an off-screen scratch pad only. It is immediately baked into featureImage's texture.
     this.featureGraphics = scene.add.graphics().setVisible(false);
-    this.featureFoliageGraphics = scene.add.graphics().setVisible(false);
     this.features = generateChunkFeatures(seed, x, y);
 
     this.drawTerrain(terrainTexture);
     this.drawGroundCoverToCanvas(groundCoverTexture.getContext());
     groundCoverTexture.refresh();
     this.refreshFeatures();
+    this.updateFoliage(performance.now());
   }
 
   setRenderVisible(visible: boolean): void {
@@ -156,7 +147,15 @@ export class WorldChunk {
     this.swampWaterMaskImage?.setVisible(visible);
     this.groundCoverImage.setVisible(visible);
     this.featureImage.setVisible(visible);
-    this.featureFoliageImage.setVisible(visible);
+    this.animatedFeatureFoliage.forEach(({ sprite }) => sprite.image.setVisible(visible));
+  }
+
+  updateFoliage(time: number): void {
+    if (!this.renderVisible) {
+      return;
+    }
+
+    this.animatedFeatureFoliage.forEach(({ sprite }) => updateAnimatedFoliageSprite(sprite, time));
   }
 
   setHarvestAnimation(tileX: number, tileY: number, progress: number): void {
@@ -313,15 +312,7 @@ export class WorldChunk {
       throw new Error('Wildbound could not update a feature texture.');
     }
     context.clearRect(0, 0, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
-    const foliageTexture = this.scene.textures.get(this.featureFoliageTextureKey) as Phaser.Textures.CanvasTexture;
-    const foliageCanvas = foliageTexture.getSourceImage() as HTMLCanvasElement;
-    const foliageContext = foliageCanvas.getContext('2d');
-    if (!foliageContext) {
-      throw new Error('Wildbound could not update a feature foliage texture.');
-    }
-    foliageContext.clearRect(0, 0, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
     this.featureGraphics.clear();
-    this.featureFoliageGraphics.clear();
     this.features.forEach((feature) => {
       const worldTileX = this.x * CHUNK_SIZE_TILES + feature.localTileX;
       const worldTileY = this.y * CHUNK_SIZE_TILES + feature.localTileY;
@@ -341,8 +332,7 @@ export class WorldChunk {
 
     this.featureGraphics.generateTexture(this.featureTextureKey, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
     this.featureGraphics.clear();
-    this.featureFoliageGraphics.generateTexture(this.featureFoliageTextureKey, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
-    this.featureFoliageGraphics.clear();
+    this.syncAnimatedFeatureFoliage();
   }
 
   destroy(): void {
@@ -357,13 +347,12 @@ export class WorldChunk {
     this.swampWaterMaskImage?.destroy();
     this.groundCoverImage.destroy();
     this.featureImage.destroy();
-    this.featureFoliageImage.destroy();
     this.featureGraphics.destroy();
-    this.featureFoliageGraphics.destroy();
+    this.animatedFeatureFoliage.forEach(({ sprite }) => sprite.image.destroy());
+    this.animatedFeatureFoliage.clear();
     this.scene.textures.remove(this.textureKey);
     this.scene.textures.remove(this.groundCoverTextureKey);
     this.scene.textures.remove(this.featureTextureKey);
-    this.scene.textures.remove(this.featureFoliageTextureKey);
     if (this.oceanWaterMaskTextureKey) {
       this.scene.textures.remove(this.oceanWaterMaskTextureKey);
     }
@@ -817,6 +806,66 @@ export class WorldChunk {
     context.restore();
   }
 
+  private syncAnimatedFeatureFoliage(): void {
+    const activeKeys = new Set<string>();
+
+    this.features.forEach((feature) => {
+      if (!isAnimatedFoliage(feature.type)) {
+        return;
+      }
+
+      const worldTileX = this.x * CHUNK_SIZE_TILES + feature.localTileX;
+      const worldTileY = this.y * CHUNK_SIZE_TILES + feature.localTileY;
+      const key = this.tileKey(worldTileX, worldTileY);
+      if (this.sessionState.isFeatureHarvested(worldTileX, worldTileY)) {
+        return;
+      }
+
+      activeKeys.add(key);
+      const variation = randomAtTile(this.seed, worldTileX, worldTileY, 0x6ac4d9e3);
+      const scale = 0.92 + variation * 0.16;
+      const mirror = variation > 0.5 ? 1 : -1;
+      const harvestOffset = this.harvestingTileKey === key ? this.harvestOffset : 0;
+      const rootX = (worldTileX + 0.5) * WORLD_TILE_SIZE + harvestOffset;
+      const rootY = (worldTileY + 0.5) * WORLD_TILE_SIZE + (feature.type === TerrainFeatureType.Tree
+        ? 0
+        : feature.type === TerrainFeatureType.Reeds
+          ? 20
+          : 12);
+      const existing = this.animatedFeatureFoliage.get(key);
+      if (existing) {
+        existing.sprite.baseX = rootX;
+        existing.sprite.baseY = rootY;
+        existing.sprite.image
+          .setPosition(rootX, rootY)
+          .setScale(scale * mirror, scale)
+          .setVisible(this.renderVisible);
+        return;
+      }
+
+      const sprite = createAnimatedFoliageSprite(
+        this.scene,
+        feature.type,
+        rootX,
+        rootY,
+        scale,
+        mirror,
+        randomAtTile(this.seed, worldTileX, worldTileY, 0x55f0b2a1) * Math.PI * 2
+      );
+      if (sprite) {
+        sprite.image.setVisible(this.renderVisible);
+        this.animatedFeatureFoliage.set(key, { sprite });
+      }
+    });
+
+    this.animatedFeatureFoliage.forEach((foliage, key) => {
+      if (!activeKeys.has(key)) {
+        foliage.sprite.image.destroy();
+        this.animatedFeatureFoliage.delete(key);
+      }
+    });
+  }
+
   private drawFeature(
     type: TerrainFeatureType,
     tileX: number,
@@ -857,7 +906,6 @@ export class WorldChunk {
         graphics.lineBetween(centerX - 2 * scale, centerY + 16, centerX - 23 * scale * mirror, centerY + 36 * scale);
         graphics.lineBetween(centerX + 3 * scale, centerY + 20, centerX + 24 * scale * mirror, centerY + 37 * scale);
         graphics.lineBetween(centerX, centerY + 8, centerX + 18 * scale * mirror, centerY - 10 * scale);
-        this.drawTreeFoliage(centerX, centerY, scale);
         break;
       }
       case TerrainFeatureType.Cactus: {
@@ -907,7 +955,6 @@ export class WorldChunk {
         groundPatch(108 * scale, 25 * scale, 0x496b47, 0.3);
         graphics.fillStyle(0x3a6441, 0.8);
         graphics.fillEllipse(centerX, centerY + 18 * scale, 68 * scale, 15 * scale);
-        this.drawReedFoliage(centerX, centerY, scale, mirror);
         break;
       }
       case TerrainFeatureType.SnowyRock: {
@@ -928,7 +975,6 @@ export class WorldChunk {
       }
       case TerrainFeatureType.Grass: {
         groundPatch(66 * scale, 18 * scale, 0x496d33, 0.25);
-        this.drawWildGrassFoliage(centerX, centerY, scale, mirror);
         break;
       }
       case TerrainFeatureType.IcePatch: {
@@ -950,72 +996,6 @@ export class WorldChunk {
         break;
       }
     }
-  }
-
-  // Trees are deliberately split across two baked textures: trunks and branches stay rooted in
-  // the static feature layer, while only the flexible canopy is sent through the wind shader.
-  private drawTreeFoliage(centerX: number, centerY: number, scale: number): void {
-    const graphics = this.featureFoliageGraphics;
-    const canopy = 39 * scale;
-    graphics.fillStyle(0x0e3927, 1);
-    graphics.fillCircle(centerX - 26 * scale, centerY - 17 * scale, canopy * 0.7);
-    graphics.fillCircle(centerX + 25 * scale, centerY - 19 * scale, canopy * 0.72);
-    graphics.fillCircle(centerX - 7 * scale, centerY - 43 * scale, canopy * 0.76);
-    graphics.fillCircle(centerX + 20 * scale, centerY - 50 * scale, canopy * 0.64);
-    graphics.fillCircle(centerX - 31 * scale, centerY - 42 * scale, canopy * 0.52);
-    graphics.fillStyle(0x1f6035, 1);
-    graphics.fillCircle(centerX - 21 * scale, centerY - 25 * scale, canopy * 0.57);
-    graphics.fillCircle(centerX + 19 * scale, centerY - 30 * scale, canopy * 0.62);
-    graphics.fillCircle(centerX - 3 * scale, centerY - 54 * scale, canopy * 0.54);
-    graphics.fillStyle(0x4b8c42, 0.88);
-    graphics.fillCircle(centerX - 18 * scale, centerY - 39 * scale, canopy * 0.27);
-    graphics.fillCircle(centerX + 15 * scale, centerY - 46 * scale, canopy * 0.22);
-    graphics.fillCircle(centerX + 31 * scale, centerY - 16 * scale, canopy * 0.2);
-    graphics.fillStyle(0xb7dc70, 0.62);
-    graphics.fillCircle(centerX - 34 * scale, centerY - 30 * scale, canopy * 0.13);
-    graphics.fillCircle(centerX + 5 * scale, centerY - 66 * scale, canopy * 0.14);
-    graphics.fillStyle(0x27502d, 0.78);
-    [-13, 0, 12].forEach((offset, index) => graphics.fillCircle(
-      centerX + offset * scale,
-      centerY + (26 + (index % 2) * 3) * scale,
-      3.2 * scale
-    ));
-  }
-
-  private drawReedFoliage(centerX: number, centerY: number, scale: number, mirror: number): void {
-    const graphics = this.featureFoliageGraphics;
-    const reedOffsets = [-37, -27, -16, -5, 7, 19, 31, 40];
-    graphics.lineStyle(4 * scale, 0x2d6037, 1);
-    reedOffsets.forEach((offset, index) => {
-      const height = (54 + (index % 3) * 11) * scale;
-      const lean = (index - 3.5) * 2.3 * mirror;
-      graphics.lineBetween(centerX + offset * scale, centerY + 20 * scale, centerX + (offset + lean) * scale, centerY + 20 * scale - height);
-    });
-    graphics.lineStyle(2 * scale, 0x83a84e, 0.95);
-    reedOffsets.filter((_, index) => index % 2 === 0).forEach((offset, index) => {
-      graphics.lineBetween(centerX + offset * scale, centerY + 12 * scale, centerX + (offset - 8 * mirror) * scale, centerY - (17 + index * 5) * scale);
-    });
-    graphics.fillStyle(0x9f7e43, 1);
-    [-27, -5, 19, 40].forEach((offset, index) => graphics.fillRoundedRect(centerX + offset * scale - 3, centerY - (43 + (index % 2) * 8) * scale, 6 * scale, 15 * scale, 3 * scale));
-    graphics.lineStyle(1.15 * scale, 0xb8d377, 0.65);
-    [-33, -18, -1, 17, 34].forEach((offset, index) => graphics.lineBetween(
-      centerX + offset * scale, centerY + 17 * scale,
-      centerX + (offset + (index - 2) * 4 * mirror) * scale, centerY - (24 + (index % 3) * 8) * scale
-    ));
-  }
-
-  private drawWildGrassFoliage(centerX: number, centerY: number, scale: number, mirror: number): void {
-    const graphics = this.featureFoliageGraphics;
-    const blades = [-23, -16, -9, -2, 6, 14, 22];
-    graphics.lineStyle(3 * scale, 0x286c39, 1);
-    blades.forEach((offset, index) => {
-      const bend = (index - 3) * 3 * mirror;
-      graphics.lineBetween(centerX + offset * scale, centerY + 12 * scale, centerX + (offset + bend) * scale, centerY - (25 + (index % 3) * 6) * scale);
-    });
-    graphics.lineStyle(1.4 * scale, 0xb6d66d, 0.9);
-    [-14, 2, 17].forEach((offset, index) => graphics.lineBetween(centerX + offset * scale, centerY + 11 * scale, centerX + (offset + 4 * mirror) * scale, centerY - (28 + index * 4) * scale));
-    graphics.fillStyle(0xe7d95f, 0.88);
-    [-12, 6, 20].forEach((offset, index) => graphics.fillCircle(centerX + offset * scale, centerY - (20 + index * 5) * scale, 2.2 * scale));
   }
 
   private tileKey(tileX: number, tileY: number): string {

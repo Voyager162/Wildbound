@@ -9,3 +9,7 @@ export const NIGHT_AMBIENT_LIGHT_TRAVEL_SPEED_MULTIPLIER = 1;
 // sunrise fade separately.
 export const NIGHT_AMBIENT_LIGHT_SPAWN_FADE_MS = 1800;
 export const NIGHT_AMBIENT_LIGHT_DESPAWN_FADE_MS = 2400;
+
+// Fade lights across the edge of the camera view instead of culling their glow on a hard line.
+// This is intentionally separate from the two source-streaming fades above.
+export const NIGHT_AMBIENT_LIGHT_VIEWPORT_FADE_PIXELS = 160;

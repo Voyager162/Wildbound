@@ -223,6 +223,7 @@ export class AdventureScene extends Phaser.Scene {
     this.updateSwimmingState();
     this.updatePlayerAvatar(delta, isMoving);
     this.chunkManager.update(this.player.x, this.player.y, time);
+    this.chunkManager.updateFoliage(time);
     this.chunkManager.updateWaterAnimation(time);
     this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.ambientLightAmount);
     this.updateNightAmbientLighting(time);

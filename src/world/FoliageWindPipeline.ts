@@ -1,14 +1,10 @@
 import Phaser from 'phaser';
-import {
-  FEATURE_FOLIAGE_WIND_UV_AMPLITUDE,
-  GROUND_GRASS_WIND_UV_AMPLITUDE
-} from './worldVisualConfig';
+import { GROUND_GRASS_WIND_UV_AMPLITUDE } from './worldVisualConfig';
 
 export const GROUND_FOLIAGE_WIND_PIPELINE = 'wildbound-ground-foliage-wind';
-export const FEATURE_FOLIAGE_WIND_PIPELINE = 'wildbound-feature-foliage-wind';
 
-// Transparent foliage is sampled from a gently offset UV. This animates every blade and canopy
-// pixel in one GPU pass per chunk, rather than re-submitting a vector shape for every plant.
+// Dense decorative grass is sampled from a gently offset UV. Object-sized features use pivoting
+// sprites instead, which avoids stretching trunks, leaves, and blades like a rubber texture.
 const FOLIAGE_WIND_FRAGMENT_SHADER = `
 #define SHADER_NAME WILDBOUND_FOLIAGE_WIND_FS
 #ifdef GL_FRAGMENT_PRECISION_HIGH
@@ -61,9 +57,5 @@ export const registerFoliageWindPipelines = (game: Phaser.Game): void => {
   pipelines.add(
     GROUND_FOLIAGE_WIND_PIPELINE,
     new FoliageWindPipeline(game, GROUND_GRASS_WIND_UV_AMPLITUDE)
-  );
-  pipelines.add(
-    FEATURE_FOLIAGE_WIND_PIPELINE,
-    new FoliageWindPipeline(game, FEATURE_FOLIAGE_WIND_UV_AMPLITUDE)
   );
 };

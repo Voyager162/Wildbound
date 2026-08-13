@@ -180,17 +180,24 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
     color = blendColor(shoreLandColor, waterColor, waterVisualAmount);
     isWater = biome === Biome.Ocean;
     isShallowWater = isWater && climate.elevation > OCEAN_ELEVATION_MAX - 0.08;
-  } else {
+  }
+
+  if (biome !== Biome.Ocean) {
     // Pool coverage is constrained by continuous swamp climate rather than the discrete Swamp
-    // label. This specifically prevents blue water from stopping in a hard line at a swamp
-    // biome border. The gameplay water threshold sits well inside the visible blend.
+    // label. Apply it over beaches too: excluding Beach made a swamp pool stop in a hard line
+    // where the discrete biome label changed, although its underlying climate was smooth. The
+    // gameplay water threshold sits well inside the visible blend.
     const poolAmount = smoothRange(0.64, 0.82, swampPool) * smoothRange(0.08, 0.42, swampAmount);
     if (poolAmount > 0.001) {
-      color = blendColor(regionalLandColor, 0x367f8b, poolAmount);
-      isSwampWater = true;
-      isWater = poolAmount > 0.34;
+      const existingWaterVisualAmount = waterVisualAmount;
+      color = blendColor(color, 0x367f8b, poolAmount);
+      // At wet ocean sand, retain the ocean surface until the continuous swamp pool is the
+      // stronger influence. This prevents a tiny trace of swamp climate from abruptly swapping
+      // the animated shore layer to the still-pool layer while keeping the colour blend smooth.
+      isSwampWater = poolAmount >= existingWaterVisualAmount;
+      isWater = isWater || poolAmount > 0.34;
       isShallowWater = isWater;
-      waterVisualAmount = poolAmount;
+      waterVisualAmount = Math.max(waterVisualAmount, poolAmount);
     }
   }
 

@@ -5,6 +5,7 @@ import {
   NIGHT_AMBIENT_LIGHT_RADIUS_MULTIPLIER
 } from '../world/explorationConfig';
 import { NIGHT_AMBIENT_LIGHT_RENDER_SCALE } from '../world/ambientPerformanceConfig';
+import { NIGHT_AMBIENT_LIGHT_VIEWPORT_FADE_PIXELS } from '../world/ambientLightMotionConfig';
 
 const colorChannels = (color: number): readonly [number, number, number] => [
   (color >> 16) & 0xff,
@@ -69,12 +70,19 @@ export class NightAmbientOverlay {
       const screenX = (light.worldX - scrollX) * camera.zoom + camera.x;
       const screenY = (light.worldY - scrollY) * camera.zoom + camera.y;
       const radius = Math.max(14, light.radius * camera.zoom * NIGHT_AMBIENT_LIGHT_RADIUS_MULTIPLIER);
-      if (screenX < -radius || screenX > cssWidth + radius || screenY < -radius || screenY > cssHeight + radius) {
+      const edgeDistance = Math.min(
+        screenX + radius,
+        cssWidth + radius - screenX,
+        screenY + radius,
+        cssHeight + radius - screenY
+      );
+      if (edgeDistance <= 0) {
         return;
       }
 
       const [red, green, blue] = colorChannels(light.color);
-      const alpha = Math.min(0.98, light.intensity * nightStrength * NIGHT_AMBIENT_LIGHT_INTENSITY_MULTIPLIER);
+      const edgeFade = Math.min(1, edgeDistance / NIGHT_AMBIENT_LIGHT_VIEWPORT_FADE_PIXELS);
+      const alpha = Math.min(0.98, light.intensity * nightStrength * NIGHT_AMBIENT_LIGHT_INTENSITY_MULTIPLIER) * edgeFade;
       const glow = context.createRadialGradient(screenX, screenY, 0, screenX, screenY, radius);
       glow.addColorStop(0, `rgba(${red}, ${green}, ${blue}, ${(alpha * 0.94).toFixed(3)})`);
       glow.addColorStop(0.1, `rgba(${red}, ${green}, ${blue}, ${(alpha * 0.66).toFixed(3)})`);

@@ -150,6 +150,10 @@ export class ChunkManager {
     }
   }
 
+  updateFoliage(time: number): void {
+    this.chunks.forEach((chunk) => chunk.updateFoliage(time));
+  }
+
   getNightAmbientLights(time: number): readonly NightAmbientLight[] {
     return this.ambientParticleManager.getNightLights(time);
   }
