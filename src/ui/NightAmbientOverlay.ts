@@ -33,7 +33,7 @@ export class NightAmbientOverlay {
     parent.append(this.canvas);
   }
 
-  update(nightAmount: number, camera: Phaser.Cameras.Scene2D.Camera, lights: readonly NightAmbientLight[]): void {
+  update(lightAmount: number, camera: Phaser.Cameras.Scene2D.Camera, lights: readonly NightAmbientLight[]): void {
     const deviceScale = NIGHT_AMBIENT_LIGHT_RENDER_SCALE;
     const cssWidth = Math.max(1, this.parent.clientWidth);
     const cssHeight = Math.max(1, this.parent.clientHeight);
@@ -49,13 +49,13 @@ export class NightAmbientOverlay {
     const context = this.context;
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, this.pixelWidth, this.pixelHeight);
-    if (nightAmount < 0.035 || lights.length === 0) {
+    if (lightAmount < 0.035 || lights.length === 0) {
       return;
     }
 
     context.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
     context.globalCompositeOperation = 'lighter';
-    const nightStrength = Math.pow(nightAmount, 0.72);
+    const nightStrength = Math.pow(lightAmount, 0.72);
     // Phaser rounds the rendered camera when roundPixels is enabled. Projecting with the same
     // scroll removes the sub-pixel disagreement that made DOM lights slide and snap over a moving
     // world, especially at the game's low exploration zoom.

@@ -21,6 +21,7 @@ import { RESOURCE_COLORS, resourceForFeature, resourceLabel } from '../world/res
 import { SessionWorldState } from '../world/SessionWorldState';
 import type { DroppedItem } from '../world/SessionWorldState';
 import { normalizeWorldTime, sampleDayNight, worldTimeForHour } from '../world/dayNight';
+import { ambientLightScheduleAmount } from '../world/ambientLightScheduleConfig';
 import {
   DAY_NIGHT_INITIAL_TIME_MS,
   DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS,
@@ -102,6 +103,7 @@ export class AdventureScene extends Phaser.Scene {
   private savePending = false;
   private worldTimeMs = DAY_NIGHT_INITIAL_TIME_MS;
   private nightAmount = 0;
+  private ambientLightAmount = 0;
 
   constructor() {
     super('adventure');
@@ -190,7 +192,7 @@ export class AdventureScene extends Phaser.Scene {
 
     if (this.worldMapOpen) {
       this.chunkManager.updateWaterAnimation(time);
-      this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.nightAmount);
+      this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.ambientLightAmount);
       this.updateNightAmbientLighting(time);
       this.persistIfNeeded(time);
 
@@ -221,7 +223,7 @@ export class AdventureScene extends Phaser.Scene {
     this.updatePlayerAvatar(delta, isMoving);
     this.chunkManager.update(this.player.x, this.player.y, time);
     this.chunkManager.updateWaterAnimation(time);
-    this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.nightAmount);
+    this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.ambientLightAmount);
     this.updateNightAmbientLighting(time);
     this.updateInteractionTarget();
     this.updateDropInteraction(time);
@@ -271,6 +273,7 @@ export class AdventureScene extends Phaser.Scene {
     this.updateMinimap(0, true);
     this.dayNightOverlay.update(this.worldTimeMs);
     this.nightAmount = sampleDayNight(this.worldTimeMs).nightAmount;
+    this.ambientLightAmount = ambientLightScheduleAmount(this.worldTimeMs);
     this.updateNightAmbientLighting(this.time.now);
     this.updateExploration(true);
     this.updateDebugText();
@@ -443,6 +446,7 @@ export class AdventureScene extends Phaser.Scene {
   private updateWorldTime(time: number, delta: number): void {
     this.worldTimeMs = normalizeWorldTime(this.worldTimeMs + delta);
     this.nightAmount = sampleDayNight(this.worldTimeMs).nightAmount;
+    this.ambientLightAmount = ambientLightScheduleAmount(this.worldTimeMs);
 
     if (time - this.lastDayNightOverlayUpdateMs >= DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS) {
       this.lastDayNightOverlayUpdateMs = time;
@@ -459,7 +463,7 @@ export class AdventureScene extends Phaser.Scene {
 
   private updateNightAmbientLighting(time: number): void {
     this.nightAmbientOverlay.update(
-      this.nightAmount,
+      this.ambientLightAmount,
       this.cameras.main,
       this.chunkManager.getNightAmbientLights(time)
     );
