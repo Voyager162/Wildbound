@@ -12,6 +12,8 @@ import {
 } from './explorationConfig';
 import {
   AMBIENT_GRASS_TUFTS_PER_VISIBLE_CHUNK,
+  AMBIENT_MOVING_GRASS_TUFTS_PER_VISIBLE_CHUNK,
+  AMBIENT_SWAYING_FEATURES_PER_VISIBLE_CHUNK,
   WATER_WAVES_PER_VISIBLE_CHUNK
 } from './ambientPerformanceConfig';
 import {
@@ -72,10 +74,13 @@ export class WorldChunk {
   private readonly featureImage: Phaser.GameObjects.Image;
   private readonly featureGraphics: Phaser.GameObjects.Graphics;
   private readonly features: TerrainFeature[];
+  private readonly swayingFeatures: TerrainFeature[];
   private readonly ambientGrassTufts: AmbientGrassTuft[];
   private readonly waterWaves: WaterWave[] = [];
   private hasWater = false;
   private hasAmbientMotion = false;
+  private renderVisible = true;
+  private ambientMotionEnabled = true;
   private harvestingTileKey: string | null = null;
   private harvestOffset = 0;
 
@@ -98,7 +103,6 @@ export class WorldChunk {
     if (!featureTexture) {
       throw new Error('Wildbound could not create a feature texture.');
     }
-
     this.terrainImage = scene.add.image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.textureKey).setOrigin(0);
     this.waterGraphics = scene.add.graphics().setDepth(0.25);
     this.ambientGraphics = scene.add.graphics().setDepth(1.15);
@@ -109,13 +113,56 @@ export class WorldChunk {
     // This is an off-screen scratch pad only. It is immediately baked into featureImage's texture.
     this.featureGraphics = scene.add.graphics().setVisible(false);
     this.features = generateChunkFeatures(seed, x, y);
+    this.swayingFeatures = this.features
+      .filter((feature) => feature.type === TerrainFeatureType.Tree
+        || feature.type === TerrainFeatureType.Reeds
+        || feature.type === TerrainFeatureType.Grass)
+      .sort((first, second) => {
+        const firstX = x * CHUNK_SIZE_TILES + first.localTileX;
+        const firstY = y * CHUNK_SIZE_TILES + first.localTileY;
+        const secondX = x * CHUNK_SIZE_TILES + second.localTileX;
+        const secondY = y * CHUNK_SIZE_TILES + second.localTileY;
+        return randomAtTile(seed, secondX, secondY, 0x3b7d1129)
+          - randomAtTile(seed, firstX, firstY, 0x3b7d1129);
+      });
     this.ambientGrassTufts = this.createAmbientGrassTufts();
 
     this.drawTerrain(terrainTexture);
+    this.drawGroundCoverToCanvas(terrainTexture.getContext());
+    terrainTexture.refresh();
     this.refreshFeatures();
     // Give a newly streamed chunk its current wind pose immediately. The ambient buffer then
     // keeps it advancing before it reaches the camera edge.
     this.updateAmbient(performance.now());
+  }
+
+  setRenderVisible(visible: boolean): void {
+    if (this.renderVisible === visible) {
+      return;
+    }
+
+    this.renderVisible = visible;
+    this.terrainImage.setVisible(visible);
+    this.waterGraphics.setVisible(visible);
+    this.oceanWaterSurface?.setVisible(visible);
+    this.oceanWaterHighlights?.setVisible(visible);
+    this.swampWaterSurface?.setVisible(visible);
+    this.swampWaterHighlights?.setVisible(visible);
+    this.oceanWaterMaskImage?.setVisible(visible);
+    this.swampWaterMaskImage?.setVisible(visible);
+    this.ambientGraphics.setVisible(visible);
+    this.featureImage.setVisible(visible);
+  }
+
+  setAmbientMotionEnabled(enabled: boolean): void {
+    if (this.ambientMotionEnabled === enabled) {
+      return;
+    }
+
+    this.ambientMotionEnabled = enabled;
+    if (!enabled) {
+      this.ambientGraphics.clear();
+    }
   }
 
   setHarvestAnimation(tileX: number, tileY: number, progress: number): void {
@@ -142,7 +189,7 @@ export class WorldChunk {
   }
 
   updateWaterAnimation(time: number): void {
-    if (!this.hasWater) {
+    if (!this.hasWater || !this.renderVisible) {
       return;
     }
 
@@ -234,7 +281,7 @@ export class WorldChunk {
   // The broad water texture is just a few GPU tile-offset writes, so it stays smooth even while
   // the more expensive vector ripples below run at a lower, budget-friendly cadence.
   updateWaterSurfaceMotion(time: number): void {
-    if (this.hasWater) {
+    if (this.hasWater && this.renderVisible) {
       this.updateWaterSurfaceLayers(time / 1000);
     }
   }
@@ -265,7 +312,7 @@ export class WorldChunk {
   }
 
   updateAmbient(time: number): void {
-    if (!this.hasAmbientMotion) {
+    if (!this.hasAmbientMotion || !this.ambientMotionEnabled || !this.renderVisible) {
       return;
     }
 
@@ -273,7 +320,12 @@ export class WorldChunk {
     const timeSeconds = time / 1000;
     graphics.clear();
 
-    this.ambientGrassTufts.forEach((tuft) => {
+    const grassTuftCount = Math.min(
+      this.ambientGrassTufts.length,
+      AMBIENT_MOVING_GRASS_TUFTS_PER_VISIBLE_CHUNK
+    );
+    for (let tuftIndex = 0; tuftIndex < grassTuftCount; tuftIndex += 1) {
+      const tuft = this.ambientGrassTufts[tuftIndex];
       // Layered gusts are deliberately pronounced: this cover should read as a moving field,
       // not a static texture with an occasional twitch.
       const wind = (Math.sin(timeSeconds * 1.65 + tuft.phase) * 0.74
@@ -287,14 +339,20 @@ export class WorldChunk {
       graphics.lineBetween(tuft.worldX + 2.4, tuft.worldY + 4, tuft.worldX + 2.4 + wind * 0.94, tuft.worldY - tuft.height * 0.78);
       graphics.lineStyle(0.85, 0xd9efa0, 0.56);
       graphics.lineBetween(tuft.worldX + 4.8, tuft.worldY + 4, tuft.worldX + 4.8 + wind * 1.08, tuft.worldY - tuft.height * 0.64);
-    });
+    }
 
-    this.features.forEach((feature) => {
+    let drawnSwayingFeatures = 0;
+    for (let featureIndex = 0;
+      featureIndex < this.swayingFeatures.length && drawnSwayingFeatures < AMBIENT_SWAYING_FEATURES_PER_VISIBLE_CHUNK;
+      featureIndex += 1) {
+      const feature = this.swayingFeatures[featureIndex];
       const worldTileX = this.x * CHUNK_SIZE_TILES + feature.localTileX;
       const worldTileY = this.y * CHUNK_SIZE_TILES + feature.localTileY;
       if (this.sessionState.isFeatureHarvested(worldTileX, worldTileY)) {
-        return;
+        continue;
       }
+
+      drawnSwayingFeatures += 1;
 
       const centerX = (worldTileX + 0.5) * WORLD_TILE_SIZE;
       const centerY = (worldTileY + 0.5) * WORLD_TILE_SIZE;
@@ -336,20 +394,18 @@ export class WorldChunk {
           graphics.lineBetween(centerX + offset + 1.5, centerY + 12, centerX + offset + bend, centerY - height + index * 4);
         });
       }
-    });
+    }
   }
 
   refreshFeatures(): void {
-    const texture = this.scene.textures.get(this.featureTextureKey);
+    const texture = this.scene.textures.get(this.featureTextureKey) as Phaser.Textures.CanvasTexture;
     const canvas = texture.getSourceImage() as HTMLCanvasElement;
     const context = canvas.getContext('2d');
     if (!context) {
       throw new Error('Wildbound could not update a feature texture.');
     }
-
     context.clearRect(0, 0, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
     this.featureGraphics.clear();
-    this.drawGroundCover();
     this.features.forEach((feature) => {
       const worldTileX = this.x * CHUNK_SIZE_TILES + feature.localTileX;
       const worldTileY = this.y * CHUNK_SIZE_TILES + feature.localTileY;
@@ -785,8 +841,9 @@ export class WorldChunk {
     return placement < density * 0.34 ? 3 : placement < density * 0.7 ? 2 : 1;
   }
 
-  private drawGroundCover(): void {
-    const graphics = this.featureGraphics;
+  private drawGroundCoverToCanvas(context: CanvasRenderingContext2D): void {
+    context.save();
+    context.lineCap = 'round';
 
     for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
@@ -800,8 +857,8 @@ export class WorldChunk {
         }
 
         const clumpCount = this.groundGrassClumpCount(density, placement);
-        const baseX = localX * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING;
-        const baseY = localY * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING;
+        const baseX = localX * WORLD_TILE_SIZE;
+        const baseY = localY * WORLD_TILE_SIZE;
         const shadow = this.shadeColor(surface.color, -0.42);
         const midtone = this.shadeColor(surface.color, 0.12);
         const highlight = this.shadeColor(surface.color, 0.5);
@@ -815,16 +872,31 @@ export class WorldChunk {
           const lean = (randomAtTile(this.seed, worldTileX, worldTileY, 0x7959e2d1 + clump) - 0.5) * 11;
           const rootX = baseX + offsetX;
           const rootY = baseY + 27;
-          graphics.lineStyle(2.15, shadow, 0.8);
-          graphics.lineBetween(rootX - 2.5, rootY, rootX - 3 + lean * 0.45, rootY - height * 0.64);
-          graphics.lineBetween(rootX + 1.5, rootY, rootX + 1.5 + lean * 0.74, rootY - height);
-          graphics.lineStyle(1.45, midtone, 0.9);
-          graphics.lineBetween(rootX + 4, rootY, rootX + 4 + lean, rootY - height * 0.78);
-          graphics.lineStyle(0.75, highlight, 0.64);
-          graphics.lineBetween(rootX, rootY - 1, rootX + lean * 0.3, rootY - height * 0.92);
+          context.strokeStyle = `${this.colorToCss(shadow)}cc`;
+          context.lineWidth = 2.15;
+          context.beginPath();
+          context.moveTo(rootX - 2.5, rootY);
+          context.lineTo(rootX - 3 + lean * 0.45, rootY - height * 0.64);
+          context.moveTo(rootX + 1.5, rootY);
+          context.lineTo(rootX + 1.5 + lean * 0.74, rootY - height);
+          context.stroke();
+          context.strokeStyle = `${this.colorToCss(midtone)}e6`;
+          context.lineWidth = 1.45;
+          context.beginPath();
+          context.moveTo(rootX + 4, rootY);
+          context.lineTo(rootX + 4 + lean, rootY - height * 0.78);
+          context.stroke();
+          context.strokeStyle = `${this.colorToCss(highlight)}a3`;
+          context.lineWidth = 0.75;
+          context.beginPath();
+          context.moveTo(rootX, rootY - 1);
+          context.lineTo(rootX + lean * 0.3, rootY - height * 0.92);
+          context.stroke();
         }
       }
     }
+
+    context.restore();
   }
 
   private drawFeature(

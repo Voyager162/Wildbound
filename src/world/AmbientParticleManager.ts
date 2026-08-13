@@ -9,6 +9,9 @@ import {
   NIGHT_AMBIENT_LIGHT_RETENTION_CELLS
 } from './explorationConfig';
 import {
+  AMBIENT_PARTICLE_RENDER_MAX_COUNT,
+} from './ambientPerformanceConfig';
+import {
   AMBIENT_PARTICLE_PRELOAD_CELLS_X,
   AMBIENT_PARTICLE_PRELOAD_CELLS_Y,
   AMBIENT_PARTICLE_RETENTION_CELLS
@@ -72,10 +75,17 @@ export class AmbientParticleManager {
 
     const timeSeconds = time / 1000;
     this.graphics.clear();
-    this.particles.forEach((particle) => {
+    const particleCount = Math.min(this.particles.length, AMBIENT_PARTICLE_RENDER_MAX_COUNT);
+    for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
+      const particle = this.particles[particleIndex];
+      // Fireflies are a night-only visual. Skipping their Graphics commands during the day
+      // removes a forest-heavy source of invisible work while retaining their stable light slot.
+      if (particle.kind === 'firefly' && nightAmount <= 0.04) {
+        continue;
+      }
       const state = this.particleState(particle, timeSeconds);
       this.drawParticle(particle, state, nightAmount);
-    });
+    }
   }
 
   getNightLights(time: number): readonly NightAmbientLight[] {
@@ -251,7 +261,15 @@ export class AmbientParticleManager {
         return this.particlePool.size >= AMBIENT_PARTICLE_MAX_COUNT;
       });
 
-    this.particles = Array.from(this.particlePool.values());
+    // Keep the rendered subset closest to the camera anchor. The larger retained pool prevents
+    // effects popping at the edge, while the capped foreground Graphics pass never wastes
+    // commands on particles that are already well outside the viewport.
+    this.particles = Array.from(this.particlePool.values())
+      .sort((first, second) => {
+        const firstDistance = Math.abs(first.cellX - anchorCellX) + Math.abs(first.cellY - anchorCellY);
+        const secondDistance = Math.abs(second.cellX - anchorCellX) + Math.abs(second.cellY - anchorCellY);
+        return firstDistance - secondDistance || second.lightPriority - first.lightPriority;
+      });
   }
 
   private refreshStableLightPool(anchorCellX: number, anchorCellY: number): void {

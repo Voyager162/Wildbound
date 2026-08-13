@@ -18,6 +18,10 @@ import {
   CHUNK_STREAM_VISIBLE_RADIUS_X,
   CHUNK_STREAM_VISIBLE_RADIUS_Y
 } from './chunkStreamingConfig';
+import {
+  CHUNK_RENDER_RADIUS_X,
+  CHUNK_RENDER_RADIUS_Y
+} from './chunkRenderConfig';
 import { LandmarkManager } from './LandmarkManager';
 import { sampleTopography, type TopographySample } from './generation/topographyGenerator';
 import { SessionWorldState } from './SessionWorldState';
@@ -92,6 +96,7 @@ export class ChunkManager {
     this.queuePrefetchChunks(playerWorldX, playerWorldY);
     this.landmarkManager.update(this.activeChunkX, this.activeChunkY);
     this.processPendingChunks(time, CHUNK_STREAM_INITIAL_BUILD_COUNT, true);
+    this.updateChunkRenderVisibility();
   }
 
   update(playerWorldX: number, playerWorldY: number, time = performance.now()): void {
@@ -112,6 +117,7 @@ export class ChunkManager {
     this.unloadDistantChunks();
     this.landmarkManager.update(this.activeChunkX, this.activeChunkY);
     this.processPendingChunks(time);
+    this.updateChunkRenderVisibility();
   }
 
   updateWaterAnimation(time: number): void {
@@ -143,10 +149,11 @@ export class ChunkManager {
     if (time - this.lastAmbientSwayTime >= AMBIENT_FOLIAGE_UPDATE_INTERVAL_MS) {
       this.lastAmbientSwayTime = time;
       this.chunks.forEach((chunk) => {
-        if (
+        const isWithinAmbientWindow =
           Math.abs(chunk.x - this.activeChunkX) <= AMBIENT_CHUNK_RADIUS_X
-          && Math.abs(chunk.y - this.activeChunkY) <= AMBIENT_CHUNK_RADIUS_Y
-        ) {
+          && Math.abs(chunk.y - this.activeChunkY) <= AMBIENT_CHUNK_RADIUS_Y;
+        chunk.setAmbientMotionEnabled(isWithinAmbientWindow);
+        if (isWithinAmbientWindow) {
           chunk.updateAmbient(time);
         }
       });
@@ -341,9 +348,20 @@ export class ChunkManager {
         continue;
       }
 
-      this.chunks.set(key, new WorldChunk(this.scene, this.seed, this.sessionState, coordinate.x, coordinate.y));
+      const chunk = new WorldChunk(this.scene, this.seed, this.sessionState, coordinate.x, coordinate.y);
+      chunk.setRenderVisible(this.isWithinRenderWindow(coordinate.x, coordinate.y));
+      this.chunks.set(key, chunk);
       built += 1;
     }
+  }
+
+  private updateChunkRenderVisibility(): void {
+    this.chunks.forEach((chunk) => chunk.setRenderVisible(this.isWithinRenderWindow(chunk.x, chunk.y)));
+  }
+
+  private isWithinRenderWindow(chunkX: number, chunkY: number): boolean {
+    return Math.abs(chunkX - this.activeChunkX) <= CHUNK_RENDER_RADIUS_X
+      && Math.abs(chunkY - this.activeChunkY) <= CHUNK_RENDER_RADIUS_Y;
   }
 
   private unloadDistantChunks(): void {
