@@ -49,7 +49,10 @@ export class NightAmbientOverlay {
     const context = this.context;
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, this.pixelWidth, this.pixelHeight);
-    if (lightAmount < 0.035 || lights.length === 0) {
+    // Do not introduce a small-alpha cutoff here: it is visible as an abrupt final frame at
+    // dawn and dusk. The schedule already approaches zero smoothly, so only exact daytime
+    // darkness can skip the gradient work.
+    if (lightAmount <= 0 || lights.length === 0) {
       return;
     }
 

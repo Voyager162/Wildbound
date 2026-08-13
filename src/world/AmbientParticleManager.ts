@@ -16,6 +16,12 @@ import {
   AMBIENT_PARTICLE_PRELOAD_CELLS_Y,
   AMBIENT_PARTICLE_RETENTION_CELLS
 } from './ambientBufferConfig';
+import {
+  NIGHT_AMBIENT_LIGHT_DESPAWN_FADE_MS,
+  NIGHT_AMBIENT_LIGHT_SPAWN_FADE_MS,
+  NIGHT_AMBIENT_LIGHT_TRAVEL_DISTANCE_MULTIPLIER,
+  NIGHT_AMBIENT_LIGHT_TRAVEL_SPEED_MULTIPLIER
+} from './ambientLightMotionConfig';
 import { biomeAtTile, Biome } from './generation/biomeGenerator';
 import { randomAtTile } from './generation/noise';
 import { WORLD_TILE_SIZE } from './worldConfig';
@@ -50,13 +56,20 @@ interface AmbientParticle {
   nightLightIntensity: number;
 }
 
+interface NightLightTrack {
+  particle: AmbientParticle;
+  visibleAmount: number;
+  targetVisible: boolean;
+  lastUpdatedTime: number;
+}
+
 export class AmbientParticleManager {
   private readonly graphics: Phaser.GameObjects.Graphics;
   private lastAnchorCellX = Number.NaN;
   private lastAnchorCellY = Number.NaN;
   private particles: AmbientParticle[] = [];
   private readonly particlePool = new Map<string, AmbientParticle>();
-  private readonly lightParticles = new Map<string, AmbientParticle>();
+  private readonly lightTracks = new Map<string, NightLightTrack>();
   private nightLights: NightAmbientLight[] = [];
 
   constructor(private readonly scene: Phaser.Scene, private readonly seed: string) {
@@ -70,7 +83,7 @@ export class AmbientParticleManager {
       this.lastAnchorCellX = anchorCellX;
       this.lastAnchorCellY = anchorCellY;
       this.refreshStableParticlePool(this.createParticles(anchorCellX, anchorCellY), anchorCellX, anchorCellY);
-      this.refreshStableLightPool(anchorCellX, anchorCellY);
+      this.refreshStableLightPool(anchorCellX, anchorCellY, time);
     }
 
     const timeSeconds = time / 1000;
@@ -78,9 +91,9 @@ export class AmbientParticleManager {
     const particleCount = Math.min(this.particles.length, AMBIENT_PARTICLE_RENDER_MAX_COUNT);
     for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
       const particle = this.particles[particleIndex];
-      // Fireflies are a night-only visual. Skipping their Graphics commands during the day
-      // removes a forest-heavy source of invisible work while retaining their stable light slot.
-      if (particle.kind === 'firefly' && nightAmount <= 0.04) {
+      // Fireflies are a night-only visual. Skipping them only at exact daytime darkness avoids
+      // the noticeable final-frame cutoff that a small visibility threshold would create.
+      if (particle.kind === 'firefly' && nightAmount <= 0) {
         continue;
       }
       const state = this.particleState(particle, timeSeconds);
@@ -93,7 +106,12 @@ export class AmbientParticleManager {
     // Particle rendering is deliberately throttled, but each light is evaluated from its analytic
     // motion curve at the exact frame time. This preserves smooth drifting without increasing the
     // draw cost of the foreground particle Graphics layer.
-    this.nightLights = Array.from(this.lightParticles.values(), (particle) => {
+    this.nightLights = Array.from(this.lightTracks.values(), (track) => {
+      const visibility = this.advanceLightTrack(track, time);
+      if (visibility <= 0) {
+        return null;
+      }
+      const particle = track.particle;
       const state = this.particleState(particle, timeSeconds);
       const pulse = 0.72 + (Math.sin(state.cycle * 1.9 + particle.phase * 0.44) + 1) * 0.14;
       return {
@@ -101,9 +119,9 @@ export class AmbientParticleManager {
         worldY: state.y,
         radius: particle.nightLightRadius * (0.9 + pulse * 0.12),
         color: particle.nightLightColor,
-        intensity: particle.nightLightIntensity * pulse
+        intensity: particle.nightLightIntensity * pulse * visibility
       };
-    });
+    }).filter((light): light is NightAmbientLight => light !== null);
     return this.nightLights;
   }
 
@@ -111,7 +129,7 @@ export class AmbientParticleManager {
     this.graphics.destroy();
     this.particles = [];
     this.particlePool.clear();
-    this.lightParticles.clear();
+    this.lightTracks.clear();
     this.nightLights = [];
   }
 
@@ -272,28 +290,56 @@ export class AmbientParticleManager {
       });
   }
 
-  private refreshStableLightPool(anchorCellX: number, anchorCellY: number): void {
+  private refreshStableLightPool(anchorCellX: number, anchorCellY: number, time: number): void {
     const retainRadiusX = AMBIENT_PARTICLE_RADIUS_CELLS_X
       + NIGHT_AMBIENT_LIGHT_RETENTION_CELLS;
     const retainRadiusY = AMBIENT_PARTICLE_RADIUS_CELLS_Y
       + NIGHT_AMBIENT_LIGHT_RETENTION_CELLS;
-    this.lightParticles.forEach((particle, id) => {
-      if (Math.abs(particle.cellX - anchorCellX) > retainRadiusX || Math.abs(particle.cellY - anchorCellY) > retainRadiusY) {
-        this.lightParticles.delete(id);
+    let activeTrackCount = 0;
+    this.lightTracks.forEach((track) => {
+      const isStillRetained = Math.abs(track.particle.cellX - anchorCellX) <= retainRadiusX
+        && Math.abs(track.particle.cellY - anchorCellY) <= retainRadiusY;
+      track.targetVisible = isStillRetained;
+      if (track.targetVisible) {
+        activeTrackCount += 1;
       }
     });
 
-    if (this.lightParticles.size >= NIGHT_AMBIENT_LIGHT_MAX_COUNT) {
-      return;
-    }
-
     this.particles
-      .filter((particle) => particle.nightLightIntensity > 0 && !this.lightParticles.has(particle.id))
+      .filter((particle) => particle.nightLightIntensity > 0 && !this.lightTracks.has(particle.id))
       .sort((first, second) => second.lightPriority - first.lightPriority)
       .some((particle) => {
-        this.lightParticles.set(particle.id, particle);
-        return this.lightParticles.size >= NIGHT_AMBIENT_LIGHT_MAX_COUNT;
+        if (activeTrackCount >= NIGHT_AMBIENT_LIGHT_MAX_COUNT) {
+          return true;
+        }
+        this.lightTracks.set(particle.id, {
+          particle,
+          visibleAmount: 0,
+          targetVisible: true,
+          lastUpdatedTime: time
+        });
+        activeTrackCount += 1;
+        return false;
       });
+  }
+
+  private advanceLightTrack(track: NightLightTrack, time: number): number {
+    const elapsed = Math.max(0, time - track.lastUpdatedTime);
+    const fadeDuration = track.targetVisible
+      ? NIGHT_AMBIENT_LIGHT_SPAWN_FADE_MS
+      : NIGHT_AMBIENT_LIGHT_DESPAWN_FADE_MS;
+    const amount = fadeDuration > 0 ? elapsed / fadeDuration : 1;
+    track.visibleAmount = Phaser.Math.Clamp(
+      track.visibleAmount + (track.targetVisible ? amount : -amount),
+      0,
+      1
+    );
+    track.lastUpdatedTime = time;
+
+    if (!track.targetVisible && track.visibleAmount <= 0) {
+      this.lightTracks.delete(track.particle.id);
+    }
+    return track.visibleAmount;
   }
 
   private particleIdentity(
@@ -330,12 +376,15 @@ export class AmbientParticleManager {
   }
 
   private particleState(particle: AmbientParticle, timeSeconds: number): { x: number; y: number; cycle: number; alpha: number } {
-    const cycle = timeSeconds * particle.driftSpeed + particle.phase;
-    const wind = Math.sin(cycle * 0.7) * particle.windStrength + Math.sin(cycle * 1.63) * 9;
+    const isLightSource = particle.nightLightIntensity > 0;
+    const speedScale = isLightSource ? NIGHT_AMBIENT_LIGHT_TRAVEL_SPEED_MULTIPLIER : 1;
+    const distanceScale = isLightSource ? NIGHT_AMBIENT_LIGHT_TRAVEL_DISTANCE_MULTIPLIER : 1;
+    const cycle = timeSeconds * particle.driftSpeed * speedScale + particle.phase;
+    const wind = (Math.sin(cycle * 0.7) * particle.windStrength + Math.sin(cycle * 1.63) * 9) * distanceScale;
     return {
       cycle,
-      x: particle.baseX + wind + Math.cos(cycle * 0.24) * 12,
-      y: particle.baseY + Math.cos(cycle * 0.56) * 13 + Math.sin(cycle * 0.31) * 8,
+      x: particle.baseX + wind + Math.cos(cycle * 0.24) * 12 * distanceScale,
+      y: particle.baseY + (Math.cos(cycle * 0.56) * 13 + Math.sin(cycle * 0.31) * 8) * distanceScale,
       alpha: 0.28 + (Math.sin(cycle * 1.8) + 1) * 0.19
     };
   }
@@ -347,11 +396,11 @@ export class AmbientParticleManager {
   ): void {
     const { x, y, cycle } = state;
     const alpha = particle.kind === 'firefly'
-      ? (nightAmount <= 0.04 ? 0 : state.alpha * nightAmount)
+      ? state.alpha * nightAmount
       : state.alpha;
     const graphics = this.graphics;
 
-    if (nightAmount > 0.04 && particle.nightLightIntensity > 0) {
+    if (nightAmount > 0 && particle.nightLightIntensity > 0) {
       const glowAlpha = particle.nightLightIntensity * nightAmount * (0.1 + (Math.sin(cycle * 1.7) + 1) * 0.055);
       graphics.fillStyle(particle.nightLightColor, glowAlpha);
       graphics.fillCircle(x, y, particle.nightLightRadius * 0.34);

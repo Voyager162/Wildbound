@@ -466,7 +466,7 @@ export class AdventureScene extends Phaser.Scene {
     // The DOM glow canvas is intentionally updated every frame once light is visible, but doing
     // a full transparent canvas clear at 60 Hz during daylight is pure overhead—particularly in
     // a foliage-dense forest where the game otherwise has no active night lights.
-    if (this.ambientLightAmount < 0.035 && time - this.lastNightAmbientLightingUpdateMs < 250) {
+    if (this.ambientLightAmount <= 0 && time - this.lastNightAmbientLightingUpdateMs < 250) {
       return;
     }
 
