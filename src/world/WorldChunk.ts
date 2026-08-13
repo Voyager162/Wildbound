@@ -6,12 +6,14 @@ import { randomAtTile } from './generation/noise';
 import { surfaceAtTile, type TerrainSurface } from './generation/terrainGenerator';
 import { SessionWorldState } from './SessionWorldState';
 import {
-  AMBIENT_GRASS_TUFTS_PER_CHUNK,
   OCEAN_SURF_TRAVEL_PIXELS,
   OCEAN_WATER_CURRENT_PIXELS_PER_SECOND,
-  SWAMP_WATER_CURRENT_PIXELS_PER_SECOND,
-  WATER_WAVES_PER_CHUNK
+  SWAMP_WATER_CURRENT_PIXELS_PER_SECOND
 } from './explorationConfig';
+import {
+  AMBIENT_GRASS_TUFTS_PER_VISIBLE_CHUNK,
+  WATER_WAVES_PER_VISIBLE_CHUNK
+} from './ambientPerformanceConfig';
 import {
   GROUND_GRASS_BASE_HEIGHT_PIXELS,
   GROUND_GRASS_FREQUENCY_SCALE,
@@ -500,7 +502,7 @@ export class WorldChunk {
 
     waveCandidates
       .sort((first, second) => second.priority - first.priority)
-      .slice(0, WATER_WAVES_PER_CHUNK)
+      .slice(0, WATER_WAVES_PER_VISIBLE_CHUNK)
       .forEach(({ priority: _priority, ...wave }) => this.waterWaves.push(wave));
     this.updateWaterAnimation(0);
   }
@@ -1051,7 +1053,7 @@ export class WorldChunk {
 
     const tufts = candidates
       .sort((first, second) => second.priority - first.priority)
-      .slice(0, AMBIENT_GRASS_TUFTS_PER_CHUNK)
+      .slice(0, AMBIENT_GRASS_TUFTS_PER_VISIBLE_CHUNK)
       .map(({ priority: _priority, ...tuft }) => tuft);
 
     this.hasAmbientMotion = tufts.length > 0 || this.features.some((feature) =>

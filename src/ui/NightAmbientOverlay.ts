@@ -2,9 +2,9 @@ import Phaser from 'phaser';
 import type { NightAmbientLight } from '../world/AmbientParticleManager';
 import {
   NIGHT_AMBIENT_LIGHT_INTENSITY_MULTIPLIER,
-  NIGHT_AMBIENT_LIGHT_RADIUS_MULTIPLIER,
-  NIGHT_AMBIENT_LIGHT_RENDER_SCALE
+  NIGHT_AMBIENT_LIGHT_RADIUS_MULTIPLIER
 } from '../world/explorationConfig';
+import { NIGHT_AMBIENT_LIGHT_RENDER_SCALE } from '../world/ambientPerformanceConfig';
 
 const colorChannels = (color: number): readonly [number, number, number] => [
   (color >> 16) & 0xff,

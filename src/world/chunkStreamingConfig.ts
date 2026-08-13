@@ -1,6 +1,9 @@
 // Chunk streaming is kept in its own config because these values trade generation headroom for
 // a larger ready-to-render world around a fast-moving player.
-export const CHUNK_STREAM_BUILD_INTERVAL_MS = 32;
+// A full terrain chunk is an intentionally detailed canvas bake. 80 ms is still far ahead of
+// normal player movement with the predictive queue, but avoids forcing a costly bake into every
+// other frame while travelling.
+export const CHUNK_STREAM_BUILD_INTERVAL_MS = 80;
 export const CHUNK_STREAM_BUILDS_PER_TICK = 1;
 // Prime the 5 x 3 camera area before player movement is enabled, avoiding the black tiles seen
 // during the first few seconds of a fresh world.

@@ -3,10 +3,12 @@ import { AmbientParticleManager, type NightAmbientLight } from './AmbientParticl
 import {
   AMBIENT_CHUNK_RADIUS_X,
   AMBIENT_CHUNK_RADIUS_Y,
-  AMBIENT_PARTICLE_UPDATE_INTERVAL_MS,
-  AMBIENT_SWAY_UPDATE_INTERVAL_MS,
-  WATER_ANIMATION_UPDATE_INTERVAL_MS
 } from './explorationConfig';
+import {
+  AMBIENT_FOLIAGE_UPDATE_INTERVAL_MS,
+  AMBIENT_PARTICLE_RENDER_INTERVAL_MS,
+  WATER_RIPPLE_UPDATE_INTERVAL_MS
+} from './ambientPerformanceConfig';
 import {
   CHUNK_STREAM_BUILD_INTERVAL_MS,
   CHUNK_STREAM_BUILDS_PER_TICK,
@@ -122,7 +124,7 @@ export class ChunkManager {
       }
     });
 
-    if (time - this.lastWaterAnimationTime < WATER_ANIMATION_UPDATE_INTERVAL_MS) {
+    if (time - this.lastWaterAnimationTime < WATER_RIPPLE_UPDATE_INTERVAL_MS) {
       return;
     }
 
@@ -138,7 +140,7 @@ export class ChunkManager {
   }
 
   updateAmbient(time: number, playerWorldX: number, playerWorldY: number, nightAmount: number): void {
-    if (time - this.lastAmbientSwayTime >= AMBIENT_SWAY_UPDATE_INTERVAL_MS) {
+    if (time - this.lastAmbientSwayTime >= AMBIENT_FOLIAGE_UPDATE_INTERVAL_MS) {
       this.lastAmbientSwayTime = time;
       this.chunks.forEach((chunk) => {
         if (
@@ -150,7 +152,7 @@ export class ChunkManager {
       });
     }
 
-    if (time - this.lastAmbientParticleTime >= AMBIENT_PARTICLE_UPDATE_INTERVAL_MS) {
+    if (time - this.lastAmbientParticleTime >= AMBIENT_PARTICLE_RENDER_INTERVAL_MS) {
       this.lastAmbientParticleTime = time;
       this.ambientParticleManager.update(time, playerWorldX, playerWorldY, nightAmount);
     }
