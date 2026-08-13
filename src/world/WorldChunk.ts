@@ -11,13 +11,26 @@ import {
   SWAMP_WATER_CURRENT_PIXELS_PER_SECOND
 } from './explorationConfig';
 import { WATER_WAVES_PER_VISIBLE_CHUNK } from './ambientPerformanceConfig';
-import { GROUND_FOLIAGE_WIND_PIPELINE } from './FoliageWindPipeline';
+import {
+  createAnimatedGroundGrassPatch,
+  type AnimatedGroundGrassPatch,
+  type GroundGrassPalette,
+  updateAnimatedGroundGrassPatch
+} from './GroundGrassAnimation';
 import {
   createAnimatedFoliageSprite,
+  destroyAnimatedFoliageSprite,
   isAnimatedFoliage,
+  setAnimatedFoliageSpriteTransform,
+  setAnimatedFoliageSpriteVisible,
   type AnimatedFoliageSprite,
   updateAnimatedFoliageSprite
 } from './FoliageSpriteLibrary';
+import {
+  GROUND_GRASS_ANIMATION_FRAME_COUNT,
+  GROUND_GRASS_ANIMATION_FRAME_MS,
+  GROUND_GRASS_PATTERN_VARIANTS
+} from './foliageAnimationConfig';
 import {
   GROUND_GRASS_BASE_HEIGHT_PIXELS,
   GROUND_GRASS_FREQUENCY_SCALE,
@@ -68,14 +81,15 @@ export class WorldChunk {
   // Complex feature vectors are baked into one texture per chunk, avoiding per-frame Graphics triangulation.
   private readonly featureTextureKey: string;
   private readonly featureImage: Phaser.GameObjects.Image;
-  private readonly groundCoverTextureKey: string;
-  private readonly groundCoverImage: Phaser.GameObjects.Image;
   private readonly featureGraphics: Phaser.GameObjects.Graphics;
   private readonly features: TerrainFeature[];
+  private readonly animatedGroundGrass: AnimatedGroundGrassPatch[] = [];
   private readonly animatedFeatureFoliage = new Map<string, AnimatedFeatureFoliage>();
   private readonly waterWaves: WaterWave[] = [];
   private hasWater = false;
   private renderVisible = true;
+  private groundGrassVisible = true;
+  private lastGroundGrassFrame = Number.NEGATIVE_INFINITY;
   private harvestingTileKey: string | null = null;
   private harvestOffset = 0;
 
@@ -98,35 +112,18 @@ export class WorldChunk {
     if (!featureTexture) {
       throw new Error('Wildbound could not create a feature texture.');
     }
-    this.groundCoverTextureKey = `ground-cover:v${TOPOGRAPHY_GENERATION_VERSION}:${seed}:${x}:${y}`;
-    const groundCoverTexture = scene.textures.createCanvas(
-      this.groundCoverTextureKey,
-      CHUNK_SIZE_PIXELS,
-      CHUNK_SIZE_PIXELS
-    );
-    if (!groundCoverTexture) {
-      throw new Error('Wildbound could not create a ground-cover texture.');
-    }
     this.terrainImage = scene.add.image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.textureKey).setOrigin(0);
     this.waterGraphics = scene.add.graphics().setDepth(0.25);
-    this.groundCoverImage = scene.add
-      .image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.groundCoverTextureKey)
-      .setOrigin(0)
-      .setDepth(0.9);
     this.featureImage = scene.add
       .image(x * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, y * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, this.featureTextureKey)
       .setOrigin(0)
       .setDepth(1);
-    if (scene.game.renderer instanceof Phaser.Renderer.WebGL.WebGLRenderer) {
-      this.groundCoverImage.setPipeline(GROUND_FOLIAGE_WIND_PIPELINE);
-    }
     // This is an off-screen scratch pad only. It is immediately baked into featureImage's texture.
     this.featureGraphics = scene.add.graphics().setVisible(false);
     this.features = generateChunkFeatures(seed, x, y);
 
     this.drawTerrain(terrainTexture);
-    this.drawGroundCoverToCanvas(groundCoverTexture.getContext());
-    groundCoverTexture.refresh();
+    this.createAnimatedGroundGrass();
     this.refreshFeatures();
     this.updateFoliage(performance.now());
   }
@@ -145,9 +142,20 @@ export class WorldChunk {
     this.swampWaterHighlights?.setVisible(visible);
     this.oceanWaterMaskImage?.setVisible(visible);
     this.swampWaterMaskImage?.setVisible(visible);
-    this.groundCoverImage.setVisible(visible);
+    this.animatedGroundGrass.forEach((patch) => patch.image.setVisible(visible && this.groundGrassVisible));
     this.featureImage.setVisible(visible);
-    this.animatedFeatureFoliage.forEach(({ sprite }) => sprite.image.setVisible(visible));
+    this.animatedFeatureFoliage.forEach(({ sprite }) => setAnimatedFoliageSpriteVisible(sprite, visible));
+  }
+
+  // Low grass does not need the same one-chunk-long distance buffer as tall trees and landmarks.
+  // Keeping it to the true camera window dramatically limits animated sprites in dense plains.
+  setGroundGrassVisible(visible: boolean): void {
+    if (this.groundGrassVisible === visible) {
+      return;
+    }
+
+    this.groundGrassVisible = visible;
+    this.animatedGroundGrass.forEach((patch) => patch.image.setVisible(this.renderVisible && visible));
   }
 
   updateFoliage(time: number): void {
@@ -155,6 +163,11 @@ export class WorldChunk {
       return;
     }
 
+    const grassFrame = Math.floor(time / GROUND_GRASS_ANIMATION_FRAME_MS);
+    if (this.groundGrassVisible && grassFrame !== this.lastGroundGrassFrame) {
+      this.lastGroundGrassFrame = grassFrame;
+      this.animatedGroundGrass.forEach((patch) => updateAnimatedGroundGrassPatch(patch, time));
+    }
     this.animatedFeatureFoliage.forEach(({ sprite }) => updateAnimatedFoliageSprite(sprite, time));
   }
 
@@ -345,13 +358,13 @@ export class WorldChunk {
     this.waterBitmapMasks.forEach((mask) => mask.destroy());
     this.oceanWaterMaskImage?.destroy();
     this.swampWaterMaskImage?.destroy();
-    this.groundCoverImage.destroy();
+    this.animatedGroundGrass.forEach((patch) => patch.image.destroy());
+    this.animatedGroundGrass.length = 0;
     this.featureImage.destroy();
     this.featureGraphics.destroy();
-    this.animatedFeatureFoliage.forEach(({ sprite }) => sprite.image.destroy());
+    this.animatedFeatureFoliage.forEach(({ sprite }) => destroyAnimatedFoliageSprite(sprite));
     this.animatedFeatureFoliage.clear();
     this.scene.textures.remove(this.textureKey);
-    this.scene.textures.remove(this.groundCoverTextureKey);
     this.scene.textures.remove(this.featureTextureKey);
     if (this.oceanWaterMaskTextureKey) {
       this.scene.textures.remove(this.oceanWaterMaskTextureKey);
@@ -744,14 +757,8 @@ export class WorldChunk {
     return Math.min(0.96, climateCoverage * shoreFade * GROUND_GRASS_FREQUENCY_SCALE);
   }
 
-  private groundGrassClumpCount(density: number, placement: number): number {
-    return placement < density * 0.34 ? 3 : placement < density * 0.7 ? 2 : 1;
-  }
-
-  private drawGroundCoverToCanvas(context: CanvasRenderingContext2D): void {
-    context.save();
-    context.lineCap = 'round';
-
+  private createAnimatedGroundGrass(): void {
+    const now = performance.now();
     for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
         const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
@@ -763,47 +770,30 @@ export class WorldChunk {
           continue;
         }
 
-        const clumpCount = this.groundGrassClumpCount(density, placement);
-        const baseX = localX * WORLD_TILE_SIZE;
-        const baseY = localY * WORLD_TILE_SIZE;
-        const shadow = this.shadeColor(surface.color, -0.42);
-        const midtone = this.shadeColor(surface.color, 0.12);
-        const highlight = this.shadeColor(surface.color, 0.5);
-
-        for (let clump = 0; clump < clumpCount; clump += 1) {
-          const offsetX = 4 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7 + clump) * 24;
-          // Keep decorative grass below the 40px harvestable clumps at the default scale.
-          const height = (GROUND_GRASS_BASE_HEIGHT_PIXELS
-            + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37 + clump) * GROUND_GRASS_HEIGHT_VARIATION_PIXELS)
-            * GROUND_GRASS_SIZE_SCALE;
-          const lean = (randomAtTile(this.seed, worldTileX, worldTileY, 0x7959e2d1 + clump) - 0.5) * 11;
-          const rootX = baseX + offsetX;
-          const rootY = baseY + 27;
-          context.strokeStyle = `${this.colorToCss(shadow)}cc`;
-          context.lineWidth = 2.15;
-          context.beginPath();
-          context.moveTo(rootX - 2.5, rootY);
-          context.lineTo(rootX - 3 + lean * 0.45, rootY - height * 0.64);
-          context.moveTo(rootX + 1.5, rootY);
-          context.lineTo(rootX + 1.5 + lean * 0.74, rootY - height);
-          context.stroke();
-          context.strokeStyle = `${this.colorToCss(midtone)}e6`;
-          context.lineWidth = 1.45;
-          context.beginPath();
-          context.moveTo(rootX + 4, rootY);
-          context.lineTo(rootX + 4 + lean, rootY - height * 0.78);
-          context.stroke();
-          context.strokeStyle = `${this.colorToCss(highlight)}a3`;
-          context.lineWidth = 0.75;
-          context.beginPath();
-          context.moveTo(rootX, rootY - 1);
-          context.lineTo(rootX + lean * 0.3, rootY - height * 0.92);
-          context.stroke();
-        }
+        // One patch already contains thirteen individually animated blades. Its slight overlap
+        // into neighboring tiles makes a thick field without creating per-blade game objects.
+        const height = (GROUND_GRASS_BASE_HEIGHT_PIXELS
+          + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37) * GROUND_GRASS_HEIGHT_VARIATION_PIXELS)
+          * GROUND_GRASS_SIZE_SCALE;
+        const palette: GroundGrassPalette = surface.biome === Biome.Forest
+          ? 'grove'
+          : surface.biome === Biome.Hills
+            ? 'highland'
+            : 'meadow';
+        const patch = createAnimatedGroundGrassPatch(
+          this.scene,
+          worldTileX * WORLD_TILE_SIZE + 5 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7) * 22,
+          worldTileY * WORLD_TILE_SIZE + 29,
+          height / 34,
+          palette,
+          Math.floor(randomAtTile(this.seed, worldTileX, worldTileY, 0x7959e2d1) * GROUND_GRASS_PATTERN_VARIANTS),
+          randomAtTile(this.seed, worldTileX, worldTileY, 0x53da69c7) * GROUND_GRASS_ANIMATION_FRAME_COUNT,
+          now
+        );
+        patch.image.setVisible(this.renderVisible && this.groundGrassVisible);
+        this.animatedGroundGrass.push(patch);
       }
     }
-
-    context.restore();
   }
 
   private syncAnimatedFeatureFoliage(): void {
@@ -834,12 +824,8 @@ export class WorldChunk {
           : 12);
       const existing = this.animatedFeatureFoliage.get(key);
       if (existing) {
-        existing.sprite.baseX = rootX;
-        existing.sprite.baseY = rootY;
-        existing.sprite.image
-          .setPosition(rootX, rootY)
-          .setScale(scale * mirror, scale)
-          .setVisible(this.renderVisible);
+        setAnimatedFoliageSpriteTransform(existing.sprite, rootX, rootY, scale, mirror);
+        setAnimatedFoliageSpriteVisible(existing.sprite, this.renderVisible);
         return;
       }
 
@@ -853,14 +839,14 @@ export class WorldChunk {
         randomAtTile(this.seed, worldTileX, worldTileY, 0x55f0b2a1) * Math.PI * 2
       );
       if (sprite) {
-        sprite.image.setVisible(this.renderVisible);
+        setAnimatedFoliageSpriteVisible(sprite, this.renderVisible);
         this.animatedFeatureFoliage.set(key, { sprite });
       }
     });
 
     this.animatedFeatureFoliage.forEach((foliage, key) => {
       if (!activeKeys.has(key)) {
-        foliage.sprite.image.destroy();
+        destroyAnimatedFoliageSprite(foliage.sprite);
         this.animatedFeatureFoliage.delete(key);
       }
     });

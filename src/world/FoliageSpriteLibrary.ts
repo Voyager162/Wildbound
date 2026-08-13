@@ -7,184 +7,275 @@ import {
   TREE_CANOPY_SWAY_RADIANS
 } from './foliageAnimationConfig';
 
-const TREE_TEXTURE_KEY = 'foliage-sprite:tree:v1';
-const REED_TEXTURE_KEY = 'foliage-sprite:reeds:v1';
-const GRASS_TEXTURE_KEY = 'foliage-sprite:wild-grass:v1';
+const LEAF_CLUSTER_TEXTURE_KEY = 'foliage-sprite:leaf-cluster:v2';
+const LOOSE_LEAF_TEXTURE_KEY = 'foliage-sprite:loose-leaf:v2';
+const REED_BLADE_TEXTURE_KEY = 'foliage-sprite:reed-blade:v2';
+const GRASS_BLADE_TEXTURE_KEY = 'foliage-sprite:wild-grass-blade:v2';
 
-interface FoliageSpriteDefinition {
-  textureKey: string;
-  width: number;
-  height: number;
-  pivotX: number;
-  pivotY: number;
+interface FoliageNode {
+  image: Phaser.GameObjects.Image;
+  offsetX: number;
+  offsetY: number;
+  scale: number;
+  baseRotation: number;
+  phase: number;
   swayRadians: number;
+  flutterX: number;
+  flutterY: number;
+  baseX: number;
+  baseY: number;
 }
 
 export interface AnimatedFoliageSprite {
-  image: Phaser.GameObjects.Image;
-  baseX: number;
-  baseY: number;
-  phase: number;
-  swayRadians: number;
+  nodes: FoliageNode[];
+  rootX: number;
+  rootY: number;
+  scale: number;
+  mirror: number;
 }
 
-const definitionFor = (type: TerrainFeatureType): FoliageSpriteDefinition | null => {
-  switch (type) {
-    case TerrainFeatureType.Tree:
-      return { textureKey: TREE_TEXTURE_KEY, width: 128, height: 128, pivotX: 64, pivotY: 94, swayRadians: TREE_CANOPY_SWAY_RADIANS };
-    case TerrainFeatureType.Reeds:
-      return { textureKey: REED_TEXTURE_KEY, width: 112, height: 112, pivotX: 56, pivotY: 92, swayRadians: REED_SWAY_RADIANS };
-    case TerrainFeatureType.Grass:
-      return { textureKey: GRASS_TEXTURE_KEY, width: 64, height: 64, pivotX: 32, pivotY: 55, swayRadians: HARVESTABLE_GRASS_SWAY_RADIANS };
-    default:
-      return null;
-  }
-};
-
-export const isAnimatedFoliage = (type: TerrainFeatureType): boolean => definitionFor(type) !== null;
-
-export const ensureFoliageSpriteTextures = (scene: Phaser.Scene): void => {
-  if (scene.textures.exists(TREE_TEXTURE_KEY)) {
-    return;
-  }
-
-  const tree = scene.textures.createCanvas(TREE_TEXTURE_KEY, 128, 128);
-  const reeds = scene.textures.createCanvas(REED_TEXTURE_KEY, 112, 112);
-  const grass = scene.textures.createCanvas(GRASS_TEXTURE_KEY, 64, 64);
-  if (!tree || !reeds || !grass) {
-    throw new Error('Wildbound could not create foliage animation textures.');
-  }
-
-  drawTreeCanopy(tree.getContext());
-  drawReeds(reeds.getContext());
-  drawWildGrass(grass.getContext());
-  tree.refresh();
-  reeds.refresh();
-  grass.refresh();
-};
-
-export const createAnimatedFoliageSprite = (
-  scene: Phaser.Scene,
-  type: TerrainFeatureType,
-  baseX: number,
-  baseY: number,
-  scale: number,
-  mirror: number,
-  phase: number
-): AnimatedFoliageSprite | null => {
-  const definition = definitionFor(type);
-  if (!definition) {
-    return null;
-  }
-
-  ensureFoliageSpriteTextures(scene);
-  const image = scene.add.image(baseX, baseY, definition.textureKey)
-    .setOrigin(definition.pivotX / definition.width, definition.pivotY / definition.height)
-    .setScale(scale * mirror, scale)
-    .setDepth(1.05);
-  return { image, baseX, baseY, phase, swayRadians: definition.swayRadians };
-};
-
-export const updateAnimatedFoliageSprite = (sprite: AnimatedFoliageSprite, time: number): void => {
-  const seconds = time / 1000;
-  const gust = Math.sin(seconds * FEATURE_FOLIAGE_SWAY_SPEED + sprite.phase) * 0.72
-    + Math.sin(seconds * FEATURE_FOLIAGE_SWAY_SPEED * 1.83 + sprite.phase * 1.61) * 0.28;
-  sprite.image.setRotation(gust * sprite.swayRadians);
-};
+interface NodeSpec {
+  textureKey: string;
+  originX: number;
+  originY: number;
+  offsetX: number;
+  offsetY: number;
+  scale: number;
+  rotation: number;
+  phaseOffset: number;
+  swayRadians: number;
+  flutterX?: number;
+  flutterY?: number;
+}
 
 const circle = (context: CanvasRenderingContext2D, color: string, alpha: number, x: number, y: number, radius: number): void => {
-  context.globalAlpha = alpha;
   context.fillStyle = color;
+  context.globalAlpha = alpha;
   context.beginPath();
   context.arc(x, y, radius, 0, Math.PI * 2);
   context.fill();
 };
 
-const drawTreeCanopy = (context: CanvasRenderingContext2D): void => {
-  const pivotX = 64;
-  const pivotY = 94;
-  const x = (value: number): number => pivotX + value;
-  const y = (value: number): number => pivotY + value;
-  circle(context, '#0e3927', 1, x(-26), y(-33), 27.3);
-  circle(context, '#0e3927', 1, x(25), y(-35), 28.1);
-  circle(context, '#0e3927', 1, x(-7), y(-59), 29.6);
-  circle(context, '#0e3927', 1, x(20), y(-66), 25.0);
-  circle(context, '#0e3927', 1, x(-31), y(-58), 20.3);
-  circle(context, '#1f6035', 1, x(-21), y(-41), 22.2);
-  circle(context, '#1f6035', 1, x(19), y(-46), 24.2);
-  circle(context, '#1f6035', 1, x(-3), y(-70), 21.1);
-  circle(context, '#4b8c42', 0.88, x(-18), y(-55), 10.5);
-  circle(context, '#4b8c42', 0.88, x(15), y(-62), 8.6);
-  circle(context, '#4b8c42', 0.88, x(31), y(-32), 7.8);
-  circle(context, '#b7dc70', 0.62, x(-34), y(-46), 5.1);
-  circle(context, '#b7dc70', 0.62, x(5), y(-82), 5.5);
-  circle(context, '#27502d', 0.78, x(-13), y(26), 3.2);
-  circle(context, '#27502d', 0.78, x(0), y(29), 3.2);
-  circle(context, '#27502d', 0.78, x(12), y(26), 3.2);
+const drawLeafCluster = (context: CanvasRenderingContext2D): void => {
+  const pivotX = 36;
+  const pivotY = 61;
+  const leaf = (color: string, alpha: number, x: number, y: number, radiusX: number, radiusY: number, angle: number): void => {
+    context.fillStyle = color;
+    context.globalAlpha = alpha;
+    context.save();
+    context.translate(pivotX + x, pivotY + y);
+    context.rotate(angle);
+    context.beginPath();
+    context.ellipse(0, 0, radiusX, radiusY, 0, 0, Math.PI * 2);
+    context.fill();
+    context.restore();
+  };
+
+  circle(context, '#0c3023', 0.96, pivotX - 7, pivotY - 30, 23);
+  circle(context, '#164c2d', 1, pivotX + 9, pivotY - 27, 22);
+  circle(context, '#285f32', 0.95, pivotX - 15, pivotY - 20, 16);
+  leaf('#3e803e', 0.95, -15, -39, 7, 13, -0.62);
+  leaf('#4d913f', 0.92, 3, -45, 7, 14, 0.24);
+  leaf('#78ab4c', 0.87, 16, -34, 6, 12, 0.82);
+  leaf('#6f9e43', 0.88, -23, -25, 6, 11, -0.95);
+  leaf('#a8cd62', 0.68, -5, -49, 4.4, 8.4, -0.2);
+  leaf('#b9d870', 0.58, 23, -20, 3.8, 7.2, 0.66);
   context.globalAlpha = 1;
 };
 
-const drawReeds = (context: CanvasRenderingContext2D): void => {
-  const pivotX = 56;
-  const pivotY = 92;
-  const offsets = [-37, -27, -16, -5, 7, 19, 31, 40];
-  context.lineCap = 'round';
-  context.strokeStyle = '#2d6037';
-  context.lineWidth = 4;
+const drawLooseLeaf = (context: CanvasRenderingContext2D): void => {
+  context.fillStyle = '#b8d96a';
+  context.globalAlpha = 0.92;
   context.beginPath();
-  offsets.forEach((offset, index) => {
-    const height = 54 + (index % 3) * 11;
-    const lean = (index - 3.5) * 2.3;
-    context.moveTo(pivotX + offset, pivotY);
-    context.lineTo(pivotX + offset + lean, pivotY - height);
-  });
-  context.stroke();
-  context.strokeStyle = '#83a84e';
-  context.lineWidth = 2;
+  context.ellipse(6, 7, 3.2, 6.4, -0.46, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = '#496d38';
+  context.globalAlpha = 0.78;
+  context.lineWidth = 0.75;
   context.beginPath();
-  offsets.filter((_, index) => index % 2 === 0).forEach((offset, index) => {
-    context.moveTo(pivotX + offset, pivotY - 8);
-    context.lineTo(pivotX + offset - 8, pivotY - (37 + index * 5));
-  });
-  context.stroke();
-  context.fillStyle = '#9f7e43';
-  [-27, -5, 19, 40].forEach((offset, index) => context.fillRect(pivotX + offset - 3, pivotY - (63 + (index % 2) * 8), 6, 15));
-  context.strokeStyle = '#b8d377';
-  context.globalAlpha = 0.65;
-  context.lineWidth = 1.15;
-  context.beginPath();
-  [-33, -18, -1, 17, 34].forEach((offset, index) => {
-    context.moveTo(pivotX + offset, pivotY - 3);
-    context.lineTo(pivotX + offset + (index - 2) * 4, pivotY - (44 + (index % 3) * 8));
-  });
+  context.moveTo(5, 11);
+  context.lineTo(7, 3);
   context.stroke();
   context.globalAlpha = 1;
 };
 
-const drawWildGrass = (context: CanvasRenderingContext2D): void => {
-  const pivotX = 32;
-  const pivotY = 55;
-  const blades = [-23, -16, -9, -2, 6, 14, 22];
+const drawBladeTexture = (context: CanvasRenderingContext2D, reed: boolean): void => {
+  const width = reed ? 16 : 14;
+  const height = reed ? 88 : 52;
+  const rootX = width / 2;
+  const rootY = height - 4;
   context.lineCap = 'round';
-  context.strokeStyle = '#286c39';
-  context.lineWidth = 3;
+  context.strokeStyle = reed ? '#2a6037' : '#2f713b';
+  context.lineWidth = reed ? 3.7 : 2.7;
   context.beginPath();
-  blades.forEach((offset, index) => {
-    context.moveTo(pivotX + offset, pivotY);
-    context.lineTo(pivotX + offset + (index - 3) * 3, pivotY - (37 + (index % 3) * 6));
-  });
+  context.moveTo(rootX, rootY);
+  context.quadraticCurveTo(rootX - 2.2, rootY - height * 0.53, rootX + 3.4, 5);
   context.stroke();
-  context.strokeStyle = '#b6d66d';
-  context.globalAlpha = 0.9;
-  context.lineWidth = 1.4;
+  context.strokeStyle = reed ? '#91ae52' : '#a6cc63';
+  context.globalAlpha = 0.82;
+  context.lineWidth = reed ? 1.05 : 0.85;
   context.beginPath();
-  [-14, 2, 17].forEach((offset, index) => {
-    context.moveTo(pivotX + offset, pivotY - 1);
-    context.lineTo(pivotX + offset + 4, pivotY - (40 + index * 4));
-  });
+  context.moveTo(rootX - 0.45, rootY - 2);
+  context.quadraticCurveTo(rootX - 1.8, rootY - height * 0.53, rootX + 2.2, 6);
   context.stroke();
-  circle(context, '#e7d95f', 0.88, pivotX - 12, pivotY - 32, 2.2);
-  circle(context, '#e7d95f', 0.88, pivotX + 6, pivotY - 37, 2.2);
-  circle(context, '#e7d95f', 0.88, pivotX + 20, pivotY - 42, 2.2);
+  if (reed) {
+    context.fillStyle = '#9d7d45';
+    context.globalAlpha = 0.94;
+    context.fillRect(rootX + 0.9, 11, 4.8, 13);
+  }
   context.globalAlpha = 1;
+};
+
+export const ensureFoliageSpriteTextures = (scene: Phaser.Scene): void => {
+  if (scene.textures.exists(LEAF_CLUSTER_TEXTURE_KEY)) {
+    return;
+  }
+
+  const leafCluster = scene.textures.createCanvas(LEAF_CLUSTER_TEXTURE_KEY, 72, 72);
+  const looseLeaf = scene.textures.createCanvas(LOOSE_LEAF_TEXTURE_KEY, 12, 14);
+  const reedBlade = scene.textures.createCanvas(REED_BLADE_TEXTURE_KEY, 16, 88);
+  const grassBlade = scene.textures.createCanvas(GRASS_BLADE_TEXTURE_KEY, 14, 52);
+  if (!leafCluster || !looseLeaf || !reedBlade || !grassBlade) {
+    throw new Error('Wildbound could not create foliage animation textures.');
+  }
+
+  drawLeafCluster(leafCluster.getContext());
+  drawLooseLeaf(looseLeaf.getContext());
+  drawBladeTexture(reedBlade.getContext(), true);
+  drawBladeTexture(grassBlade.getContext(), false);
+  leafCluster.refresh();
+  looseLeaf.refresh();
+  reedBlade.refresh();
+  grassBlade.refresh();
+};
+
+const treeNodeSpecs = (): readonly NodeSpec[] => [
+  { textureKey: LEAF_CLUSTER_TEXTURE_KEY, originX: 0.5, originY: 61 / 72, offsetX: -25, offsetY: -7, scale: 0.82, rotation: -0.09, phaseOffset: 0.1, swayRadians: TREE_CANOPY_SWAY_RADIANS * 0.76 },
+  { textureKey: LEAF_CLUSTER_TEXTURE_KEY, originX: 0.5, originY: 61 / 72, offsetX: 23, offsetY: -9, scale: 0.86, rotation: 0.08, phaseOffset: 1.4, swayRadians: TREE_CANOPY_SWAY_RADIANS * 0.83 },
+  { textureKey: LEAF_CLUSTER_TEXTURE_KEY, originX: 0.5, originY: 61 / 72, offsetX: -7, offsetY: -39, scale: 0.93, rotation: -0.04, phaseOffset: 2.6, swayRadians: TREE_CANOPY_SWAY_RADIANS },
+  { textureKey: LEAF_CLUSTER_TEXTURE_KEY, originX: 0.5, originY: 61 / 72, offsetX: 20, offsetY: -47, scale: 0.72, rotation: 0.12, phaseOffset: 3.75, swayRadians: TREE_CANOPY_SWAY_RADIANS * 0.92 },
+  { textureKey: LEAF_CLUSTER_TEXTURE_KEY, originX: 0.5, originY: 61 / 72, offsetX: -31, offsetY: -39, scale: 0.62, rotation: -0.15, phaseOffset: 4.85, swayRadians: TREE_CANOPY_SWAY_RADIANS * 0.68 },
+  { textureKey: LOOSE_LEAF_TEXTURE_KEY, originX: 0.5, originY: 0.5, offsetX: -38, offsetY: -36, scale: 0.85, rotation: -0.3, phaseOffset: 0.9, swayRadians: 0.3, flutterX: 7, flutterY: 5 },
+  { textureKey: LOOSE_LEAF_TEXTURE_KEY, originX: 0.5, originY: 0.5, offsetX: 36, offsetY: -25, scale: 0.72, rotation: 0.4, phaseOffset: 2.1, swayRadians: 0.26, flutterX: 8, flutterY: 4 },
+  { textureKey: LOOSE_LEAF_TEXTURE_KEY, originX: 0.5, originY: 0.5, offsetX: 14, offsetY: -64, scale: 0.66, rotation: -0.7, phaseOffset: 4.4, swayRadians: 0.34, flutterX: 5, flutterY: 6 }
+];
+
+const bladeNodeSpecs = (type: TerrainFeatureType): readonly NodeSpec[] => {
+  const isReed = type === TerrainFeatureType.Reeds;
+  const count = isReed ? 9 : 8;
+  const textureKey = isReed ? REED_BLADE_TEXTURE_KEY : GRASS_BLADE_TEXTURE_KEY;
+  const swayRadians = isReed ? REED_SWAY_RADIANS : HARVESTABLE_GRASS_SWAY_RADIANS;
+  const spread = isReed ? 40 : 25;
+  return Array.from({ length: count }, (_, index) => {
+    const normalized = index / (count - 1) - 0.5;
+    const phaseOffset = index * 0.89 + (isReed ? 0.3 : 0.7);
+    return {
+      textureKey,
+      originX: 0.5,
+      originY: isReed ? 84 / 88 : 48 / 52,
+      offsetX: normalized * spread + Math.sin(index * 2.4) * 2.4,
+      offsetY: Math.cos(index * 1.7) * 1.8,
+      scale: (isReed ? 0.86 : 0.92) + (index % 3) * 0.075,
+      rotation: normalized * (isReed ? 0.16 : 0.22),
+      phaseOffset,
+      swayRadians: swayRadians * (0.72 + (index % 4) * 0.1)
+    };
+  });
+};
+
+const nodeSpecsFor = (type: TerrainFeatureType): readonly NodeSpec[] | null => {
+  switch (type) {
+    case TerrainFeatureType.Tree:
+      return treeNodeSpecs();
+    case TerrainFeatureType.Reeds:
+    case TerrainFeatureType.Grass:
+      return bladeNodeSpecs(type);
+    default:
+      return null;
+  }
+};
+
+export const isAnimatedFoliage = (type: TerrainFeatureType): boolean => nodeSpecsFor(type) !== null;
+
+const applyTransform = (sprite: AnimatedFoliageSprite): void => {
+  sprite.nodes.forEach((node) => {
+    node.baseX = sprite.rootX + node.offsetX * sprite.scale * sprite.mirror;
+    node.baseY = sprite.rootY + node.offsetY * sprite.scale;
+    node.image
+      .setPosition(node.baseX, node.baseY)
+      .setScale(node.scale * sprite.scale * sprite.mirror, node.scale * sprite.scale);
+  });
+};
+
+export const createAnimatedFoliageSprite = (
+  scene: Phaser.Scene,
+  type: TerrainFeatureType,
+  rootX: number,
+  rootY: number,
+  scale: number,
+  mirror: number,
+  phase: number
+): AnimatedFoliageSprite | null => {
+  const specs = nodeSpecsFor(type);
+  if (!specs) {
+    return null;
+  }
+
+  ensureFoliageSpriteTextures(scene);
+  const nodes = specs.map((spec) => ({
+    image: scene.add.image(0, 0, spec.textureKey)
+      .setOrigin(spec.originX, spec.originY)
+      .setDepth(1.05),
+    offsetX: spec.offsetX,
+    offsetY: spec.offsetY,
+    scale: spec.scale,
+    baseRotation: spec.rotation,
+    phase: phase + spec.phaseOffset,
+    swayRadians: spec.swayRadians,
+    flutterX: spec.flutterX ?? 0,
+    flutterY: spec.flutterY ?? 0,
+    baseX: 0,
+    baseY: 0
+  }));
+  const sprite = { nodes, rootX, rootY, scale, mirror };
+  applyTransform(sprite);
+  return sprite;
+};
+
+export const setAnimatedFoliageSpriteTransform = (
+  sprite: AnimatedFoliageSprite,
+  rootX: number,
+  rootY: number,
+  scale: number,
+  mirror: number
+): void => {
+  sprite.rootX = rootX;
+  sprite.rootY = rootY;
+  sprite.scale = scale;
+  sprite.mirror = mirror;
+  applyTransform(sprite);
+};
+
+export const setAnimatedFoliageSpriteVisible = (sprite: AnimatedFoliageSprite, visible: boolean): void => {
+  sprite.nodes.forEach((node) => node.image.setVisible(visible));
+};
+
+export const destroyAnimatedFoliageSprite = (sprite: AnimatedFoliageSprite): void => {
+  sprite.nodes.forEach((node) => node.image.destroy());
+  sprite.nodes.length = 0;
+};
+
+export const updateAnimatedFoliageSprite = (sprite: AnimatedFoliageSprite, time: number): void => {
+  const seconds = time / 1000;
+  sprite.nodes.forEach((node) => {
+    const gust = Math.sin(seconds * FEATURE_FOLIAGE_SWAY_SPEED + node.phase) * 0.71
+      + Math.sin(seconds * FEATURE_FOLIAGE_SWAY_SPEED * 1.81 + node.phase * 1.57) * 0.29;
+    const flutter = Math.sin(seconds * 2.7 + node.phase * 1.9);
+    node.image
+      .setPosition(
+        node.baseX + gust * node.flutterX,
+        node.baseY + flutter * node.flutterY + gust * node.flutterY * 0.34
+      )
+      .setRotation(node.baseRotation + gust * node.swayRadians);
+  });
 };

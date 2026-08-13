@@ -339,18 +339,27 @@ export class ChunkManager {
 
       const chunk = new WorldChunk(this.scene, this.seed, this.sessionState, coordinate.x, coordinate.y);
       chunk.setRenderVisible(this.isWithinRenderWindow(coordinate.x, coordinate.y));
+      chunk.setGroundGrassVisible(this.isWithinForegroundWindow(coordinate.x, coordinate.y));
       this.chunks.set(key, chunk);
       built += 1;
     }
   }
 
   private updateChunkRenderVisibility(): void {
-    this.chunks.forEach((chunk) => chunk.setRenderVisible(this.isWithinRenderWindow(chunk.x, chunk.y)));
+    this.chunks.forEach((chunk) => {
+      chunk.setRenderVisible(this.isWithinRenderWindow(chunk.x, chunk.y));
+      chunk.setGroundGrassVisible(this.isWithinForegroundWindow(chunk.x, chunk.y));
+    });
   }
 
   private isWithinRenderWindow(chunkX: number, chunkY: number): boolean {
     return Math.abs(chunkX - this.activeChunkX) <= CHUNK_RENDER_RADIUS_X
       && Math.abs(chunkY - this.activeChunkY) <= CHUNK_RENDER_RADIUS_Y;
+  }
+
+  private isWithinForegroundWindow(chunkX: number, chunkY: number): boolean {
+    return Math.abs(chunkX - this.activeChunkX) <= CHUNK_STREAM_VISIBLE_RADIUS_X
+      && Math.abs(chunkY - this.activeChunkY) <= CHUNK_STREAM_VISIBLE_RADIUS_Y;
   }
 
   private unloadDistantChunks(): void {
