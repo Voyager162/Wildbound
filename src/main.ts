@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { AdventureScene } from './scenes/AdventureScene';
+import { registerFoliageWindPipelines } from './world/FoliageWindPipeline';
 import './styles.css';
 
 const config: Phaser.Types.Core.GameConfig = {
@@ -17,6 +18,9 @@ const config: Phaser.Types.Core.GameConfig = {
   scale: {
     mode: Phaser.Scale.RESIZE,
     autoCenter: Phaser.Scale.CENTER_BOTH
+  },
+  callbacks: {
+    postBoot: registerFoliageWindPipelines
   },
   scene: [AdventureScene]
 };

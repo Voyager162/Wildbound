@@ -5,7 +5,6 @@ import {
   AMBIENT_CHUNK_RADIUS_Y,
 } from './explorationConfig';
 import {
-  AMBIENT_FOLIAGE_UPDATE_INTERVAL_MS,
   AMBIENT_PARTICLE_RENDER_INTERVAL_MS,
   WATER_RIPPLE_UPDATE_INTERVAL_MS
 } from './ambientPerformanceConfig';
@@ -53,7 +52,6 @@ export class ChunkManager {
   private lastPlayerSampleTime = Number.NaN;
   private lastPrefetchSignature = '';
   private lastWaterAnimationTime = Number.NEGATIVE_INFINITY;
-  private lastAmbientSwayTime = Number.NEGATIVE_INFINITY;
   private lastAmbientParticleTime = Number.NEGATIVE_INFINITY;
   private lastChunkBuildTime = Number.NEGATIVE_INFINITY;
   private readonly ambientParticleManager: AmbientParticleManager;
@@ -146,19 +144,6 @@ export class ChunkManager {
   }
 
   updateAmbient(time: number, playerWorldX: number, playerWorldY: number, nightAmount: number): void {
-    if (time - this.lastAmbientSwayTime >= AMBIENT_FOLIAGE_UPDATE_INTERVAL_MS) {
-      this.lastAmbientSwayTime = time;
-      this.chunks.forEach((chunk) => {
-        const isWithinAmbientWindow =
-          Math.abs(chunk.x - this.activeChunkX) <= AMBIENT_CHUNK_RADIUS_X
-          && Math.abs(chunk.y - this.activeChunkY) <= AMBIENT_CHUNK_RADIUS_Y;
-        chunk.setAmbientMotionEnabled(isWithinAmbientWindow);
-        if (isWithinAmbientWindow) {
-          chunk.updateAmbient(time);
-        }
-      });
-    }
-
     if (time - this.lastAmbientParticleTime >= AMBIENT_PARTICLE_RENDER_INTERVAL_MS) {
       this.lastAmbientParticleTime = time;
       this.ambientParticleManager.update(time, playerWorldX, playerWorldY, nightAmount);

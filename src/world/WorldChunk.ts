@@ -10,18 +10,16 @@ import {
   OCEAN_WATER_CURRENT_PIXELS_PER_SECOND,
   SWAMP_WATER_CURRENT_PIXELS_PER_SECOND
 } from './explorationConfig';
+import { WATER_WAVES_PER_VISIBLE_CHUNK } from './ambientPerformanceConfig';
 import {
-  AMBIENT_GRASS_TUFTS_PER_VISIBLE_CHUNK,
-  AMBIENT_MOVING_GRASS_TUFTS_PER_VISIBLE_CHUNK,
-  AMBIENT_SWAYING_FEATURES_PER_VISIBLE_CHUNK,
-  WATER_WAVES_PER_VISIBLE_CHUNK
-} from './ambientPerformanceConfig';
+  FEATURE_FOLIAGE_WIND_PIPELINE,
+  GROUND_FOLIAGE_WIND_PIPELINE
+} from './FoliageWindPipeline';
 import {
   GROUND_GRASS_BASE_HEIGHT_PIXELS,
   GROUND_GRASS_FREQUENCY_SCALE,
   GROUND_GRASS_HEIGHT_VARIATION_PIXELS,
-  GROUND_GRASS_SIZE_SCALE,
-  GROUND_GRASS_WIND_STRENGTH_PIXELS
+  GROUND_GRASS_SIZE_SCALE
 } from './worldVisualConfig';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 
@@ -46,14 +44,6 @@ interface WaterWave {
   shoreNormalY: number;
 }
 
-interface AmbientGrassTuft {
-  worldX: number;
-  worldY: number;
-  phase: number;
-  height: number;
-  color: number;
-}
-
 export class WorldChunk {
   readonly key: string;
   private readonly textureKey: string;
@@ -68,19 +58,16 @@ export class WorldChunk {
   private readonly waterBitmapMasks: Phaser.Display.Masks.BitmapMask[] = [];
   private oceanWaterMaskTextureKey: string | null = null;
   private swampWaterMaskTextureKey: string | null = null;
-  private readonly ambientGraphics: Phaser.GameObjects.Graphics;
   // Complex feature vectors are baked into one texture per chunk, avoiding per-frame Graphics triangulation.
   private readonly featureTextureKey: string;
   private readonly featureImage: Phaser.GameObjects.Image;
+  private readonly groundCoverTextureKey: string;
+  private readonly groundCoverImage: Phaser.GameObjects.Image;
   private readonly featureGraphics: Phaser.GameObjects.Graphics;
   private readonly features: TerrainFeature[];
-  private readonly swayingFeatures: TerrainFeature[];
-  private readonly ambientGrassTufts: AmbientGrassTuft[];
   private readonly waterWaves: WaterWave[] = [];
   private hasWater = false;
-  private hasAmbientMotion = false;
   private renderVisible = true;
-  private ambientMotionEnabled = true;
   private harvestingTileKey: string | null = null;
   private harvestOffset = 0;
 
@@ -103,37 +90,37 @@ export class WorldChunk {
     if (!featureTexture) {
       throw new Error('Wildbound could not create a feature texture.');
     }
+    this.groundCoverTextureKey = `ground-cover:v${TOPOGRAPHY_GENERATION_VERSION}:${seed}:${x}:${y}`;
+    const groundCoverTexture = scene.textures.createCanvas(
+      this.groundCoverTextureKey,
+      CHUNK_SIZE_PIXELS,
+      CHUNK_SIZE_PIXELS
+    );
+    if (!groundCoverTexture) {
+      throw new Error('Wildbound could not create a ground-cover texture.');
+    }
     this.terrainImage = scene.add.image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.textureKey).setOrigin(0);
     this.waterGraphics = scene.add.graphics().setDepth(0.25);
-    this.ambientGraphics = scene.add.graphics().setDepth(1.15);
+    this.groundCoverImage = scene.add
+      .image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.groundCoverTextureKey)
+      .setOrigin(0)
+      .setDepth(0.9);
     this.featureImage = scene.add
       .image(x * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, y * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, this.featureTextureKey)
       .setOrigin(0)
       .setDepth(1);
+    if (scene.game.renderer instanceof Phaser.Renderer.WebGL.WebGLRenderer) {
+      this.groundCoverImage.setPipeline(GROUND_FOLIAGE_WIND_PIPELINE);
+      this.featureImage.setPipeline(FEATURE_FOLIAGE_WIND_PIPELINE);
+    }
     // This is an off-screen scratch pad only. It is immediately baked into featureImage's texture.
     this.featureGraphics = scene.add.graphics().setVisible(false);
     this.features = generateChunkFeatures(seed, x, y);
-    this.swayingFeatures = this.features
-      .filter((feature) => feature.type === TerrainFeatureType.Tree
-        || feature.type === TerrainFeatureType.Reeds
-        || feature.type === TerrainFeatureType.Grass)
-      .sort((first, second) => {
-        const firstX = x * CHUNK_SIZE_TILES + first.localTileX;
-        const firstY = y * CHUNK_SIZE_TILES + first.localTileY;
-        const secondX = x * CHUNK_SIZE_TILES + second.localTileX;
-        const secondY = y * CHUNK_SIZE_TILES + second.localTileY;
-        return randomAtTile(seed, secondX, secondY, 0x3b7d1129)
-          - randomAtTile(seed, firstX, firstY, 0x3b7d1129);
-      });
-    this.ambientGrassTufts = this.createAmbientGrassTufts();
 
     this.drawTerrain(terrainTexture);
-    this.drawGroundCoverToCanvas(terrainTexture.getContext());
-    terrainTexture.refresh();
+    this.drawGroundCoverToCanvas(groundCoverTexture.getContext());
+    groundCoverTexture.refresh();
     this.refreshFeatures();
-    // Give a newly streamed chunk its current wind pose immediately. The ambient buffer then
-    // keeps it advancing before it reaches the camera edge.
-    this.updateAmbient(performance.now());
   }
 
   setRenderVisible(visible: boolean): void {
@@ -150,19 +137,8 @@ export class WorldChunk {
     this.swampWaterHighlights?.setVisible(visible);
     this.oceanWaterMaskImage?.setVisible(visible);
     this.swampWaterMaskImage?.setVisible(visible);
-    this.ambientGraphics.setVisible(visible);
+    this.groundCoverImage.setVisible(visible);
     this.featureImage.setVisible(visible);
-  }
-
-  setAmbientMotionEnabled(enabled: boolean): void {
-    if (this.ambientMotionEnabled === enabled) {
-      return;
-    }
-
-    this.ambientMotionEnabled = enabled;
-    if (!enabled) {
-      this.ambientGraphics.clear();
-    }
   }
 
   setHarvestAnimation(tileX: number, tileY: number, progress: number): void {
@@ -311,92 +287,6 @@ export class WorldChunk {
     }
   }
 
-  updateAmbient(time: number): void {
-    if (!this.hasAmbientMotion || !this.ambientMotionEnabled || !this.renderVisible) {
-      return;
-    }
-
-    const graphics = this.ambientGraphics;
-    const timeSeconds = time / 1000;
-    graphics.clear();
-
-    const grassTuftCount = Math.min(
-      this.ambientGrassTufts.length,
-      AMBIENT_MOVING_GRASS_TUFTS_PER_VISIBLE_CHUNK
-    );
-    for (let tuftIndex = 0; tuftIndex < grassTuftCount; tuftIndex += 1) {
-      const tuft = this.ambientGrassTufts[tuftIndex];
-      // Layered gusts are deliberately pronounced: this cover should read as a moving field,
-      // not a static texture with an occasional twitch.
-      const wind = (Math.sin(timeSeconds * 1.65 + tuft.phase) * 0.74
-        + Math.sin(timeSeconds * 2.8 + tuft.phase * 0.47) * 0.26)
-        * GROUND_GRASS_WIND_STRENGTH_PIXELS;
-      graphics.lineStyle(1.25, this.shadeColor(tuft.color, -0.34), 0.64);
-      graphics.lineBetween(tuft.worldX - 5, tuft.worldY + 4, tuft.worldX - 5 + wind * 0.34, tuft.worldY - tuft.height * 0.58);
-      graphics.lineBetween(tuft.worldX - 2.6, tuft.worldY + 4, tuft.worldX - 2.6 + wind * 0.52, tuft.worldY - tuft.height * 0.84);
-      graphics.lineStyle(1.15, tuft.color, 0.76);
-      graphics.lineBetween(tuft.worldX - 0.2, tuft.worldY + 4, tuft.worldX - 0.2 + wind * 0.72, tuft.worldY - tuft.height * 1.04);
-      graphics.lineBetween(tuft.worldX + 2.4, tuft.worldY + 4, tuft.worldX + 2.4 + wind * 0.94, tuft.worldY - tuft.height * 0.78);
-      graphics.lineStyle(0.85, 0xd9efa0, 0.56);
-      graphics.lineBetween(tuft.worldX + 4.8, tuft.worldY + 4, tuft.worldX + 4.8 + wind * 1.08, tuft.worldY - tuft.height * 0.64);
-    }
-
-    let drawnSwayingFeatures = 0;
-    for (let featureIndex = 0;
-      featureIndex < this.swayingFeatures.length && drawnSwayingFeatures < AMBIENT_SWAYING_FEATURES_PER_VISIBLE_CHUNK;
-      featureIndex += 1) {
-      const feature = this.swayingFeatures[featureIndex];
-      const worldTileX = this.x * CHUNK_SIZE_TILES + feature.localTileX;
-      const worldTileY = this.y * CHUNK_SIZE_TILES + feature.localTileY;
-      if (this.sessionState.isFeatureHarvested(worldTileX, worldTileY)) {
-        continue;
-      }
-
-      drawnSwayingFeatures += 1;
-
-      const centerX = (worldTileX + 0.5) * WORLD_TILE_SIZE;
-      const centerY = (worldTileY + 0.5) * WORLD_TILE_SIZE;
-      const phase = randomAtTile(this.seed, worldTileX, worldTileY, 0x55f0b2a1) * Math.PI * 2;
-      const wind = Math.sin(timeSeconds * 1.12 + phase);
-
-      if (feature.type === TerrainFeatureType.Tree) {
-        const shimmerX = wind * 14;
-        graphics.fillStyle(0x16452b, 0.3);
-        graphics.fillCircle(centerX - 26 + shimmerX * 0.42, centerY - 23, 15);
-        graphics.fillCircle(centerX + 30 + shimmerX * 0.88, centerY - 29, 17);
-        graphics.fillStyle(0x4b8b42, 0.36);
-        graphics.fillCircle(centerX - 5 + shimmerX * 0.62, centerY - 57, 15);
-        graphics.fillCircle(centerX + 23 + shimmerX * 0.94, centerY - 45, 13);
-        graphics.fillStyle(0x9dd464, 0.28);
-        graphics.fillCircle(centerX + 29 + shimmerX, centerY - 34, 11);
-        graphics.fillCircle(centerX - 8 + shimmerX * 0.63, centerY - 56, 9);
-        graphics.fillStyle(0xe4f09a, 0.16);
-        graphics.fillCircle(centerX - 23 + shimmerX * 0.72, centerY - 43, 8);
-        graphics.lineStyle(1.9, 0x7fb456, 0.62);
-        graphics.lineBetween(centerX + 11, centerY - 7, centerX + 20 + shimmerX, centerY - 24);
-        graphics.lineBetween(centerX - 6, centerY - 3, centerX - 13 + shimmerX * 0.62, centerY - 31);
-        graphics.lineBetween(centerX + 2, centerY - 18, centerX + 5 + shimmerX * 0.84, centerY - 49);
-      } else if (feature.type === TerrainFeatureType.Reeds || feature.type === TerrainFeatureType.Grass) {
-        const isReeds = feature.type === TerrainFeatureType.Reeds;
-        const height = isReeds ? 43 : 40;
-        const color = isReeds ? 0xa6bd67 : 0x83be54;
-        const shadowColor = isReeds ? 0x607b44 : 0x286c39;
-        const bladeOffsets = isReeds ? [-12, -6, -1, 5, 10] : [-23, -17, -11, -5, 2, 9, 16, 22];
-        graphics.lineStyle(isReeds ? 1.5 : 2.7, shadowColor, isReeds ? 0.58 : 0.78);
-        bladeOffsets.forEach((offset, index) => {
-          const bladeHeight = height - (index % 3) * (isReeds ? 3 : 5);
-          const bend = wind * (isReeds ? 5 + index : 9 + index * 0.8) + index * (isReeds ? 1.4 : 0.8);
-          graphics.lineBetween(centerX + offset, centerY + 13, centerX + offset + bend, centerY + 13 - bladeHeight);
-        });
-        graphics.lineStyle(isReeds ? 1 : 1.25, color, isReeds ? 0.68 : 0.86);
-        bladeOffsets.filter((_, index) => index % 2 === 0).forEach((offset, index) => {
-          const bend = wind * (isReeds ? 6 + index : 10 + index) + 3;
-          graphics.lineBetween(centerX + offset + 1.5, centerY + 12, centerX + offset + bend, centerY - height + index * 4);
-        });
-      }
-    }
-  }
-
   refreshFeatures(): void {
     const texture = this.scene.textures.get(this.featureTextureKey) as Phaser.Textures.CanvasTexture;
     const canvas = texture.getSourceImage() as HTMLCanvasElement;
@@ -437,10 +327,11 @@ export class WorldChunk {
     this.waterBitmapMasks.forEach((mask) => mask.destroy());
     this.oceanWaterMaskImage?.destroy();
     this.swampWaterMaskImage?.destroy();
-    this.ambientGraphics.destroy();
+    this.groundCoverImage.destroy();
     this.featureImage.destroy();
     this.featureGraphics.destroy();
     this.scene.textures.remove(this.textureKey);
+    this.scene.textures.remove(this.groundCoverTextureKey);
     this.scene.textures.remove(this.featureTextureKey);
     if (this.oceanWaterMaskTextureKey) {
       this.scene.textures.remove(this.oceanWaterMaskTextureKey);
@@ -808,20 +699,10 @@ export class WorldChunk {
   }
 
   private groundGrassDensity(surface: TerrainSurface): number {
-    // Grass thins out through the visual water blend instead of disappearing on the exact swamp
-    // swim-state threshold. This prevents a tile-sized dark/green edge around calm pools.
+    // This calculation deliberately uses the continuous climate samples, not `surface.biome`.
+    // As a result grass tapers naturally through forest, plains, hills, desert, snow, and swamp
+    // boundaries even though each location still has one discrete biome for gameplay purposes.
     if (surface.waterVisualAmount > 0.24) {
-      return 0;
-    }
-
-    const biomeDensity = surface.biome === Biome.Plains
-      ? 1
-      : surface.biome === Biome.Forest
-        ? 0.82
-        : surface.biome === Biome.Hills
-          ? 0.22
-          : 0;
-    if (biomeDensity === 0) {
       return 0;
     }
 
@@ -829,12 +710,18 @@ export class WorldChunk {
       const normalized = Math.max(0, Math.min(1, (value - start) / (end - start)));
       return normalized * normalized * (3 - 2 * normalized);
     };
-    const climateCoverage = smooth(0.28, 0.53, surface.moisture)
-      * (1 - smooth(0.59, 0.77, surface.temperature))
-      * (1 - smooth(0.59, 0.8, surface.elevation))
-      * (1 - smooth(0.1, 0.26, surface.temperature));
+    const temperateMoisture = smooth(0.26, 0.5, surface.moisture);
+    const heatFade = 1 - smooth(0.56, 0.76, surface.temperature);
+    const coldFade = smooth(0.18, 0.32, surface.temperature);
+    const highlandFade = 1 - smooth(0.57, 0.82, surface.elevation);
+    // Very wet, low, warm terrain becomes swamp rather than a grass field. Its continuous
+    // subtraction prevents the old sharp edge where the Swamp biome label began.
+    const swampFade = smooth(0.7, 0.86, surface.moisture)
+      * smooth(0.34, 0.56, surface.temperature)
+      * (1 - smooth(0.56, 0.74, surface.elevation));
+    const climateCoverage = temperateMoisture * heatFade * coldFade * highlandFade * (1 - swampFade);
     const shoreFade = 1 - smooth(0.02, 0.24, surface.waterVisualAmount);
-    return Math.min(0.96, (0.28 + climateCoverage * 0.72) * biomeDensity * shoreFade * GROUND_GRASS_FREQUENCY_SCALE);
+    return Math.min(0.96, climateCoverage * shoreFade * GROUND_GRASS_FREQUENCY_SCALE);
   }
 
   private groundGrassClumpCount(density: number, placement: number): number {
@@ -1086,53 +973,4 @@ export class WorldChunk {
     return `${tileX},${tileY}`;
   }
 
-  private createAmbientGrassTufts(): AmbientGrassTuft[] {
-    const candidates: Array<AmbientGrassTuft & { priority: number }> = [];
-
-    for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
-      for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
-        const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
-        const worldTileY = this.y * CHUNK_SIZE_TILES + localY;
-        const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
-        const density = this.groundGrassDensity(surface);
-        const placement = randomAtTile(this.seed, worldTileX, worldTileY, 0x6d42aeb9);
-        if (density === 0 || placement > density) {
-          continue;
-        }
-
-        // The animated tufts use the exact same deterministic positions as the baked cover.
-        // A bounded selection is redrawn at runtime, producing visible wind without asking every
-        // decorative blade in every nearby chunk to redraw each frame.
-        const clumpCount = this.groundGrassClumpCount(density, placement);
-        for (let tuftIndex = 0; tuftIndex < clumpCount; tuftIndex += 1) {
-          const height = (GROUND_GRASS_BASE_HEIGHT_PIXELS
-            + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37 + tuftIndex) * GROUND_GRASS_HEIGHT_VARIATION_PIXELS)
-            * GROUND_GRASS_SIZE_SCALE;
-          const offsetX = 4 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7 + tuftIndex) * 24;
-          candidates.push({
-            worldX: worldTileX * WORLD_TILE_SIZE + offsetX,
-            worldY: worldTileY * WORLD_TILE_SIZE + 23,
-            phase: randomAtTile(this.seed, worldTileX, worldTileY, 0x4a1e79e5 + tuftIndex) * Math.PI * 2,
-            height,
-            color: surface.biome === Biome.Hills ? 0x81914d : surface.biome === Biome.Forest ? 0x65964d : 0x79af4f,
-            // Keep the richest grass patches distributed across the full chunk instead of
-            // stopping after the first tile rows reach the visual budget.
-            priority: randomAtTile(this.seed, worldTileX, worldTileY, 0x7f4a26c3 + tuftIndex)
-          });
-        }
-      }
-    }
-
-    const tufts = candidates
-      .sort((first, second) => second.priority - first.priority)
-      .slice(0, AMBIENT_GRASS_TUFTS_PER_VISIBLE_CHUNK)
-      .map(({ priority: _priority, ...tuft }) => tuft);
-
-    this.hasAmbientMotion = tufts.length > 0 || this.features.some((feature) =>
-      feature.type === TerrainFeatureType.Tree
-      || feature.type === TerrainFeatureType.Reeds
-      || feature.type === TerrainFeatureType.Grass
-    );
-    return tufts;
-  }
 }

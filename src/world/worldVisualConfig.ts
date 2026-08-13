@@ -5,9 +5,10 @@ export const GROUND_GRASS_FREQUENCY_SCALE = 1.45;
 
 export const GROUND_GRASS_BASE_HEIGHT_PIXELS = 28;
 export const GROUND_GRASS_HEIGHT_VARIATION_PIXELS = 8;
-// Horizontal tip travel for the dynamic ground-cover overlay. This is kept separate from size so
-// the field can read as a strong breeze without making every decorative clump taller.
-export const GROUND_GRASS_WIND_STRENGTH_PIXELS = 15;
+// GPU foliage animation is expressed in texture UV space so every blade in the transparent
+// ground-cover layer can sway at once. Increase either value for a stronger wind effect.
+export const GROUND_GRASS_WIND_UV_AMPLITUDE = 0.018;
+export const FEATURE_FOLIAGE_WIND_UV_AMPLITUDE = 0.013;
 // Shoreline contour is visual-only: gameplay water continues to use the stable ocean threshold,
 // while these seed-derived offsets give each coast an organic, gently irregular edge.
 export const OCEAN_SHORELINE_WOBBLE_ELEVATION = 0.024;
