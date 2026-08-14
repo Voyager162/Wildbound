@@ -1,16 +1,14 @@
 import Phaser from 'phaser';
 import {
   GROUND_GRASS_ANIMATION_FRAME_COUNT,
-  GROUND_GRASS_ANIMATION_FRAME_MS,
-  GROUND_GRASS_PATTERN_VARIANTS
+  GROUND_GRASS_PATTERN_VARIANTS,
+  GROUND_GRASS_WIND_CYCLE_DURATION_MS
 } from './foliageAnimationConfig';
 
 const PATCH_WIDTH = 52;
 const PATCH_HEIGHT = 56;
 const PATCH_ROOT_Y = 51;
 const BLADE_COUNT = 13;
-
-export type GroundGrassPalette = 'meadow' | 'grove' | 'highland';
 
 export interface AnimatedGroundGrassPatch {
   image: Phaser.GameObjects.Image;
@@ -25,17 +23,18 @@ interface GrassColors {
   flower: string;
 }
 
-const palettes: Record<GroundGrassPalette, GrassColors> = {
-  meadow: { shadow: '#27613a', body: '#4d983f', highlight: '#a8ce62', flower: '#e4dc78' },
-  grove: { shadow: '#173f2d', body: '#2f733a', highlight: '#79a850', flower: '#b8c96a' },
-  highland: { shadow: '#365e39', body: '#6d984d', highlight: '#bad476', flower: '#e5d989' }
+// The source art is intentionally bright and neutral. WorldChunk tints it from the continuous
+// climate colour beneath each patch, avoiding a sharp palette switch at a named-biome boundary.
+const colors: GrassColors = { shadow: '#53764a', body: '#a3d377', highlight: '#edffb4', flower: '#fff09a' };
+
+const textureKeyFor = (pattern: number): string => `ground-grass-blades:v2:${pattern}`;
+
+const frameFor = (time: number, framePhase: number): number => {
+  const elapsedCycle = ((time % GROUND_GRASS_WIND_CYCLE_DURATION_MS) + GROUND_GRASS_WIND_CYCLE_DURATION_MS)
+    % GROUND_GRASS_WIND_CYCLE_DURATION_MS;
+  const progress = (elapsedCycle / GROUND_GRASS_WIND_CYCLE_DURATION_MS + framePhase) % 1;
+  return Math.floor(progress * GROUND_GRASS_ANIMATION_FRAME_COUNT);
 };
-
-const textureKeyFor = (palette: GroundGrassPalette, pattern: number): string =>
-  `ground-grass-blades:v1:${palette}:${pattern}`;
-
-const frameFor = (time: number, framePhase: number): number =>
-  Math.floor(time / GROUND_GRASS_ANIMATION_FRAME_MS + framePhase) % GROUND_GRASS_ANIMATION_FRAME_COUNT;
 
 // A small deterministic hash is enough for art variation inside a shared texture. World placement
 // remains seeded by WorldChunk, while these patterns make neighboring grass patches animate apart.
@@ -101,10 +100,8 @@ const drawBlade = (
 const drawFrame = (
   context: CanvasRenderingContext2D,
   frame: number,
-  pattern: number,
-  palette: GroundGrassPalette
+  pattern: number
 ): void => {
-  const colors = palettes[palette];
   const progress = (frame / GROUND_GRASS_ANIMATION_FRAME_COUNT) * Math.PI * 2;
   context.clearRect(0, 0, PATCH_WIDTH, PATCH_HEIGHT);
 
@@ -127,33 +124,31 @@ const drawFrame = (
 };
 
 const ensureGrassTextures = (scene: Phaser.Scene): void => {
-  (Object.keys(palettes) as GroundGrassPalette[]).forEach((palette) => {
-    for (let pattern = 0; pattern < GROUND_GRASS_PATTERN_VARIANTS; pattern += 1) {
-      const textureKey = textureKeyFor(palette, pattern);
-      if (scene.textures.exists(textureKey)) {
-        continue;
-      }
-
-      const texture = scene.textures.createCanvas(
-        textureKey,
-        PATCH_WIDTH,
-        PATCH_HEIGHT * GROUND_GRASS_ANIMATION_FRAME_COUNT
-      );
-      if (!texture) {
-        throw new Error('Wildbound could not create ground-grass animation frames.');
-      }
-
-      const context = texture.getContext();
-      for (let frame = 0; frame < GROUND_GRASS_ANIMATION_FRAME_COUNT; frame += 1) {
-        context.save();
-        context.translate(0, frame * PATCH_HEIGHT);
-        drawFrame(context, frame, pattern, palette);
-        context.restore();
-        texture.add(String(frame), 0, 0, frame * PATCH_HEIGHT, PATCH_WIDTH, PATCH_HEIGHT);
-      }
-      texture.refresh();
+  for (let pattern = 0; pattern < GROUND_GRASS_PATTERN_VARIANTS; pattern += 1) {
+    const textureKey = textureKeyFor(pattern);
+    if (scene.textures.exists(textureKey)) {
+      continue;
     }
-  });
+
+    const texture = scene.textures.createCanvas(
+      textureKey,
+      PATCH_WIDTH,
+      PATCH_HEIGHT * GROUND_GRASS_ANIMATION_FRAME_COUNT
+    );
+    if (!texture) {
+      throw new Error('Wildbound could not create ground-grass animation frames.');
+    }
+
+    const context = texture.getContext();
+    for (let frame = 0; frame < GROUND_GRASS_ANIMATION_FRAME_COUNT; frame += 1) {
+      context.save();
+      context.translate(0, frame * PATCH_HEIGHT);
+      drawFrame(context, frame, pattern);
+      context.restore();
+      texture.add(String(frame), 0, 0, frame * PATCH_HEIGHT, PATCH_WIDTH, PATCH_HEIGHT);
+    }
+    texture.refresh();
+  }
 };
 
 export const createAnimatedGroundGrassPatch = (
@@ -161,16 +156,17 @@ export const createAnimatedGroundGrassPatch = (
   worldX: number,
   worldY: number,
   scale: number,
-  palette: GroundGrassPalette,
+  tint: number,
   pattern: number,
   framePhase: number,
   time: number
 ): AnimatedGroundGrassPatch => {
   ensureGrassTextures(scene);
   const frame = frameFor(time, framePhase);
-  const image = scene.add.image(worldX, worldY, textureKeyFor(palette, pattern), String(frame))
+  const image = scene.add.image(worldX, worldY, textureKeyFor(pattern), String(frame))
     .setOrigin(0.5, PATCH_ROOT_Y / PATCH_HEIGHT)
     .setScale(scale)
+    .setTint(tint)
     .setDepth(0.9);
   return { image, framePhase, frame };
 };

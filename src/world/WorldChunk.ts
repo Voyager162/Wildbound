@@ -14,7 +14,6 @@ import { WATER_WAVES_PER_VISIBLE_CHUNK } from './ambientPerformanceConfig';
 import {
   createAnimatedGroundGrassPatch,
   type AnimatedGroundGrassPatch,
-  type GroundGrassPalette,
   updateAnimatedGroundGrassPatch
 } from './GroundGrassAnimation';
 import {
@@ -27,9 +26,9 @@ import {
   updateAnimatedFoliageSprite
 } from './FoliageSpriteLibrary';
 import {
-  GROUND_GRASS_ANIMATION_FRAME_COUNT,
-  GROUND_GRASS_ANIMATION_FRAME_MS,
-  GROUND_GRASS_PATTERN_VARIANTS
+  GROUND_GRASS_ANIMATION_UPDATE_INTERVAL_MS,
+  GROUND_GRASS_PATTERN_VARIANTS,
+  HARVESTABLE_GRASS_SCALE_MULTIPLIER
 } from './foliageAnimationConfig';
 import {
   GROUND_GRASS_BASE_HEIGHT_PIXELS,
@@ -163,7 +162,7 @@ export class WorldChunk {
       return;
     }
 
-    const grassFrame = Math.floor(time / GROUND_GRASS_ANIMATION_FRAME_MS);
+    const grassFrame = Math.floor(time / GROUND_GRASS_ANIMATION_UPDATE_INTERVAL_MS);
     if (this.groundGrassVisible && grassFrame !== this.lastGroundGrassFrame) {
       this.lastGroundGrassFrame = grassFrame;
       this.animatedGroundGrass.forEach((patch) => updateAnimatedGroundGrassPatch(patch, time));
@@ -731,6 +730,23 @@ export class WorldChunk {
     return (red << 16) | (green << 8) | blue;
   }
 
+  private tintToTargetColor(sourceColor: number, targetColor: number): number {
+    const tintChannel = (shift: number): number => {
+      const source = (sourceColor >> shift) & 0xff;
+      const target = (targetColor >> shift) & 0xff;
+      return Math.round(Math.min(1, target / Math.max(1, source)) * 255);
+    };
+    return (tintChannel(16) << 16) | (tintChannel(8) << 8) | tintChannel(0);
+  }
+
+  private groundGrassTint(surface: TerrainSurface): number {
+    // `surface.color` comes from continuous climate fields, so this preserves subtle biome
+    // blending in the grass itself instead of abruptly changing a texture palette at the label.
+    const brightGrassSource = 0xa3d377;
+    const target = this.mixColor(brightGrassSource, this.shadeColor(surface.color, 0.22), 0.52);
+    return this.tintToTargetColor(brightGrassSource, target);
+  }
+
   private groundGrassDensity(surface: TerrainSurface): number {
     // This calculation deliberately uses the continuous climate samples, not `surface.biome`.
     // As a result grass tapers naturally through forest, plains, hills, desert, snow, and swamp
@@ -775,19 +791,14 @@ export class WorldChunk {
         const height = (GROUND_GRASS_BASE_HEIGHT_PIXELS
           + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37) * GROUND_GRASS_HEIGHT_VARIATION_PIXELS)
           * GROUND_GRASS_SIZE_SCALE;
-        const palette: GroundGrassPalette = surface.biome === Biome.Forest
-          ? 'grove'
-          : surface.biome === Biome.Hills
-            ? 'highland'
-            : 'meadow';
         const patch = createAnimatedGroundGrassPatch(
           this.scene,
           worldTileX * WORLD_TILE_SIZE + 5 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7) * 22,
           worldTileY * WORLD_TILE_SIZE + 29,
           height / 34,
-          palette,
+          this.groundGrassTint(surface),
           Math.floor(randomAtTile(this.seed, worldTileX, worldTileY, 0x7959e2d1) * GROUND_GRASS_PATTERN_VARIANTS),
-          randomAtTile(this.seed, worldTileX, worldTileY, 0x53da69c7) * GROUND_GRASS_ANIMATION_FRAME_COUNT,
+          randomAtTile(this.seed, worldTileX, worldTileY, 0x53da69c7),
           now
         );
         patch.image.setVisible(this.renderVisible && this.groundGrassVisible);
@@ -813,7 +824,9 @@ export class WorldChunk {
 
       activeKeys.add(key);
       const variation = randomAtTile(this.seed, worldTileX, worldTileY, 0x6ac4d9e3);
-      const scale = 0.92 + variation * 0.16;
+      const scale = (0.92 + variation * 0.16) * (feature.type === TerrainFeatureType.Grass
+        ? HARVESTABLE_GRASS_SCALE_MULTIPLIER
+        : 1);
       const mirror = variation > 0.5 ? 1 : -1;
       const harvestOffset = this.harvestingTileKey === key ? this.harvestOffset : 0;
       const rootX = (worldTileX + 0.5) * WORLD_TILE_SIZE + harvestOffset;
