@@ -28,6 +28,7 @@ import {
   GROUND_GRASS_RENDER_RADIUS_Y
 } from './groundGrassConfig';
 import { LandmarkManager } from './LandmarkManager';
+import { SwampWaterDecorationManager } from './SwampWaterDecorationManager';
 import { sampleTopography, type TopographySample } from './generation/topographyGenerator';
 import { SessionWorldState } from './SessionWorldState';
 import { WorldChunk } from './WorldChunk';
@@ -62,6 +63,7 @@ export class ChunkManager {
   private lastChunkBuildTime = Number.NEGATIVE_INFINITY;
   private readonly ambientParticleManager: AmbientParticleManager;
   private readonly landmarkManager: LandmarkManager;
+  private readonly swampWaterDecorationManager: SwampWaterDecorationManager;
 
   constructor(
     private readonly scene: Phaser.Scene,
@@ -70,6 +72,7 @@ export class ChunkManager {
   ) {
     this.ambientParticleManager = new AmbientParticleManager(scene, seed);
     this.landmarkManager = new LandmarkManager(scene, seed);
+    this.swampWaterDecorationManager = new SwampWaterDecorationManager(scene, seed);
   }
 
   get currentChunkX(): number {
@@ -100,6 +103,7 @@ export class ChunkManager {
     this.queueGroundGrassPreloadChunks();
     this.queuePrefetchChunks(playerWorldX, playerWorldY);
     this.landmarkManager.update(this.activeChunkX, this.activeChunkY);
+    this.swampWaterDecorationManager.prime(this.activeChunkX, this.activeChunkY);
     this.processPendingChunks(time, CHUNK_STREAM_INITIAL_BUILD_COUNT, true);
     this.updateChunkRenderVisibility();
   }
@@ -162,6 +166,28 @@ export class ChunkManager {
     this.chunks.forEach((chunk) => chunk.updateFoliage(time));
   }
 
+  updateSwampWaterDecorations(
+    time: number,
+    deltaMs: number,
+    playerWorldX: number,
+    playerWorldY: number,
+    playerVelocityX: number,
+    playerVelocityY: number,
+    playerIsSwimming: boolean
+  ): void {
+    this.swampWaterDecorationManager.update(
+      time,
+      deltaMs,
+      this.activeChunkX,
+      this.activeChunkY,
+      playerWorldX,
+      playerWorldY,
+      playerVelocityX,
+      playerVelocityY,
+      playerIsSwimming
+    );
+  }
+
   getNightAmbientLights(time: number): readonly NightAmbientLight[] {
     return this.ambientParticleManager.getNightLights(time);
   }
@@ -200,6 +226,7 @@ export class ChunkManager {
     this.pendingChunks.clear();
     this.ambientParticleManager.destroy();
     this.landmarkManager.destroy();
+    this.swampWaterDecorationManager.destroy();
   }
 
   private queueNearbyChunks(): void {

@@ -764,12 +764,10 @@ export class WorldChunk {
     const heatFade = 1 - smooth(0.56, 0.76, surface.temperature);
     const coldFade = smooth(0.18, 0.32, surface.temperature);
     const highlandFade = 1 - smooth(0.57, 0.82, surface.elevation);
-    // Very wet, low, warm terrain becomes swamp rather than a grass field. Its continuous
-    // subtraction prevents the old sharp edge where the Swamp biome label began.
-    const swampFade = smooth(0.7, 0.86, surface.moisture)
-      * smooth(0.34, 0.56, surface.temperature)
-      * (1 - smooth(0.56, 0.74, surface.elevation));
-    const climateCoverage = temperateMoisture * heatFade * coldFade * highlandFade * (1 - swampFade);
+    // The per-biome multiplier below determines whether swamp supports ground grass. Keep this
+    // climate term independent so raising the Swamp entry in groundGrassConfig actually takes
+    // effect on dry, low marsh ground while the water cutoff above keeps ponds clear.
+    const climateCoverage = temperateMoisture * heatFade * coldFade * highlandFade;
     const shoreFade = 1 - smooth(0.02, 0.24, surface.waterVisualAmount);
     return Math.min(
       0.96,
@@ -990,9 +988,19 @@ export class WorldChunk {
         break;
       }
       case TerrainFeatureType.Reeds: {
-        groundPatch(108 * scale, 25 * scale, 0x496b47, 0.3);
-        graphics.fillStyle(0x3a6441, 0.8);
-        graphics.fillEllipse(centerX, centerY + 18 * scale, 68 * scale, 15 * scale);
+        const reedSurface = surfaceAtTile(
+          this.seed,
+          worldTileX + 0.5,
+          worldTileY + 0.5
+        );
+        if (reedSurface.isSwampWater && reedSurface.isWater) {
+          graphics.fillStyle(0x183e44, 0.25);
+          graphics.fillEllipse(centerX, centerY + 17 * scale, 54 * scale, 10 * scale);
+        } else {
+          groundPatch(108 * scale, 25 * scale, 0x496b47, 0.3);
+          graphics.fillStyle(0x3a6441, 0.8);
+          graphics.fillEllipse(centerX, centerY + 18 * scale, 68 * scale, 15 * scale);
+        }
         break;
       }
       case TerrainFeatureType.SnowyRock: {

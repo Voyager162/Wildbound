@@ -193,6 +193,7 @@ export class AdventureScene extends Phaser.Scene {
 
     if (this.worldMapOpen) {
       this.chunkManager.updateWaterAnimation(time);
+      this.chunkManager.updateSwampWaterDecorations(time, delta, this.player.x, this.player.y, 0, 0, this.isSwimming);
       this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.ambientLightAmount);
       this.updateNightAmbientLighting(time);
       this.persistIfNeeded(time);
@@ -207,6 +208,8 @@ export class AdventureScene extends Phaser.Scene {
     const horizontal = Number(this.isDown('right')) - Number(this.isDown('left'));
     const vertical = Number(this.isDown('down')) - Number(this.isDown('up'));
     const isMoving = horizontal !== 0 || vertical !== 0;
+    let playerVelocityX = 0;
+    let playerVelocityY = 0;
 
     this.updateFacing(horizontal, vertical);
     if (isMoving) {
@@ -214,7 +217,12 @@ export class AdventureScene extends Phaser.Scene {
         ?? this.chunkManager.getTopographyAt(this.player.x, this.player.y);
       const length = Math.hypot(horizontal, vertical);
       const speed = PLAYER_SPEED * (this.isSwimming ? SWIM_SPEED_MULTIPLIER : 1);
-      this.movePlayer((horizontal / length) * speed * (delta / 1000), (vertical / length) * speed * (delta / 1000));
+      const movementX = (horizontal / length) * speed * (delta / 1000);
+      const movementY = (vertical / length) * speed * (delta / 1000);
+      this.movePlayer(movementX, movementY);
+      const elapsedSeconds = Math.max(0.001, delta / 1000);
+      playerVelocityX = movementX / elapsedSeconds;
+      playerVelocityY = movementY / elapsedSeconds;
       this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
       this.terrainSurface = this.currentTopography.surface;
       this.markSaveDirty();
@@ -225,6 +233,15 @@ export class AdventureScene extends Phaser.Scene {
     this.chunkManager.update(this.player.x, this.player.y, time);
     this.chunkManager.updateFoliage(time);
     this.chunkManager.updateWaterAnimation(time);
+    this.chunkManager.updateSwampWaterDecorations(
+      time,
+      delta,
+      this.player.x,
+      this.player.y,
+      playerVelocityX,
+      playerVelocityY,
+      this.isSwimming
+    );
     this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.ambientLightAmount);
     this.updateNightAmbientLighting(time);
     this.updateInteractionTarget();

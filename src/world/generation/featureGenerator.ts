@@ -3,6 +3,11 @@ import { randomAtTile } from './noise';
 import { isLandmarkReservedTile } from './landmarkGenerator';
 import { surfaceAtTile } from './terrainGenerator';
 import { CHUNK_SIZE_TILES } from '../worldConfig';
+import {
+  SWAMP_REED_SHORE_DENSITY,
+  SWAMP_REED_SHORE_SEARCH_RADIUS_TILES,
+  SWAMP_REED_WATER_DENSITY
+} from '../swampWaterDecorConfig';
 
 export enum TerrainFeatureType {
   Tree = 'tree',
@@ -26,7 +31,6 @@ export const FEATURE_DENSITIES = {
   forestTree: 0.01,
   desertCactus: 0.005,
   rocky: 0.007,
-  swampReeds: 0.01,
   snowyRock: 0.002,
   icePatch: 0.002,
   plainsGrass: 0.02
@@ -81,6 +85,49 @@ const hasSafeFeatureFootprint = (seed: string, tileX: number, tileY: number, fea
 const acceptFeature = (seed: string, tileX: number, tileY: number, feature: TerrainFeatureType): TerrainFeatureType | null =>
   hasSafeFeatureFootprint(seed, tileX, tileY, feature) ? feature : null;
 
+type SwampReedSite = 'water' | 'shore' | null;
+
+const swampReedSiteAtTile = (seed: string, tileX: number, tileY: number): SwampReedSite => {
+  const centerX = tileX + 0.5;
+  const centerY = tileY + 0.5;
+  const surface = surfaceAtTile(seed, centerX, centerY);
+  if (surface.biome !== Biome.Swamp) {
+    return null;
+  }
+
+  // A few reed clumps grow directly through deep, still swamp water.
+  if (surface.isSwampWater && surface.isWater && surface.waterVisualAmount >= 0.42) {
+    return 'water';
+  }
+
+  // The rest hug pond banks instead of appearing arbitrarily through dry swamp ground.
+  if (surface.isWater || surface.waterVisualAmount > 0.12) {
+    return null;
+  }
+
+  const radius = SWAMP_REED_SHORE_SEARCH_RADIUS_TILES;
+  const offsets = [
+    [-radius, 0], [radius, 0], [0, -radius], [0, radius],
+    [-radius * 0.72, -radius * 0.72], [radius * 0.72, -radius * 0.72],
+    [-radius * 0.72, radius * 0.72], [radius * 0.72, radius * 0.72]
+  ];
+  return offsets.some(([offsetX, offsetY]) => {
+    const nearby = surfaceAtTile(seed, centerX + offsetX, centerY + offsetY);
+    return nearby.biome === Biome.Swamp && nearby.isSwampWater && nearby.waterVisualAmount >= 0.22;
+  }) ? 'shore' : null;
+};
+
+const hasSafeSwampReedFootprint = (seed: string, tileX: number, tileY: number, site: Exclude<SwampReedSite, null>): boolean => {
+  if (site === 'water') {
+    const surface = surfaceAtTile(seed, tileX + 0.5, tileY + 0.5);
+    return surface.biome === Biome.Swamp && surface.isSwampWater && surface.isWater && surface.waterVisualAmount >= 0.42;
+  }
+
+  // Shore reeds can reach over the pool, but their rooted tile must remain solid swamp ground.
+  const surface = surfaceAtTile(seed, tileX + 0.5, tileY + 0.5);
+  return surface.biome === Biome.Swamp && !surface.isWater && surface.waterVisualAmount <= 0.12;
+};
+
 export const featureAtTile = (seed: string, tileX: number, tileY: number): TerrainFeatureType | null => {
   // Landmark reservations are a separate macro layer. Skipping normal resources here keeps the
   // visible chunk art, harvesting lookup, and F3 feature readout in agreement.
@@ -111,9 +158,17 @@ export const featureAtTile = (seed: string, tileX: number, tileY: number): Terra
         ? acceptFeature(seed, tileX, tileY, TerrainFeatureType.Rock)
         : null;
     case Biome.Swamp:
-      return shouldPlace(seed, tileX, tileY, 0x5d1be613, FEATURE_DENSITIES.swampReeds)
-        ? acceptFeature(seed, tileX, tileY, TerrainFeatureType.Reeds)
-        : null;
+      {
+        const reedSite = swampReedSiteAtTile(seed, tileX, tileY);
+        if (!reedSite) {
+          return null;
+        }
+        const density = reedSite === 'water' ? SWAMP_REED_WATER_DENSITY : SWAMP_REED_SHORE_DENSITY;
+        return shouldPlace(seed, tileX, tileY, 0x5d1be613, density)
+          && hasSafeSwampReedFootprint(seed, tileX, tileY, reedSite)
+          ? TerrainFeatureType.Reeds
+          : null;
+      }
     case Biome.Desert:
       return shouldPlace(seed, tileX, tileY, 0x6ea84c35, FEATURE_DENSITIES.desertCactus)
         ? acceptFeature(seed, tileX, tileY, TerrainFeatureType.Cactus)
