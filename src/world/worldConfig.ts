@@ -1,7 +1,7 @@
 export const WORLD_TILE_SIZE = 32;
 
 // Keep the default seed in one place until world selection and save data exist.
-export const WORLD_SEED = 'waoefiu';
+export const WORLD_SEED = '164df2';
 
 // 1-100 biome wavelength control: higher values create larger biome regions; 50 preserves the base medium scale.
 export const BIOME_SIZE_SCALE = 50;

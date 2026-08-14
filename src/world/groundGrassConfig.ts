@@ -9,7 +9,7 @@ export const GROUND_GRASS_DENSITY_BY_BIOME: Readonly<Record<Biome, number>> = {
   [Biome.Plains]: 0.38,
   [Biome.Forest]: 0.27,
   [Biome.Desert]: 0,
-  [Biome.Swamp]: 0,
+  [Biome.Swamp]: .1,
   [Biome.Hills]: 0.12,
   [Biome.Mountains]: 0,
   [Biome.Snow]: 0

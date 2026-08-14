@@ -17,7 +17,7 @@ export const DAY_NIGHT_CYCLE_DURATION_MS = 12 * 60 * 1000;
 // New worlds begin at this hour. To inspect a saved world at a fixed hour, temporarily set the
 // override (for example 22 for night); leave it null for normal save/load behavior.
 export const DAY_NIGHT_INITIAL_HOUR = 8;
-export const DAY_NIGHT_START_HOUR_OVERRIDE: number | null = null;
+export const DAY_NIGHT_START_HOUR_OVERRIDE: number | null = 8;
 export const DAY_NIGHT_INITIAL_TIME_MS = DAY_NIGHT_CYCLE_DURATION_MS * (DAY_NIGHT_INITIAL_HOUR / 24);
 export const WORLD_TIME_SAVE_INTERVAL_MS = 900;
 export const DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS = 40;
@@ -47,10 +47,10 @@ export interface AmbientBiomeTuning {
 export const AMBIENT_BIOME_TUNING: Readonly<Record<Biome, AmbientBiomeTuning>> = {
   [Biome.Ocean]: { particleSpawnChance: 0.72, lightSpawnChance: 0.48, glowIntensityMultiplier: 0.8, glowRadiusMultiplier: 0.9 },
   [Biome.Beach]: { particleSpawnChance: 0.7, lightSpawnChance: 0.5, glowIntensityMultiplier: 0.86, glowRadiusMultiplier: 0.94 },
-  [Biome.Plains]: { particleSpawnChance: 0.8, lightSpawnChance: 0.64, glowIntensityMultiplier: 1, glowRadiusMultiplier: 1 },
-  [Biome.Forest]: { particleSpawnChance: 0.9, lightSpawnChance: 0.94, glowIntensityMultiplier: 1.24, glowRadiusMultiplier: 1.2 },
-  [Biome.Desert]: { particleSpawnChance: 0.74, lightSpawnChance: 0.68, glowIntensityMultiplier: 1.05, glowRadiusMultiplier: 1.1 },
-  [Biome.Swamp]: { particleSpawnChance: 0.9, lightSpawnChance: 0.96, glowIntensityMultiplier: 1.32, glowRadiusMultiplier: 1.28 },
+  [Biome.Plains]: { particleSpawnChance: 0.8, lightSpawnChance: 0.84, glowIntensityMultiplier: 2, glowRadiusMultiplier: 1.4 },
+  [Biome.Forest]: { particleSpawnChance: .9, lightSpawnChance: 0.94, glowIntensityMultiplier: 1.0, glowRadiusMultiplier: 0.5 },
+  [Biome.Desert]: { particleSpawnChance: 0.74, lightSpawnChance: 0.68, glowIntensityMultiplier: 1.25, glowRadiusMultiplier: 1.1 },
+  [Biome.Swamp]: { particleSpawnChance: 0.05, lightSpawnChance: 0.96, glowIntensityMultiplier: 1.12, glowRadiusMultiplier: .5 },
   [Biome.Hills]: { particleSpawnChance: 0.75, lightSpawnChance: 0.58, glowIntensityMultiplier: 0.94, glowRadiusMultiplier: 0.96 },
   [Biome.Mountains]: { particleSpawnChance: 0.86, lightSpawnChance: 0.82, glowIntensityMultiplier: 1.14, glowRadiusMultiplier: 1.14 },
   [Biome.Snow]: { particleSpawnChance: 0.88, lightSpawnChance: 0.84, glowIntensityMultiplier: 1.12, glowRadiusMultiplier: 1.12 }

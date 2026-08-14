@@ -16,7 +16,7 @@ export const SWAMP_POOL_CLIMATE_END = 0.38;
 
 // Lily pads are sparse enough to leave swim lanes through a pond while still making water feel
 // alive. They are generated from world coordinates and recreated identically after streaming.
-export const LILYPAD_DENSITY = 0.045;
+export const LILYPAD_DENSITY = 0.01;
 export const LILYPAD_MIN_WATER_VISUAL_AMOUNT = 0.42;
 export const LILYPAD_RENDER_RADIUS_X = 3;
 export const LILYPAD_RENDER_RADIUS_Y = 2;
@@ -31,7 +31,7 @@ export const LILYPAD_PAD_RADIUS_PIXELS = 15;
 export const LILYPAD_PLAYER_BUMP_STRENGTH = 0.52;
 export const LILYPAD_PLAYER_SEPARATION_STRENGTH = 5.5;
 export const LILYPAD_CURRENT_STRENGTH = 8;
-export const LILYPAD_RETURN_STRENGTH = 0.9;
+export const LILYPAD_RETURN_STRENGTH = 0.0;
 export const LILYPAD_LINEAR_DRAG = 3.2;
 export const LILYPAD_MAX_SPEED_PIXELS_PER_SECOND = 96;
 export const LILYPAD_FLOAT_BOB_PIXELS = 1.25;
