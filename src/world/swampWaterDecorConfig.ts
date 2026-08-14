@@ -3,6 +3,16 @@
 export const SWAMP_REED_SHORE_DENSITY = 0.018;
 export const SWAMP_REED_WATER_DENSITY = 0.0075;
 export const SWAMP_REED_SHORE_SEARCH_RADIUS_TILES = 2.25;
+// Water reeds are emergent plants: keep them in the shallow swim band, not in the pond center.
+export const SWAMP_REED_WATER_MIN_VISUAL_AMOUNT = 0.345;
+export const SWAMP_REED_WATER_MAX_VISUAL_AMOUNT = 0.68;
+
+// These control the amount of still water in a climate-qualified swamp. Lowering the starts
+// makes additional small pools while leaving the continuous shoreline and water threshold intact.
+export const SWAMP_POOL_NOISE_START = 0.6;
+export const SWAMP_POOL_NOISE_END = 0.82;
+export const SWAMP_POOL_CLIMATE_START = 0.06;
+export const SWAMP_POOL_CLIMATE_END = 0.38;
 
 // Lily pads are sparse enough to leave swim lanes through a pond while still making water feel
 // alive. They are generated from world coordinates and recreated identically after streaming.

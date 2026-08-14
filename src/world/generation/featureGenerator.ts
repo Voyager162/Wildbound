@@ -6,7 +6,9 @@ import { CHUNK_SIZE_TILES } from '../worldConfig';
 import {
   SWAMP_REED_SHORE_DENSITY,
   SWAMP_REED_SHORE_SEARCH_RADIUS_TILES,
-  SWAMP_REED_WATER_DENSITY
+  SWAMP_REED_WATER_DENSITY,
+  SWAMP_REED_WATER_MAX_VISUAL_AMOUNT,
+  SWAMP_REED_WATER_MIN_VISUAL_AMOUNT
 } from '../swampWaterDecorConfig';
 
 export enum TerrainFeatureType {
@@ -14,6 +16,7 @@ export enum TerrainFeatureType {
   Cactus = 'cactus',
   Rock = 'rock',
   Reeds = 'reeds',
+  WaterReeds = 'water reeds',
   SnowyRock = 'snowy rock',
   IcePatch = 'ice patch',
   Grass = 'wild grass'
@@ -44,6 +47,7 @@ const featureClearance: Record<TerrainFeatureType, number> = {
   [TerrainFeatureType.Cactus]: 1.25,
   [TerrainFeatureType.Rock]: 1.45,
   [TerrainFeatureType.Reeds]: 1.1,
+  [TerrainFeatureType.WaterReeds]: 0.9,
   [TerrainFeatureType.SnowyRock]: 1.35,
   [TerrainFeatureType.IcePatch]: 1.6,
   [TerrainFeatureType.Grass]: 1
@@ -58,6 +62,7 @@ const isBiomeCompatible = (feature: TerrainFeatureType, biome: Biome): boolean =
     case TerrainFeatureType.Rock:
       return biome === Biome.Hills || biome === Biome.Mountains;
     case TerrainFeatureType.Reeds:
+    case TerrainFeatureType.WaterReeds:
       return biome === Biome.Swamp;
     case TerrainFeatureType.SnowyRock:
     case TerrainFeatureType.IcePatch:
@@ -95,8 +100,11 @@ const swampReedSiteAtTile = (seed: string, tileX: number, tileY: number): SwampR
     return null;
   }
 
-  // A few reed clumps grow directly through deep, still swamp water.
-  if (surface.isSwampWater && surface.isWater && surface.waterVisualAmount >= 0.42) {
+  // Emergent reeds grow at the pond's shallow swim edge. Their shorter waterline art is kept
+  // distinct from the taller bank reeds below.
+  if (surface.isSwampWater && surface.isWater
+    && surface.waterVisualAmount >= SWAMP_REED_WATER_MIN_VISUAL_AMOUNT
+    && surface.waterVisualAmount <= SWAMP_REED_WATER_MAX_VISUAL_AMOUNT) {
     return 'water';
   }
 
@@ -120,7 +128,9 @@ const swampReedSiteAtTile = (seed: string, tileX: number, tileY: number): SwampR
 const hasSafeSwampReedFootprint = (seed: string, tileX: number, tileY: number, site: Exclude<SwampReedSite, null>): boolean => {
   if (site === 'water') {
     const surface = surfaceAtTile(seed, tileX + 0.5, tileY + 0.5);
-    return surface.biome === Biome.Swamp && surface.isSwampWater && surface.isWater && surface.waterVisualAmount >= 0.42;
+    return surface.biome === Biome.Swamp && surface.isSwampWater && surface.isWater
+      && surface.waterVisualAmount >= SWAMP_REED_WATER_MIN_VISUAL_AMOUNT
+      && surface.waterVisualAmount <= SWAMP_REED_WATER_MAX_VISUAL_AMOUNT;
   }
 
   // Shore reeds can reach over the pool, but their rooted tile must remain solid swamp ground.
@@ -166,7 +176,7 @@ export const featureAtTile = (seed: string, tileX: number, tileY: number): Terra
         const density = reedSite === 'water' ? SWAMP_REED_WATER_DENSITY : SWAMP_REED_SHORE_DENSITY;
         return shouldPlace(seed, tileX, tileY, 0x5d1be613, density)
           && hasSafeSwampReedFootprint(seed, tileX, tileY, reedSite)
-          ? TerrainFeatureType.Reeds
+          ? reedSite === 'water' ? TerrainFeatureType.WaterReeds : TerrainFeatureType.Reeds
           : null;
       }
     case Biome.Desert:

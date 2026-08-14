@@ -7,6 +7,12 @@ import {
   OCEAN_SHORELINE_WOBBLE_ELEVATION,
   OCEAN_SURF_BLEND_ELEVATION
 } from '../worldVisualConfig';
+import {
+  SWAMP_POOL_CLIMATE_END,
+  SWAMP_POOL_CLIMATE_START,
+  SWAMP_POOL_NOISE_END,
+  SWAMP_POOL_NOISE_START
+} from '../swampWaterDecorConfig';
 
 export enum TerrainType {
   Grass = 'grass',
@@ -187,7 +193,8 @@ export const surfaceAtTile = (seed: string, tileX: number, tileY: number): Terra
     // label. Apply it over beaches too: excluding Beach made a swamp pool stop in a hard line
     // where the discrete biome label changed, although its underlying climate was smooth. The
     // gameplay water threshold sits well inside the visible blend.
-    const poolAmount = smoothRange(0.64, 0.82, swampPool) * smoothRange(0.08, 0.42, swampAmount);
+    const poolAmount = smoothRange(SWAMP_POOL_NOISE_START, SWAMP_POOL_NOISE_END, swampPool)
+      * smoothRange(SWAMP_POOL_CLIMATE_START, SWAMP_POOL_CLIMATE_END, swampAmount);
     if (poolAmount > 0.001) {
       const existingWaterVisualAmount = waterVisualAmount;
       color = blendColor(color, 0x367f8b, poolAmount);

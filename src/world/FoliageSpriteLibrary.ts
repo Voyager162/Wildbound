@@ -14,6 +14,7 @@ import {
 const LEAF_CLUSTER_TEXTURE_KEY = 'foliage-sprite:leaf-cluster:v3';
 const LOOSE_LEAF_TEXTURE_KEY = 'foliage-sprite:loose-leaf:v3';
 const REED_BLADE_TEXTURE_KEY = 'foliage-sprite:reed-blade:v3';
+const WATER_REED_BLADE_TEXTURE_KEY = 'foliage-sprite:water-reed-blade:v1';
 const GRASS_BLADE_TEXTURE_KEY = 'foliage-sprite:wild-grass-blade:v3';
 const GRASS_SEED_BLADE_TEXTURE_KEY = 'foliage-sprite:wild-grass-seed-blade:v3';
 
@@ -144,30 +145,70 @@ const drawBladeTexture = (context: CanvasRenderingContext2D, reed: boolean, seed
   context.globalAlpha = 1;
 };
 
+// Short, glossy emergent blades are deliberately unlike the tall bank reeds. The translucent
+// lower segment and reflected highlight make them read as poking up through still water.
+const drawWaterReedBladeTexture = (context: CanvasRenderingContext2D): void => {
+  const rootX = 8;
+  const rootY = 51;
+  context.lineCap = 'round';
+  context.strokeStyle = 'rgba(20, 83, 67, 0.48)';
+  context.lineWidth = 3.2;
+  context.beginPath();
+  context.moveTo(rootX, rootY);
+  context.quadraticCurveTo(rootX - 1, 35, rootX + 2.3, 12);
+  context.stroke();
+  context.strokeStyle = '#245c36';
+  context.globalAlpha = 0.96;
+  context.lineWidth = 2.2;
+  context.beginPath();
+  context.moveTo(rootX, 40);
+  context.quadraticCurveTo(rootX - 0.4, 28, rootX + 2.3, 12);
+  context.stroke();
+  context.strokeStyle = '#a4c96b';
+  context.globalAlpha = 0.82;
+  context.lineWidth = 0.85;
+  context.beginPath();
+  context.moveTo(rootX - 0.4, 39);
+  context.quadraticCurveTo(rootX + 0.2, 27, rootX + 2.6, 13);
+  context.stroke();
+  context.fillStyle = '#587f3f';
+  context.globalAlpha = 0.88;
+  context.beginPath();
+  context.ellipse(rootX + 2.5, 10, 2.2, 5.8, 0.18, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = 'rgba(191, 241, 221, 0.42)';
+  context.lineWidth = 0.8;
+  context.beginPath();
+  context.moveTo(2, 43);
+  context.quadraticCurveTo(8, 45, 14, 43);
+  context.stroke();
+  context.globalAlpha = 1;
+};
+
 export const ensureFoliageSpriteTextures = (scene: Phaser.Scene): void => {
-  if (scene.textures.exists(LEAF_CLUSTER_TEXTURE_KEY)) {
-    return;
-  }
+  const createIfMissing = (
+    key: string,
+    width: number,
+    height: number,
+    draw: (context: CanvasRenderingContext2D) => void
+  ): void => {
+    if (scene.textures.exists(key)) {
+      return;
+    }
+    const texture = scene.textures.createCanvas(key, width, height);
+    if (!texture) {
+      throw new Error('Wildbound could not create foliage animation textures.');
+    }
+    draw(texture.getContext());
+    texture.refresh();
+  };
 
-  const leafCluster = scene.textures.createCanvas(LEAF_CLUSTER_TEXTURE_KEY, 72, 72);
-  const looseLeaf = scene.textures.createCanvas(LOOSE_LEAF_TEXTURE_KEY, 12, 14);
-  const reedBlade = scene.textures.createCanvas(REED_BLADE_TEXTURE_KEY, 16, 88);
-  const grassBlade = scene.textures.createCanvas(GRASS_BLADE_TEXTURE_KEY, 14, 52);
-  const grassSeedBlade = scene.textures.createCanvas(GRASS_SEED_BLADE_TEXTURE_KEY, 14, 52);
-  if (!leafCluster || !looseLeaf || !reedBlade || !grassBlade || !grassSeedBlade) {
-    throw new Error('Wildbound could not create foliage animation textures.');
-  }
-
-  drawLeafCluster(leafCluster.getContext());
-  drawLooseLeaf(looseLeaf.getContext());
-  drawBladeTexture(reedBlade.getContext(), true);
-  drawBladeTexture(grassBlade.getContext(), false);
-  drawBladeTexture(grassSeedBlade.getContext(), false, true);
-  leafCluster.refresh();
-  looseLeaf.refresh();
-  reedBlade.refresh();
-  grassBlade.refresh();
-  grassSeedBlade.refresh();
+  createIfMissing(LEAF_CLUSTER_TEXTURE_KEY, 72, 72, drawLeafCluster);
+  createIfMissing(LOOSE_LEAF_TEXTURE_KEY, 12, 14, drawLooseLeaf);
+  createIfMissing(REED_BLADE_TEXTURE_KEY, 16, 88, (context) => drawBladeTexture(context, true));
+  createIfMissing(WATER_REED_BLADE_TEXTURE_KEY, 16, 54, drawWaterReedBladeTexture);
+  createIfMissing(GRASS_BLADE_TEXTURE_KEY, 14, 52, (context) => drawBladeTexture(context, false));
+  createIfMissing(GRASS_SEED_BLADE_TEXTURE_KEY, 14, 52, (context) => drawBladeTexture(context, false, true));
 };
 
 const treeNodeSpecs = (): readonly NodeSpec[] => [
@@ -182,25 +223,29 @@ const treeNodeSpecs = (): readonly NodeSpec[] => [
 ];
 
 const bladeNodeSpecs = (type: TerrainFeatureType): readonly NodeSpec[] => {
-  const isReed = type === TerrainFeatureType.Reeds;
-  const count = isReed ? 9 : HARVESTABLE_GRASS_BLADE_COUNT;
+  const isBankReed = type === TerrainFeatureType.Reeds;
+  const isWaterReed = type === TerrainFeatureType.WaterReeds;
+  const isReed = isBankReed || isWaterReed;
+  const count = isBankReed ? 9 : isWaterReed ? 7 : HARVESTABLE_GRASS_BLADE_COUNT;
   const swayRadians = isReed ? REED_SWAY_RADIANS : HARVESTABLE_GRASS_SWAY_RADIANS;
   const swaySpeed = isReed ? REED_SWAY_SPEED : HARVESTABLE_GRASS_SWAY_SPEED;
-  const spread = isReed ? 40 : 33;
+  const spread = isBankReed ? 40 : isWaterReed ? 31 : 33;
   return Array.from({ length: count }, (_, index) => {
     const normalized = index / (count - 1) - 0.5;
     const phaseOffset = index * 0.89 + (isReed ? 0.3 : 0.7);
     return {
-      textureKey: isReed
+      textureKey: isBankReed
         ? REED_BLADE_TEXTURE_KEY
+        : isWaterReed
+          ? WATER_REED_BLADE_TEXTURE_KEY
         : index % 3 === 1
           ? GRASS_SEED_BLADE_TEXTURE_KEY
           : GRASS_BLADE_TEXTURE_KEY,
       originX: 0.5,
-      originY: isReed ? 84 / 88 : 48 / 52,
+      originY: isBankReed ? 84 / 88 : isWaterReed ? 50 / 54 : 48 / 52,
       offsetX: normalized * spread + Math.sin(index * 2.4) * 2.4,
       offsetY: Math.cos(index * 1.7) * 1.8,
-      scale: (isReed ? 0.86 : 0.92) + (index % 3) * 0.075,
+      scale: (isBankReed ? 0.86 : isWaterReed ? 0.78 : 0.92) + (index % 3) * 0.075,
       rotation: normalized * (isReed ? 0.16 : 0.22),
       phaseOffset,
       swayRadians: swayRadians * (0.72 + (index % 4) * 0.1),
@@ -214,6 +259,7 @@ const nodeSpecsFor = (type: TerrainFeatureType): readonly NodeSpec[] | null => {
     case TerrainFeatureType.Tree:
       return treeNodeSpecs();
     case TerrainFeatureType.Reeds:
+    case TerrainFeatureType.WaterReeds:
     case TerrainFeatureType.Grass:
       return bladeNodeSpecs(type);
     default:

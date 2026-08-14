@@ -871,6 +871,8 @@ export class WorldChunk {
         ? 0
         : feature.type === TerrainFeatureType.Reeds
           ? 20
+          : feature.type === TerrainFeatureType.WaterReeds
+            ? 15
           : 12);
       const existing = this.animatedFeatureFoliage.get(key);
       if (existing) {
@@ -988,19 +990,18 @@ export class WorldChunk {
         break;
       }
       case TerrainFeatureType.Reeds: {
-        const reedSurface = surfaceAtTile(
-          this.seed,
-          worldTileX + 0.5,
-          worldTileY + 0.5
-        );
-        if (reedSurface.isSwampWater && reedSurface.isWater) {
-          graphics.fillStyle(0x183e44, 0.25);
-          graphics.fillEllipse(centerX, centerY + 17 * scale, 54 * scale, 10 * scale);
-        } else {
-          groundPatch(108 * scale, 25 * scale, 0x496b47, 0.3);
-          graphics.fillStyle(0x3a6441, 0.8);
-          graphics.fillEllipse(centerX, centerY + 18 * scale, 68 * scale, 15 * scale);
-        }
+        groundPatch(108 * scale, 25 * scale, 0x496b47, 0.3);
+        graphics.fillStyle(0x3a6441, 0.8);
+        graphics.fillEllipse(centerX, centerY + 18 * scale, 68 * scale, 15 * scale);
+        break;
+      }
+      case TerrainFeatureType.WaterReeds: {
+        // A low, transparent water shadow and a small reflected glint anchor the short
+        // emergent foliage without making the shallow pool look like solid ground.
+        graphics.fillStyle(0x123f4a, 0.34);
+        graphics.fillEllipse(centerX, centerY + 15 * scale, 58 * scale, 11 * scale);
+        graphics.fillStyle(0x9edecf, 0.26);
+        graphics.fillEllipse(centerX - 12 * scale, centerY + 17 * scale, 18 * scale, 2.2 * scale);
         break;
       }
       case TerrainFeatureType.SnowyRock: {
