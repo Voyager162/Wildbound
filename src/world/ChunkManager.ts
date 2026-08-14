@@ -21,6 +21,12 @@ import {
   CHUNK_RENDER_RADIUS_X,
   CHUNK_RENDER_RADIUS_Y
 } from './chunkRenderConfig';
+import {
+  GROUND_GRASS_PRELOAD_RADIUS_X,
+  GROUND_GRASS_PRELOAD_RADIUS_Y,
+  GROUND_GRASS_RENDER_RADIUS_X,
+  GROUND_GRASS_RENDER_RADIUS_Y
+} from './groundGrassConfig';
 import { LandmarkManager } from './LandmarkManager';
 import { sampleTopography, type TopographySample } from './generation/topographyGenerator';
 import { SessionWorldState } from './SessionWorldState';
@@ -91,6 +97,7 @@ export class ChunkManager {
     this.updateStreamFocus(playerWorldX, playerWorldY, time);
     this.queueVisibleChunks();
     this.queueNearbyChunks();
+    this.queueGroundGrassPreloadChunks();
     this.queuePrefetchChunks(playerWorldX, playerWorldY);
     this.landmarkManager.update(this.activeChunkX, this.activeChunkY);
     this.processPendingChunks(time, CHUNK_STREAM_INITIAL_BUILD_COUNT, true);
@@ -111,6 +118,7 @@ export class ChunkManager {
     this.activeChunkX = nextChunkX;
     this.activeChunkY = nextChunkY;
     this.queueNearbyChunks();
+    this.queueGroundGrassPreloadChunks();
     this.queuePrefetchChunks(playerWorldX, playerWorldY);
     this.unloadDistantChunks();
     this.landmarkManager.update(this.activeChunkX, this.activeChunkY);
@@ -196,6 +204,18 @@ export class ChunkManager {
 
   private queueNearbyChunks(): void {
     this.queueChunkNeighborhood(this.activeChunkX, this.activeChunkY);
+    this.sortPendingChunks();
+  }
+
+  private queueGroundGrassPreloadChunks(): void {
+    for (let y = this.activeChunkY - GROUND_GRASS_PRELOAD_RADIUS_Y; y <= this.activeChunkY + GROUND_GRASS_PRELOAD_RADIUS_Y; y += 1) {
+      for (let x = this.activeChunkX - GROUND_GRASS_PRELOAD_RADIUS_X; x <= this.activeChunkX + GROUND_GRASS_PRELOAD_RADIUS_X; x += 1) {
+        const distance = Math.abs(x - this.activeChunkX) + Math.abs(y - this.activeChunkY);
+        // These are generated just after the immediate terrain window. They are still well ahead
+        // of a normal player's arrival, but never compete with a missing visible terrain chunk.
+        this.queueChunk(x, y, -48 + distance);
+      }
+    }
     this.sortPendingChunks();
   }
 
@@ -358,8 +378,8 @@ export class ChunkManager {
   }
 
   private isWithinForegroundWindow(chunkX: number, chunkY: number): boolean {
-    return Math.abs(chunkX - this.activeChunkX) <= CHUNK_STREAM_VISIBLE_RADIUS_X
-      && Math.abs(chunkY - this.activeChunkY) <= CHUNK_STREAM_VISIBLE_RADIUS_Y;
+    return Math.abs(chunkX - this.activeChunkX) <= GROUND_GRASS_RENDER_RADIUS_X
+      && Math.abs(chunkY - this.activeChunkY) <= GROUND_GRASS_RENDER_RADIUS_Y;
   }
 
   private unloadDistantChunks(): void {

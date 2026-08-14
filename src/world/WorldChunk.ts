@@ -30,6 +30,7 @@ import {
   GROUND_GRASS_PATTERN_VARIANTS,
   HARVESTABLE_GRASS_SCALE_MULTIPLIER
 } from './foliageAnimationConfig';
+import { GROUND_GRASS_DENSITY_BY_BIOME } from './groundGrassConfig';
 import {
   GROUND_GRASS_BASE_HEIGHT_PIXELS,
   GROUND_GRASS_FREQUENCY_SCALE,
@@ -770,7 +771,45 @@ export class WorldChunk {
       * (1 - smooth(0.56, 0.74, surface.elevation));
     const climateCoverage = temperateMoisture * heatFade * coldFade * highlandFade * (1 - swampFade);
     const shoreFade = 1 - smooth(0.02, 0.24, surface.waterVisualAmount);
-    return Math.min(0.96, climateCoverage * shoreFade * GROUND_GRASS_FREQUENCY_SCALE);
+    return Math.min(
+      0.96,
+      climateCoverage * shoreFade * this.groundGrassBiomeDensityMultiplier(surface) * GROUND_GRASS_FREQUENCY_SCALE
+    );
+  }
+
+  private groundGrassBiomeDensityMultiplier(surface: TerrainSurface): number {
+    const smooth = (start: number, end: number, value: number): number => {
+      const normalized = Math.max(0, Math.min(1, (value - start) / (end - start)));
+      return normalized * normalized * (3 - 2 * normalized);
+    };
+    const blend = (from: number, to: number, amount: number): number => from + (to - from) * amount;
+
+    // The final gameplay biome is discrete, but foliage density should not be. These climate
+    // weights smoothly approach the matching entry in GROUND_GRASS_DENSITY_BY_BIOME on either
+    // side of a biome threshold, including plains-to-forest and plains-to-hills transitions.
+    const beach = 1 - smooth(0.27, 0.39, surface.elevation);
+    const snow = 1 - smooth(0.18, 0.32, surface.temperature);
+    const mountains = smooth(0.72, 0.84, surface.elevation);
+    const hills = smooth(0.56, 0.79, surface.elevation) * (1 - mountains);
+    const swamp = smooth(0.69, 0.86, surface.moisture)
+      * smooth(0.33, 0.56, surface.temperature)
+      * (1 - smooth(0.56, 0.75, surface.elevation));
+    const desert = smooth(0.57, 0.77, surface.temperature) * (1 - smooth(0.24, 0.46, surface.moisture));
+    const forest = smooth(0.49, 0.66, surface.moisture)
+      * (1 - desert)
+      * (1 - swamp)
+      * (1 - hills)
+      * (1 - mountains)
+      * (1 - snow);
+
+    let density = GROUND_GRASS_DENSITY_BY_BIOME[Biome.Plains];
+    density = blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Forest], forest);
+    density = blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Desert], desert);
+    density = blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Swamp], swamp);
+    density = blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Hills], hills);
+    density = blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Mountains], mountains);
+    density = blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Snow], snow);
+    return blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Beach], beach);
   }
 
   private createAnimatedGroundGrass(): void {
