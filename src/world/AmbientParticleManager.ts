@@ -9,6 +9,8 @@ import {
   NIGHT_AMBIENT_LIGHT_RETENTION_CELLS
 } from './explorationConfig';
 import {
+  AMBIENT_PARTICLE_DENSE_POOL_HARD_CAP,
+  AMBIENT_PARTICLE_DENSE_RENDER_HARD_CAP,
   AMBIENT_PARTICLE_RENDER_MAX_COUNT,
 } from './ambientPerformanceConfig';
 import {
@@ -68,6 +70,8 @@ export class AmbientParticleManager {
   private readonly graphics: Phaser.GameObjects.Graphics;
   private lastAnchorCellX = Number.NaN;
   private lastAnchorCellY = Number.NaN;
+  private currentParticlePoolLimit = AMBIENT_PARTICLE_MAX_COUNT;
+  private currentParticleRenderLimit = AMBIENT_PARTICLE_RENDER_MAX_COUNT;
   private particles: AmbientParticle[] = [];
   private readonly particlePool = new Map<string, AmbientParticle>();
   private readonly lightTracks = new Map<string, NightLightTrack>();
@@ -80,16 +84,32 @@ export class AmbientParticleManager {
   update(time: number, playerWorldX: number, playerWorldY: number, nightAmount: number): void {
     const anchorCellX = Math.floor(playerWorldX / AMBIENT_PARTICLE_CELL_SIZE_PIXELS);
     const anchorCellY = Math.floor(playerWorldY / AMBIENT_PARTICLE_CELL_SIZE_PIXELS);
-    if (anchorCellX !== this.lastAnchorCellX || anchorCellY !== this.lastAnchorCellY) {
+    const playerBiome = biomeAtTile(this.seed, playerWorldX / WORLD_TILE_SIZE, playerWorldY / WORLD_TILE_SIZE);
+    const budget = this.particleBudgetForBiome(playerBiome);
+    const budgetChanged = budget.poolLimit !== this.currentParticlePoolLimit
+      || budget.renderLimit !== this.currentParticleRenderLimit;
+    if (anchorCellX !== this.lastAnchorCellX || anchorCellY !== this.lastAnchorCellY || budgetChanged) {
       this.lastAnchorCellX = anchorCellX;
       this.lastAnchorCellY = anchorCellY;
-      this.refreshStableParticlePool(this.createParticles(anchorCellX, anchorCellY), anchorCellX, anchorCellY);
+      this.currentParticlePoolLimit = budget.poolLimit;
+      this.currentParticleRenderLimit = budget.renderLimit;
+      if (budgetChanged) {
+        // A config change must take effect immediately rather than waiting for retained cells to
+        // naturally expire beyond the camera buffer.
+        this.particlePool.clear();
+      }
+      this.refreshStableParticlePool(
+        this.createParticles(anchorCellX, anchorCellY, this.currentParticlePoolLimit),
+        anchorCellX,
+        anchorCellY,
+        this.currentParticlePoolLimit
+      );
       this.refreshStableLightPool(anchorCellX, anchorCellY, time);
     }
 
     const timeSeconds = time / 1000;
     this.graphics.clear();
-    const particleCount = Math.min(this.particles.length, AMBIENT_PARTICLE_RENDER_MAX_COUNT);
+    const particleCount = Math.min(this.particles.length, this.currentParticleRenderLimit);
     for (let particleIndex = 0; particleIndex < particleCount; particleIndex += 1) {
       const particle = this.particles[particleIndex];
       // Fireflies are a night-only visual. Skipping them only at exact daytime darkness avoids
@@ -134,7 +154,7 @@ export class AmbientParticleManager {
     this.nightLights = [];
   }
 
-  private createParticles(anchorCellX: number, anchorCellY: number): AmbientParticle[] {
+  private createParticles(anchorCellX: number, anchorCellY: number, particleLimit: number): AmbientParticle[] {
     const particles: AmbientParticle[] = [];
     const candidates: Array<AmbientParticle & { priority: number }> = [];
 
@@ -264,7 +284,7 @@ export class AmbientParticleManager {
 
     candidates
       .sort((first, second) => second.priority - first.priority)
-      .slice(0, AMBIENT_PARTICLE_MAX_COUNT)
+      .slice(0, particleLimit)
       .forEach(({ priority: _priority, ...particle }) => particles.push(particle));
     return particles;
   }
@@ -272,8 +292,14 @@ export class AmbientParticleManager {
   private refreshStableParticlePool(
     candidates: readonly AmbientParticle[],
     anchorCellX: number,
-    anchorCellY: number
+    anchorCellY: number,
+    particleLimit: number
   ): void {
+    if (particleLimit <= 0) {
+      this.particlePool.clear();
+      this.particles = [];
+      return;
+    }
     const retainRadiusX = AMBIENT_PARTICLE_RADIUS_CELLS_X
       + AMBIENT_PARTICLE_RETENTION_CELLS;
     const retainRadiusY = AMBIENT_PARTICLE_RADIUS_CELLS_Y
@@ -289,7 +315,7 @@ export class AmbientParticleManager {
       .sort((first, second) => second.lightPriority - first.lightPriority)
       .some((particle) => {
         this.particlePool.set(particle.id, particle);
-        return this.particlePool.size >= AMBIENT_PARTICLE_MAX_COUNT;
+        return this.particlePool.size >= particleLimit;
       });
 
     // Keep the rendered subset closest to the camera anchor. The larger retained pool prevents
@@ -301,6 +327,14 @@ export class AmbientParticleManager {
         const secondDistance = Math.abs(second.cellX - anchorCellX) + Math.abs(second.cellY - anchorCellY);
         return firstDistance - secondDistance || second.lightPriority - first.lightPriority;
       });
+  }
+
+  private particleBudgetForBiome(biome: Biome): { poolLimit: number; renderLimit: number } {
+    const multiplier = Math.max(0, AMBIENT_PARTICLE_DENSITY_MULTIPLIER_BY_BIOME[biome]);
+    return {
+      poolLimit: Math.min(AMBIENT_PARTICLE_DENSE_POOL_HARD_CAP, Math.round(AMBIENT_PARTICLE_MAX_COUNT * multiplier)),
+      renderLimit: Math.min(AMBIENT_PARTICLE_DENSE_RENDER_HARD_CAP, Math.round(AMBIENT_PARTICLE_RENDER_MAX_COUNT * multiplier))
+    };
   }
 
   private refreshStableLightPool(anchorCellX: number, anchorCellY: number, time: number): void {
