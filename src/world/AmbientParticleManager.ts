@@ -22,6 +22,7 @@ import {
   NIGHT_AMBIENT_LIGHT_TRAVEL_DISTANCE_MULTIPLIER,
   NIGHT_AMBIENT_LIGHT_TRAVEL_SPEED_MULTIPLIER
 } from './ambientLightMotionConfig';
+import { AMBIENT_PARTICLE_DENSITY_MULTIPLIER_BY_BIOME } from './ambientParticleDensityConfig';
 import { biomeAtTile, Biome } from './generation/biomeGenerator';
 import { randomAtTile } from './generation/noise';
 import { WORLD_TILE_SIZE } from './worldConfig';
@@ -149,26 +150,38 @@ export class AmbientParticleManager {
           continue;
         }
 
-        const kind = this.kindForBiome(biome, randomAtTile(this.seed, cellX, cellY, 0x3bc6d2a7));
-        if (!kind) {
-          continue;
-        }
-
         const variation = randomAtTile(this.seed, cellX, cellY, 0xa54cd63b);
-        const nightLight = this.nightLightFor(biome, kind, variation);
-        candidates.push({
-          ...this.particleIdentity(cellX, cellY, 'base', 0x1d82f961),
-          baseX: (cellX + 0.12 + randomAtTile(this.seed, cellX, cellY, 0x2ebf9541) * 0.76) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
-          baseY: (cellY + 0.1 + randomAtTile(this.seed, cellX, cellY, 0x9f8c1ad5) * 0.8) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
-          phase: randomAtTile(this.seed, cellX, cellY, 0x64e19f25) * Math.PI * 2,
-          driftSpeed: 0.56 + variation * 0.82,
-          size: 2 + variation * 3.4,
-          color: this.colorForKind(kind, variation),
-          kind,
-          windStrength: 18 + randomAtTile(this.seed, cellX, cellY, 0x4d81e8b7) * 32,
-          ...this.tuneNightLight(biome, cellX, cellY, 0x6b73c12d, nightLight),
-          priority: randomAtTile(this.seed, cellX, cellY, 0x1d82f961)
-        });
+        const densityMultiplier = Math.max(0, AMBIENT_PARTICLE_DENSITY_MULTIPLIER_BY_BIOME[biome]);
+        const guaranteedCount = Math.floor(densityMultiplier);
+        const fractionalCount = densityMultiplier - guaranteedCount;
+        const count = guaranteedCount + (randomAtTile(this.seed, cellX, cellY, 0x3cf4c7e9) < fractionalCount ? 1 : 0);
+        for (let particleIndex = 0; particleIndex < count; particleIndex += 1) {
+          // Index zero deliberately keeps the original salts, so density 1 preserves the
+          // established seed layout exactly. Extra indices add visible, deterministic motion.
+          const saltOffset = particleIndex === 0 ? 0 : particleIndex * 0x45d9f3b;
+          const particleVariation = particleIndex === 0
+            ? variation
+            : randomAtTile(this.seed, cellX, cellY, 0xa54cd63b + saltOffset);
+          const kind = this.kindForBiome(biome, randomAtTile(this.seed, cellX, cellY, 0x3bc6d2a7 + saltOffset));
+          if (!kind) {
+            continue;
+          }
+          const nightLight = this.nightLightFor(biome, kind, particleVariation);
+          const variant = particleIndex === 0 ? 'base' : `base-${particleIndex}`;
+          candidates.push({
+            ...this.particleIdentity(cellX, cellY, variant, 0x1d82f961 + saltOffset),
+            baseX: (cellX + 0.12 + randomAtTile(this.seed, cellX, cellY, 0x2ebf9541 + saltOffset) * 0.76) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
+            baseY: (cellY + 0.1 + randomAtTile(this.seed, cellX, cellY, 0x9f8c1ad5 + saltOffset) * 0.8) * AMBIENT_PARTICLE_CELL_SIZE_PIXELS,
+            phase: randomAtTile(this.seed, cellX, cellY, 0x64e19f25 + saltOffset) * Math.PI * 2,
+            driftSpeed: 0.56 + particleVariation * 0.82,
+            size: 2 + particleVariation * 3.4,
+            color: this.colorForKind(kind, particleVariation),
+            kind,
+            windStrength: 18 + randomAtTile(this.seed, cellX, cellY, 0x4d81e8b7 + saltOffset) * 32,
+            ...this.tuneNightLight(biome, cellX, cellY, 0x6b73c12d + saltOffset, nightLight),
+            priority: randomAtTile(this.seed, cellX, cellY, 0x1d82f961 + saltOffset)
+          });
+        }
 
         // Cold highlands get an additional drifting mote layer so snowfields and mountain
         // passes feel active even when their terrain features are sparse.
