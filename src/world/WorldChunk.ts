@@ -97,6 +97,14 @@ interface TerrainMaterialPixels {
   pixels: Uint8ClampedArray;
 }
 
+interface CaveTerrainInfluence {
+  centerWorldX: number;
+  centerWorldY: number;
+  radiusPixels: number;
+  forwardX: number;
+  forwardY: number;
+}
+
 const terrainMaterialPixels = new Map<string, TerrainMaterialPixels>();
 
 export class WorldChunk {
@@ -421,8 +429,7 @@ export class WorldChunk {
     const worldY = this.y * CHUNK_SIZE_PIXELS;
     const waveCandidates: Array<WaterWave & { priority: number }> = [];
     const terrainVertexColors = this.createTerrainVertexColors();
-    this.paintContinuousTerrain(context, terrainVertexColors);
-    this.paintCaveTerrainFormations(context);
+    this.paintContinuousTerrain(context, terrainVertexColors, this.collectCaveTerrainInfluences());
     // Compact alpha masks are built once while the baked terrain is sampled. The two TileSprites
     // above them can then flow across all water pixels without rebuilding a chunk canvas each tick.
     const waterMaskSize = CHUNK_SIZE_PIXELS / VISUAL_TERRAIN_CELL_SIZE;
@@ -526,77 +533,35 @@ export class WorldChunk {
     this.updateWaterAnimation(0);
   }
 
-  // The entire formation, including its void, is painted into the same terrain canvas as the
-  // biome material. There is no cave sprite, icon, or raster asset layered on top.
-  private paintCaveTerrainFormations(context: CanvasRenderingContext2D): void {
-    // Entrances can span roughly half a chunk, so paint the neighboring landmark centres too.
-    // Both chunks sample the same deterministic formation at their shared boundary.
-    const nearbyEntrances: CaveEntrance[] = [];
+  private collectCaveTerrainInfluences(): CaveTerrainInfluence[] {
+    const influences: CaveTerrainInfluence[] = [];
+    // An influence can cross a chunk edge, so query the surrounding generation cells once when
+    // baking this terrain texture. The compact cave-entry cache keeps this work bounded.
     for (let chunkY = this.y - 1; chunkY <= this.y + 1; chunkY += 1) {
       for (let chunkX = this.x - 1; chunkX <= this.x + 1; chunkX += 1) {
-        generateChunkCaveEntrances(this.seed, chunkX, chunkY).forEach((entrance) => nearbyEntrances.push(entrance));
+        const entrances = chunkX === this.x && chunkY === this.y
+          ? this.caveEntrances
+          : generateChunkCaveEntrances(this.seed, chunkX, chunkY);
+        entrances.forEach((entrance) => {
+          const radiusPixels = entrance.formationRadiusTiles * WORLD_TILE_SIZE;
+          const centerWorldX = (entrance.tileX + 0.5) * WORLD_TILE_SIZE;
+          const centerWorldY = (entrance.tileY + 0.5) * WORLD_TILE_SIZE;
+          const chunkCenterX = this.x * CHUNK_SIZE_PIXELS + CHUNK_SIZE_PIXELS / 2;
+          const chunkCenterY = this.y * CHUNK_SIZE_PIXELS + CHUNK_SIZE_PIXELS / 2;
+          if (Math.abs(centerWorldX - chunkCenterX) <= CHUNK_SIZE_PIXELS / 2 + radiusPixels * 1.6
+            && Math.abs(centerWorldY - chunkCenterY) <= CHUNK_SIZE_PIXELS / 2 + radiusPixels * 1.2) {
+            influences.push({
+              centerWorldX,
+              centerWorldY,
+              radiusPixels,
+              forwardX: Math.cos(entrance.mouthAngle),
+              forwardY: Math.sin(entrance.mouthAngle),
+            });
+          }
+        });
       }
     }
-    nearbyEntrances.forEach((entrance) => {
-      const centerX = (entrance.tileX - this.x * CHUNK_SIZE_TILES + 0.5) * WORLD_TILE_SIZE;
-      const centerY = (entrance.tileY - this.y * CHUNK_SIZE_TILES + 0.5) * WORLD_TILE_SIZE;
-      const radius = entrance.formationRadiusTiles * WORLD_TILE_SIZE;
-      const elongatedX = radius * 1.45;
-      const elongatedY = radius * 0.94;
-      const palette = entrance.biome === Biome.Desert
-        ? { rim: '#8d6238', light: '#c69559', dark: '#4d3524', void: '#100d0c' }
-        : entrance.biome === Biome.Snow
-          ? { rim: '#758e99', light: '#c8e2e5', dark: '#3c4d57', void: '#090d11' }
-          : entrance.biome === Biome.Forest || entrance.biome === Biome.Swamp
-            ? { rim: '#556347', light: '#8b9a6a', dark: '#293828', void: '#080b09' }
-            : { rim: '#66706d', light: '#a8aea2', dark: '#373c3b', void: '#080a0b' };
-      context.save();
-      context.translate(centerX, centerY);
-      context.rotate(entrance.mouthAngle);
-      const gradient = context.createRadialGradient(-radius * 0.18, -radius * 0.08, radius * 0.08, 0, 0, elongatedX);
-      gradient.addColorStop(0, `${palette.dark}c9`);
-      gradient.addColorStop(0.48, `${palette.rim}70`);
-      gradient.addColorStop(1, `${palette.rim}00`);
-      context.fillStyle = gradient;
-      context.beginPath();
-      context.ellipse(0, radius * 0.1, elongatedX, elongatedY, 0, 0, Math.PI * 2);
-      context.fill();
-
-      // Overlapping ledges form a collapsed ravine rather than a single outlined mouth.
-      for (let ledge = 0; ledge < 6; ledge += 1) {
-        const offset = (ledge - 2.5) * radius * 0.2;
-        context.globalAlpha = 0.22 + ledge * 0.045;
-        context.fillStyle = ledge % 2 ? palette.rim : palette.dark;
-        context.beginPath();
-        context.ellipse(offset, radius * 0.06 + Math.sin(ledge * 1.7) * radius * 0.16, radius * (0.72 - ledge * 0.05), radius * 0.19, 0.12 * ledge, 0, Math.PI * 2);
-        context.fill();
-      }
-
-      const voidGradient = context.createRadialGradient(-radius * 0.08, -radius * 0.04, radius * 0.08, 0, radius * 0.05, radius * 0.88);
-      voidGradient.addColorStop(0, '#030405');
-      voidGradient.addColorStop(0.56, palette.void);
-      voidGradient.addColorStop(1, `${palette.dark}00`);
-      context.globalAlpha = 0.98;
-      context.fillStyle = voidGradient;
-      context.beginPath();
-      context.moveTo(-radius * 0.82, radius * 0.2);
-      context.bezierCurveTo(-radius * 0.69, -radius * 0.54, -radius * 0.18, -radius * 0.74, radius * 0.35, -radius * 0.47);
-      context.bezierCurveTo(radius * 0.82, -radius * 0.22, radius * 0.77, radius * 0.36, radius * 0.35, radius * 0.58);
-      context.bezierCurveTo(-radius * 0.16, radius * 0.76, -radius * 0.68, radius * 0.54, -radius * 0.82, radius * 0.2);
-      context.fill();
-
-      for (let rock = 0; rock < 36; rock += 1) {
-        const angle = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x7a01 + rock) * Math.PI * 2;
-        const distance = radius * (0.82 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x7b41 + rock) * 0.58);
-        const size = 2 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x7c91 + rock) * 7;
-        context.globalAlpha = 0.24 + (rock % 4) * 0.07;
-        context.fillStyle = rock % 3 ? palette.rim : palette.light;
-        context.beginPath();
-        context.ellipse(Math.cos(angle) * distance, Math.sin(angle) * distance * 0.62, size * 1.4, size, angle, 0, Math.PI * 2);
-        context.fill();
-      }
-      context.restore();
-    });
+    return influences;
   }
 
   private oceanShoreNormal(tileX: number, tileY: number): { x: number; y: number } {
@@ -790,7 +755,8 @@ export class WorldChunk {
 
   private paintContinuousTerrain(
     context: CanvasRenderingContext2D,
-    vertices: readonly (readonly TerrainVisualVertex[])[]
+    vertices: readonly (readonly TerrainVisualVertex[])[],
+    caveInfluences: readonly CaveTerrainInfluence[]
   ): void {
     const imageData = context.createImageData(CHUNK_SIZE_PIXELS, CHUNK_SIZE_PIXELS);
     const pixels = imageData.data;
@@ -819,6 +785,10 @@ export class WorldChunk {
       const top = topLeft + (topRight - topLeft) * horizontalAmount;
       const bottom = bottomLeft + (bottomRight - bottomLeft) * horizontalAmount;
       return top + (bottom - top) * verticalAmount;
+    };
+    const smoothStep = (value: number): number => {
+      const clamped = Math.max(0, Math.min(1, value));
+      return clamped * clamped * (3 - 2 * clamped);
     };
     let pixel = 0;
 
@@ -919,6 +889,9 @@ export class WorldChunk {
             green += (252 - green) * snowMoundAmount;
             blue += (255 - blue) * snowMoundAmount;
 
+            const worldPixelX = this.x * CHUNK_SIZE_PIXELS + cellX * VISUAL_TERRAIN_CELL_SIZE + offsetX;
+            const worldPixelY = this.y * CHUNK_SIZE_PIXELS + cellY * VISUAL_TERRAIN_CELL_SIZE + offsetY;
+
             // Generated materials are crossfaded exactly like the base colour. Sampling the
             // strongest two fields avoids a texture hand-off line, while keeping chunk baking
             // compact enough for streaming terrain.
@@ -967,8 +940,6 @@ export class WorldChunk {
               secondaryWeight = snowWeight;
             }
             if (primaryMaterial && primaryWeight > 0.01) {
-              const worldPixelX = this.x * CHUNK_SIZE_PIXELS + cellX * VISUAL_TERRAIN_CELL_SIZE + offsetX;
-              const worldPixelY = this.y * CHUNK_SIZE_PIXELS + cellY * VISUAL_TERRAIN_CELL_SIZE + offsetY;
               const primaryX = ((worldPixelX % primaryMaterial.width) + primaryMaterial.width) % primaryMaterial.width;
               const primaryY = ((worldPixelY % primaryMaterial.height) + primaryMaterial.height) % primaryMaterial.height;
               const primaryPixel = (primaryY * primaryMaterial.width + primaryX) * 4;
@@ -989,6 +960,44 @@ export class WorldChunk {
               green += (materialGreen - green) * materialBlend;
               blue += (materialBlue - blue) * materialBlend;
             }
+
+            // Cave formations modify the same per-pixel climate/material result. Rotating the
+            // local coordinates gives each entrance an angled, sinking ravine and a tapered
+            // dark passage rather than a vertical or stamped shape.
+            caveInfluences.forEach((cave) => {
+              const deltaX = worldPixelX - cave.centerWorldX;
+              const deltaY = worldPixelY - cave.centerWorldY;
+              const forward = deltaX * cave.forwardX + deltaY * cave.forwardY;
+              const side = -deltaX * cave.forwardY + deltaY * cave.forwardX;
+              const outer = Math.sqrt(
+                (forward / (cave.radiusPixels * 1.48)) ** 2
+                + (side / (cave.radiusPixels * 0.92)) ** 2
+              );
+              if (outer >= 1) {
+                return;
+              }
+              const depression = 1 - smoothStep(outer);
+              const rim = smoothStep((outer - 0.42) / 0.42) * (1 - smoothStep((outer - 0.88) / 0.12));
+              // The void is shifted down the local forward axis, forming a sloped entrance
+              // that visually cuts through the surrounding rock rather than drilling straight down.
+              const shiftedForward = forward + cave.radiusPixels * 0.18;
+              const passage = 1 - (
+                (shiftedForward / (cave.radiusPixels * 0.88)) ** 2
+                + (side / (cave.radiusPixels * 0.48)) ** 2
+              );
+              const voidAmount = smoothStep(passage) * smoothStep((forward + cave.radiusPixels * 0.58) / (cave.radiusPixels * 0.72));
+              const rockExposure = Math.min(1, rim * 0.86 + depression * 0.29);
+              red += (75 - red) * rockExposure;
+              green += (83 - green) * rockExposure;
+              blue += (82 - blue) * rockExposure;
+              const wallShade = depression * (0.12 + (materialNoise - 0.5) * 0.08);
+              red *= 1 - wallShade;
+              green *= 1 - wallShade;
+              blue *= 1 - wallShade;
+              red += (7 - red) * voidAmount;
+              green += (9 - green) * voidAmount;
+              blue += (10 - blue) * voidAmount;
+            });
 
             pixels[pixel] = clampChannel(red);
             pixels[pixel + 1] = clampChannel(green);
