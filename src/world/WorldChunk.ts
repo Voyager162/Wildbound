@@ -384,14 +384,6 @@ export class WorldChunk {
         );
       }
     });
-    this.caveEntrances.forEach((entrance) => {
-      this.drawCaveEntrance(
-        entrance,
-        (entrance.tileX - this.x * CHUNK_SIZE_TILES) * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING,
-        (entrance.tileY - this.y * CHUNK_SIZE_TILES) * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING
-      );
-    });
-
     this.featureGraphics.generateTexture(this.featureTextureKey, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
     this.featureGraphics.clear();
     this.syncAnimatedFeatureFoliage();
@@ -534,35 +526,74 @@ export class WorldChunk {
     this.updateWaterAnimation(0);
   }
 
-  // Broad, low-contrast erosion is painted directly into the terrain canvas before foreground
-  // rocks are added. This makes an entrance alter the biome material instead of floating on it.
+  // The entire formation, including its void, is painted into the same terrain canvas as the
+  // biome material. There is no cave sprite, icon, or raster asset layered on top.
   private paintCaveTerrainFormations(context: CanvasRenderingContext2D): void {
-    this.caveEntrances.forEach((entrance) => {
+    // Entrances can span roughly half a chunk, so paint the neighboring landmark centres too.
+    // Both chunks sample the same deterministic formation at their shared boundary.
+    const nearbyEntrances: CaveEntrance[] = [];
+    for (let chunkY = this.y - 1; chunkY <= this.y + 1; chunkY += 1) {
+      for (let chunkX = this.x - 1; chunkX <= this.x + 1; chunkX += 1) {
+        generateChunkCaveEntrances(this.seed, chunkX, chunkY).forEach((entrance) => nearbyEntrances.push(entrance));
+      }
+    }
+    nearbyEntrances.forEach((entrance) => {
       const centerX = (entrance.tileX - this.x * CHUNK_SIZE_TILES + 0.5) * WORLD_TILE_SIZE;
       const centerY = (entrance.tileY - this.y * CHUNK_SIZE_TILES + 0.5) * WORLD_TILE_SIZE;
       const radius = entrance.formationRadiusTiles * WORLD_TILE_SIZE;
-      const elongatedX = radius * (1.34 + Math.abs(Math.cos(entrance.mouthAngle)) * 0.18);
-      const elongatedY = radius * (0.84 + Math.abs(Math.sin(entrance.mouthAngle)) * 0.2);
-      const gradient = context.createRadialGradient(centerX - radius * 0.18, centerY - radius * 0.08, radius * 0.08, centerX, centerY, elongatedX);
-      gradient.addColorStop(0, 'rgba(25, 28, 27, 0.62)');
-      gradient.addColorStop(0.5, 'rgba(54, 49, 39, 0.30)');
-      gradient.addColorStop(1, 'rgba(33, 28, 22, 0)');
+      const elongatedX = radius * 1.45;
+      const elongatedY = radius * 0.94;
+      const palette = entrance.biome === Biome.Desert
+        ? { rim: '#8d6238', light: '#c69559', dark: '#4d3524', void: '#100d0c' }
+        : entrance.biome === Biome.Snow
+          ? { rim: '#758e99', light: '#c8e2e5', dark: '#3c4d57', void: '#090d11' }
+          : entrance.biome === Biome.Forest || entrance.biome === Biome.Swamp
+            ? { rim: '#556347', light: '#8b9a6a', dark: '#293828', void: '#080b09' }
+            : { rim: '#66706d', light: '#a8aea2', dark: '#373c3b', void: '#080a0b' };
       context.save();
+      context.translate(centerX, centerY);
+      context.rotate(entrance.mouthAngle);
+      const gradient = context.createRadialGradient(-radius * 0.18, -radius * 0.08, radius * 0.08, 0, 0, elongatedX);
+      gradient.addColorStop(0, `${palette.dark}c9`);
+      gradient.addColorStop(0.48, `${palette.rim}70`);
+      gradient.addColorStop(1, `${palette.rim}00`);
       context.fillStyle = gradient;
       context.beginPath();
-      context.ellipse(centerX, centerY + radius * 0.1, elongatedX, elongatedY, entrance.mouthAngle * 0.12, 0, Math.PI * 2);
+      context.ellipse(0, radius * 0.1, elongatedX, elongatedY, 0, 0, Math.PI * 2);
       context.fill();
-      context.globalAlpha = 0.22;
-      context.strokeStyle = entrance.biome === Biome.Desert ? '#5f4428' : entrance.biome === Biome.Snow ? '#526572' : '#38443a';
-      context.lineWidth = 2;
-      for (let crack = 0; crack < 9; crack += 1) {
-        const angle = entrance.mouthAngle + (crack / 9 - 0.5) * Math.PI * 1.55;
-        const start = radius * (0.36 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x5a71 + crack) * 0.18);
-        const end = radius * (0.75 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x6b91 + crack) * 0.24);
+
+      // Overlapping ledges form a collapsed ravine rather than a single outlined mouth.
+      for (let ledge = 0; ledge < 6; ledge += 1) {
+        const offset = (ledge - 2.5) * radius * 0.2;
+        context.globalAlpha = 0.22 + ledge * 0.045;
+        context.fillStyle = ledge % 2 ? palette.rim : palette.dark;
         context.beginPath();
-        context.moveTo(centerX + Math.cos(angle) * start, centerY + Math.sin(angle) * start);
-        context.lineTo(centerX + Math.cos(angle + 0.18) * end, centerY + Math.sin(angle + 0.18) * end);
-        context.stroke();
+        context.ellipse(offset, radius * 0.06 + Math.sin(ledge * 1.7) * radius * 0.16, radius * (0.72 - ledge * 0.05), radius * 0.19, 0.12 * ledge, 0, Math.PI * 2);
+        context.fill();
+      }
+
+      const voidGradient = context.createRadialGradient(-radius * 0.08, -radius * 0.04, radius * 0.08, 0, radius * 0.05, radius * 0.88);
+      voidGradient.addColorStop(0, '#030405');
+      voidGradient.addColorStop(0.56, palette.void);
+      voidGradient.addColorStop(1, `${palette.dark}00`);
+      context.globalAlpha = 0.98;
+      context.fillStyle = voidGradient;
+      context.beginPath();
+      context.moveTo(-radius * 0.82, radius * 0.2);
+      context.bezierCurveTo(-radius * 0.69, -radius * 0.54, -radius * 0.18, -radius * 0.74, radius * 0.35, -radius * 0.47);
+      context.bezierCurveTo(radius * 0.82, -radius * 0.22, radius * 0.77, radius * 0.36, radius * 0.35, radius * 0.58);
+      context.bezierCurveTo(-radius * 0.16, radius * 0.76, -radius * 0.68, radius * 0.54, -radius * 0.82, radius * 0.2);
+      context.fill();
+
+      for (let rock = 0; rock < 36; rock += 1) {
+        const angle = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x7a01 + rock) * Math.PI * 2;
+        const distance = radius * (0.82 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x7b41 + rock) * 0.58);
+        const size = 2 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x7c91 + rock) * 7;
+        context.globalAlpha = 0.24 + (rock % 4) * 0.07;
+        context.fillStyle = rock % 3 ? palette.rim : palette.light;
+        context.beginPath();
+        context.ellipse(Math.cos(angle) * distance, Math.sin(angle) * distance * 0.62, size * 1.4, size, angle, 0, Math.PI * 2);
+        context.fill();
       }
       context.restore();
     });
@@ -1344,53 +1375,6 @@ export class WorldChunk {
         break;
       }
     }
-  }
-
-  private drawCaveEntrance(entrance: CaveEntrance, tileX: number, tileY: number): void {
-    const graphics = this.featureGraphics;
-    const centerX = tileX + WORLD_TILE_SIZE / 2;
-    const centerY = tileY + WORLD_TILE_SIZE / 2 + 8;
-    const radius = entrance.formationRadiusTiles * WORLD_TILE_SIZE;
-    const palette = entrance.biome === Biome.Desert
-      ? { shadow: 0x6a482a, rock: 0x8a633d, light: 0xc89757, moss: 0x8d8041 }
-      : entrance.biome === Biome.Snow
-        ? { shadow: 0x4a5962, rock: 0x6e818a, light: 0xc6dde0, moss: 0x91abb0 }
-        : entrance.biome === Biome.Forest || entrance.biome === Biome.Swamp
-          ? { shadow: 0x283a2b, rock: 0x4c5d47, light: 0x819262, moss: 0x6f8b45 }
-          : { shadow: 0x353837, rock: 0x5d6768, light: 0x9ba49d, moss: 0x728158 };
-
-    // The foreground is a broken exposed rock face. Its larger silhouette works with the
-    // terrain-canvas erosion beneath it, so the dark opening reads as a cut into a hillside.
-    graphics.fillStyle(palette.shadow, 0.42);
-    graphics.fillEllipse(centerX + 4, centerY + radius * 0.34, radius * 2.5, radius * 1.12);
-    for (let rock = 0; rock < 17; rock += 1) {
-      const angle = entrance.mouthAngle + (rock / 17) * Math.PI * 2;
-      const distance = radius * (0.66 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x7a01 + rock) * 0.4);
-      const size = 7 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x7b41 + rock) * 15;
-      const x = centerX + Math.cos(angle) * distance;
-      const y = centerY + Math.sin(angle) * distance * 0.62;
-      graphics.fillStyle(rock % 3 === 0 ? palette.light : palette.rock, 0.72 + (rock % 4) * 0.06);
-      graphics.fillEllipse(x, y, size * 1.28, size * 0.8);
-      if (rock % 3 === 0) {
-        graphics.fillStyle(palette.moss, 0.52);
-        graphics.fillEllipse(x - size * 0.17, y - size * 0.12, size * 0.54, size * 0.22);
-      }
-    }
-    graphics.fillStyle(0x07090a, 0.98);
-    graphics.beginPath();
-    graphics.moveTo(centerX - radius * 0.66, centerY + radius * 0.2);
-    graphics.lineTo(centerX - radius * 0.45, centerY - radius * 0.44);
-    graphics.lineTo(centerX + radius * 0.18, centerY - radius * 0.56);
-    graphics.lineTo(centerX + radius * 0.64, centerY - radius * 0.12);
-    graphics.lineTo(centerX + radius * 0.5, centerY + radius * 0.35);
-    graphics.lineTo(centerX - radius * 0.1, centerY + radius * 0.48);
-    graphics.lineTo(centerX - radius * 0.66, centerY + radius * 0.2);
-    graphics.closePath();
-    graphics.fillPath();
-    graphics.fillStyle(0x1c2222, 0.8);
-    graphics.fillEllipse(centerX - radius * 0.05, centerY - radius * 0.02, radius * 0.92, radius * 0.37);
-    graphics.fillStyle(0x030405, 0.9);
-    graphics.fillEllipse(centerX + radius * 0.12, centerY + radius * 0.18, radius * 0.74, radius * 0.25);
   }
 
   private tileKey(tileX: number, tileY: number): string {

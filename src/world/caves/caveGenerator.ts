@@ -3,6 +3,14 @@ import { featureAtTile } from '../generation/featureGenerator';
 import { randomAtTile } from '../generation/noise';
 import { surfaceAtTile } from '../generation/terrainGenerator';
 import { CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from '../worldConfig';
+import {
+  CAVE_FORMATION_RADIUS_MAX_TILES,
+  CAVE_FORMATION_RADIUS_MIN_TILES,
+  CAVE_INTERIOR_DIMENSIONS,
+  CAVE_MIN_SEPARATION_TILES,
+  CAVE_SPAWN_CHANCE_BY_BIOME,
+  CAVE_WORLD_ORIGIN_STRIDE,
+} from './caveGenerationConfig';
 
 export type CaveDepth = 'shallow' | 'medium' | 'deep';
 export type CaveOreType = 'coal' | 'iron' | 'gold' | 'diamond';
@@ -19,22 +27,17 @@ export interface CaveLayout {
 }
 export interface CaveWorldOrigin { readonly x: number; readonly y: number; }
 
-// Caves are landmarks, not repeated map decoration.
-const CAVE_CHANCE_BY_BIOME: Readonly<Partial<Record<Biome, number>>> = {
-  [Biome.Mountains]: 0.00036, [Biome.Hills]: 0.00011, [Biome.Snow]: 0.00005,
-  [Biome.Forest]: 0.000018, [Biome.Plains]: 0.000012, [Biome.Desert]: 0.00001, [Biome.Swamp]: 0.000006,
-};
 const CAVE_ROLL_SALT = 71_209;
 const CAVE_PRIORITY_SALT = 71_211;
 const CAVE_DEPTH_SALT = 71_213;
 const CAVE_FORMATION_SALT = 71_217;
 const CAVE_GRAPH_SALT = 71_219;
 const CAVE_ORE_SALT = 71_227;
-const CAVE_MIN_SEPARATION_TILES = 14;
 const CAVE_WORLD_OFFSET = 4_000_000;
-const CAVE_WORLD_STRIDE = 8_192;
+const CAVE_CHUNK_CACHE_LIMIT = 512;
+const caveChunkCache = new Map<string, readonly CaveEntrance[]>();
 
-const caveChanceAt = (seed: string, x: number, y: number): number => CAVE_CHANCE_BY_BIOME[biomeAtTile(seed, x, y)] ?? 0;
+const caveChanceAt = (seed: string, x: number, y: number): number => CAVE_SPAWN_CHANCE_BY_BIOME[biomeAtTile(seed, x, y)];
 const isRawCaveCandidate = (seed: string, x: number, y: number): boolean => randomAtTile(seed, x, y, CAVE_ROLL_SALT) < caveChanceAt(seed, x, y);
 
 const depthForEntrance = (seed: string, x: number, y: number): CaveDepth => {
@@ -61,22 +64,29 @@ export const caveEntranceAtTile = (seed: string, tileX: number, tileY: number): 
   const formation = randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT);
   return {
     id: `${tileX}:${tileY}`, tileX, tileY, biome: biomeAtTile(seed, tileX, tileY), depth: depthForEntrance(seed, tileX, tileY),
-    formationRadiusTiles: 1.85 + formation * 1.1,
+    formationRadiusTiles: CAVE_FORMATION_RADIUS_MIN_TILES + formation * (CAVE_FORMATION_RADIUS_MAX_TILES - CAVE_FORMATION_RADIUS_MIN_TILES),
     mouthAngle: randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT + 1) * Math.PI * 2,
   };
 };
 
 export const generateChunkCaveEntrances = (seed: string, chunkX: number, chunkY: number): readonly CaveEntrance[] => {
+  const cacheKey = `${seed}:${chunkX}:${chunkY}`;
+  const cached = caveChunkCache.get(cacheKey);
+  if (cached) return cached;
   const found: CaveEntrance[] = [];
   for (let y = 0; y < CHUNK_SIZE_TILES; y += 1) for (let x = 0; x < CHUNK_SIZE_TILES; x += 1) {
     const entrance = caveEntranceAtTile(seed, chunkX * CHUNK_SIZE_TILES + x, chunkY * CHUNK_SIZE_TILES + y);
     if (entrance) found.push(entrance);
   }
+  if (caveChunkCache.size >= CAVE_CHUNK_CACHE_LIMIT) {
+    const oldestKey = caveChunkCache.keys().next().value;
+    if (oldestKey) caveChunkCache.delete(oldestKey);
+  }
+  caveChunkCache.set(cacheKey, found);
   return found;
 };
 
-const caveDimensions = (depth: CaveDepth): { width: number; height: number; chambers: number } => depth === 'deep'
-  ? { width: 96, height: 76, chambers: 13 } : depth === 'medium' ? { width: 70, height: 56, chambers: 9 } : { width: 46, height: 38, chambers: 6 };
+const caveDimensions = (depth: CaveDepth): { width: number; height: number; chambers: number } => CAVE_INTERIOR_DIMENSIONS[depth];
 interface CaveChamber { readonly x: number; readonly y: number; readonly radiusX: number; readonly radiusY: number; }
 const graphRandom = (seed: string, cave: CaveEntrance, index: number, salt: number): number => randomAtTile(seed, cave.tileX * 97 + index * 23, cave.tileY * 97 - index * 29, CAVE_GRAPH_SALT + salt);
 
@@ -157,5 +167,5 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
   return { entrance, width, height, entranceTileX, entranceTileY, floorTiles, depthByTile, ores };
 };
 
-export const caveWorldOrigin = (entrance: CaveEntrance): CaveWorldOrigin => ({ x: CAVE_WORLD_OFFSET + entrance.tileX * CAVE_WORLD_STRIDE, y: CAVE_WORLD_OFFSET + entrance.tileY * CAVE_WORLD_STRIDE });
+export const caveWorldOrigin = (entrance: CaveEntrance): CaveWorldOrigin => ({ x: CAVE_WORLD_OFFSET + entrance.tileX * CAVE_WORLD_ORIGIN_STRIDE, y: CAVE_WORLD_OFFSET + entrance.tileY * CAVE_WORLD_ORIGIN_STRIDE });
 export const caveWorldTilePosition = (origin: CaveWorldOrigin, tileX: number, tileY: number): CaveWorldOrigin => ({ x: origin.x + tileX * WORLD_TILE_SIZE + WORLD_TILE_SIZE / 2, y: origin.y + tileY * WORLD_TILE_SIZE + WORLD_TILE_SIZE / 2 });

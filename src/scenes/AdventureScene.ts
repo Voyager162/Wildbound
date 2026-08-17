@@ -1289,14 +1289,18 @@ export class AdventureScene extends Phaser.Scene {
         }
         [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach(([offsetX, offsetY]) => {
           if (layout.floorTiles[y + offsetY][x + offsetX]) return;
-          graphics.fillStyle(0x1a2020, 0.92);
-          if (offsetX < 0) graphics.fillRect(worldX, worldY, 7, WORLD_TILE_SIZE);
-          else if (offsetX > 0) graphics.fillRect(worldX + WORLD_TILE_SIZE - 7, worldY, 7, WORLD_TILE_SIZE);
-          else if (offsetY < 0) graphics.fillRect(worldX, worldY, WORLD_TILE_SIZE, 7);
-          else graphics.fillRect(worldX, worldY + WORLD_TILE_SIZE - 7, WORLD_TILE_SIZE, 7);
+          // Broken facets and rubble soften the logical collision grid into a continuous rock wall.
+          const edgeX = worldX + 16 + offsetX * 15;
+          const edgeY = worldY + 16 + offsetY * 15;
+          const sideX = -offsetY * 11;
+          const sideY = offsetX * 11;
+          graphics.fillStyle(0x1a2020, 0.94);
+          graphics.fillTriangle(edgeX + sideX, edgeY + sideY, edgeX - sideX, edgeY - sideY, edgeX + offsetX * 16, edgeY + offsetY * 16);
           const rubble = 4 + detail * 5;
           graphics.fillStyle(0x5c635d, 0.84);
-          graphics.fillEllipse(worldX + 16 + offsetX * 12, worldY + 16 + offsetY * 12, rubble * 1.6, rubble);
+          graphics.fillEllipse(edgeX, edgeY, rubble * 1.9, rubble * 1.25);
+          graphics.fillStyle(0x899087, 0.18);
+          graphics.fillEllipse(edgeX - sideX * 0.3, edgeY - sideY * 0.3, rubble, rubble * 0.45);
         });
       }
     }
