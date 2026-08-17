@@ -322,6 +322,12 @@ body {
   letter-spacing: 0;
 }
 
+.inventory-equipped {
+  margin: -7px 2px 13px;
+  color: #d9edaa;
+  font: 700 12px/1.3 "Cascadia Mono", Consolas, monospace;
+}
+
 .inventory-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -399,9 +405,61 @@ body {
   filter: drop-shadow(0 12px 10px rgba(0, 0, 0, 0.42));
 }
 
+.inventory-slot.is-equipped {
+  border-color: #f3d979;
+  box-shadow: inset 0 0 0 2px rgba(246, 219, 112, 0.32), 0 0 12px rgba(240, 205, 96, 0.18);
+}
+
 .resource-icon__detail {
   position: absolute;
   display: block;
+}
+
+.tool-icon {
+  position: relative;
+  display: block;
+  width: 36px;
+  height: 36px;
+  filter: drop-shadow(0 2px 1px rgba(0, 0, 0, 0.35));
+}
+
+.tool-icon::before {
+  position: absolute;
+  left: 16px;
+  top: 5px;
+  width: 5px;
+  height: 29px;
+  border: 1px solid #56321e;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #6e3e20, #c78a4c, #6a3c20);
+  content: "";
+  transform: rotate(42deg);
+  transform-origin: center bottom;
+}
+
+.tool-icon::after {
+  position: absolute;
+  border: 2px solid #52626a;
+  background: linear-gradient(135deg, #d9e1df, #809097 68%, #4d5c64);
+  content: "";
+}
+
+.tool-icon--axe::after {
+  left: 5px;
+  top: 5px;
+  width: 20px;
+  height: 13px;
+  border-radius: 12px 4px 9px 4px;
+  transform: rotate(25deg) skewX(-16deg);
+}
+
+.tool-icon--pickaxe::after {
+  left: 4px;
+  top: 5px;
+  width: 27px;
+  height: 9px;
+  border-radius: 12px 12px 3px 3px;
+  transform: rotate(24deg);
 }
 
 .resource-icon--wood {
@@ -518,6 +576,115 @@ body {
   height: 22px;
   background: rgba(255, 255, 255, 0.72);
   transform: rotate(25deg);
+}
+
+.crafting-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 36;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(2, 12, 9, 0);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease, background-color 150ms ease;
+}
+
+.crafting-overlay.is-open {
+  background: rgba(2, 12, 9, 0.5);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.crafting-panel {
+  width: min(510px, calc(100vw - 40px));
+  padding: 17px;
+  border: 2px solid #b5a777;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #303127, #171d17);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.52), inset 0 0 0 1px rgba(255, 245, 194, 0.1);
+  opacity: 0;
+  transform: translateY(10px) scale(0.94);
+  transition: opacity 160ms ease, transform 180ms cubic-bezier(0.18, 0.78, 0.3, 1.18);
+}
+
+.crafting-overlay.is-open .crafting-panel {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.crafting-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  color: #fff7dc;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.crafting-title span,
+.crafting-description,
+.crafting-recipe small,
+.crafting-recipe__ingredients {
+  color: #c6cbb0;
+  font: 600 12px/1.35 "Cascadia Mono", Consolas, monospace;
+  letter-spacing: 0;
+}
+
+.crafting-description {
+  margin: 6px 0 13px;
+}
+
+.crafting-recipes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.crafting-recipe {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 88px;
+  padding: 10px;
+  border: 1px solid #77775c;
+  border-radius: 8px;
+  color: #eef3df;
+  background: linear-gradient(145deg, #3b4030, #242b21);
+  cursor: pointer;
+  text-align: left;
+}
+
+.crafting-recipe:hover:not(:disabled) {
+  border-color: #f2dc84;
+  background: linear-gradient(145deg, #505238, #2a3426);
+}
+
+.crafting-recipe:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.crafting-recipe__details {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.crafting-recipe strong {
+  color: #fff8df;
+  font-size: 14px;
+}
+
+.crafting-recipe__ingredients {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #d1d7b6;
+  font-size: 10px;
 }
 
 

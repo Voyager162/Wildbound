@@ -1,5 +1,6 @@
 ﻿import type { InventorySlot } from '../player/Inventory';
 import type { SessionWorldStateData } from '../world/SessionWorldState';
+import { isToolId, type ToolId } from '../crafting/toolConfig';
 
 export interface SaveGameData {
   version: 1;
@@ -9,6 +10,9 @@ export interface SaveGameData {
     y: number;
   };
   inventory: Array<InventorySlot | null>;
+  equipment?: {
+    equippedTool: ToolId | null;
+  };
   world: SessionWorldStateData;
 }
 
@@ -24,5 +28,6 @@ export const isSaveGameData = (value: unknown): value is SaveGameData => {
     && Number.isFinite(save.player?.x)
     && Number.isFinite(save.player?.y)
     && Array.isArray(save.inventory)
+    && (!save.equipment || save.equipment.equippedTool === null || isToolId(save.equipment.equippedTool))
     && Boolean(save.world);
 };

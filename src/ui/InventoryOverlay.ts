@@ -1,5 +1,6 @@
-import type { Inventory, InventorySlot } from '../player/Inventory';
-import { resourceLabel, ResourceType } from '../world/resources';
+import { TOOL_DEFINITIONS, isToolId, type ToolId } from '../crafting/toolConfig';
+import type { Inventory, InventoryItem, InventorySlot } from '../player/Inventory';
+import { resourceLabel } from '../world/resources';
 
 export class InventoryOverlay {
   private readonly element: HTMLDivElement;
@@ -12,12 +13,15 @@ export class InventoryOverlay {
   private dragOriginY = 0;
   private dragGrabOffsetX = 0;
   private dragGrabOffsetY = 0;
+  private dragHasMoved = false;
 
   constructor(
     parent: HTMLElement,
     private readonly inventory: Inventory,
     private readonly onChanged: () => void,
-    private readonly onDropOutside: (slot: InventorySlot) => void
+    private readonly onDropOutside: (slot: InventorySlot) => void,
+    private readonly equippedTool: () => ToolId | null,
+    private readonly onEquipTool: (tool: ToolId | null) => void
   ) {
     this.element = document.createElement('div');
     this.element.className = 'inventory-overlay';
@@ -34,9 +38,13 @@ export class InventoryOverlay {
     hint.textContent = 'E to close';
     title.append(hint);
 
+    const equipped = document.createElement('div');
+    equipped.className = 'inventory-equipped';
+    panel.append(title, equipped);
+
     this.grid = document.createElement('div');
     this.grid.className = 'inventory-grid';
-    panel.append(title, this.grid);
+    panel.append(this.grid);
     this.element.append(panel);
     parent.append(this.element);
     this.render();
@@ -62,23 +70,31 @@ export class InventoryOverlay {
 
   private render(): void {
     this.grid.replaceChildren();
+    const equippedLabel = this.element.querySelector<HTMLElement>('.inventory-equipped');
+    const equipped = this.equippedTool();
+    if (equippedLabel) {
+      equippedLabel.textContent = equipped ? `Equipped: ${TOOL_DEFINITIONS[equipped].label}` : 'Equipped: None';
+    }
 
     this.inventory.getSlots().forEach((slot, index) => {
       const slotElement = document.createElement('button');
       slotElement.type = 'button';
       slotElement.className = 'inventory-slot';
       slotElement.dataset.inventorySlot = String(index);
-      slotElement.setAttribute('aria-label', slot ? `${resourceLabel(slot.resource)}, ${slot.amount}` : 'Empty inventory slot');
+      slotElement.setAttribute('aria-label', slot ? `${this.itemLabel(slot.item)}, ${slot.amount}` : 'Empty inventory slot');
 
       if (slot) {
         const itemElement = document.createElement('div');
         itemElement.className = 'inventory-item';
-        itemElement.append(this.createItemIcon(slot.resource));
+        itemElement.append(this.createItemIcon(slot.item));
         const amount = document.createElement('span');
         amount.className = 'inventory-slot__amount';
         amount.textContent = String(slot.amount);
         itemElement.append(amount);
         slotElement.append(itemElement);
+        if (slot.item === equipped) {
+          slotElement.classList.add('is-equipped');
+        }
       }
 
       slotElement.addEventListener('pointerdown', (event) => this.beginDrag(event, index, slotElement));
@@ -103,6 +119,7 @@ export class InventoryOverlay {
     this.dragOriginY = rect.top;
     this.dragGrabOffsetX = event.clientX - rect.left;
     this.dragGrabOffsetY = event.clientY - rect.top;
+    this.dragHasMoved = false;
 
     sourceSlot.setPointerCapture(event.pointerId);
     sourceSlot.classList.add('is-dragging');
@@ -120,6 +137,9 @@ export class InventoryOverlay {
 
   private readonly handlePointerMove = (event: PointerEvent): void => {
     if (event.pointerId === this.activePointerId) {
+      this.dragHasMoved = this.dragHasMoved
+        || Math.abs(event.clientX - (this.dragOriginX + this.dragGrabOffsetX)) > 5
+        || Math.abs(event.clientY - (this.dragOriginY + this.dragGrabOffsetY)) > 5;
       this.positionDraggedItem(event.clientX, event.clientY);
     }
   };
@@ -134,10 +154,19 @@ export class InventoryOverlay {
     const targetIndex = target ? Number(target.dataset.inventorySlot) : Number.NaN;
     let changed = false;
 
-    if (sourceIndex !== null && Number.isInteger(targetIndex)) {
+    if (sourceIndex !== null && targetIndex === sourceIndex && !this.dragHasMoved) {
+      const slot = this.inventory.getSlots()[sourceIndex];
+      if (slot && isToolId(slot.item)) {
+        this.onEquipTool(this.equippedTool() === slot.item ? null : slot.item);
+        changed = true;
+      }
+    } else if (sourceIndex !== null && Number.isInteger(targetIndex)) {
       changed = this.inventory.moveSlot(sourceIndex, targetIndex);
     } else if (sourceIndex !== null) {
-      const dropped = this.inventory.takeSlot(sourceIndex);
+      const sourceSlot = this.inventory.getSlots()[sourceIndex];
+      // World drops are resource entities today. Keep tools safely in the inventory rather than
+      // discarding them while that future drop representation does not exist yet.
+      const dropped = sourceSlot && !isToolId(sourceSlot.item) ? this.inventory.takeSlot(sourceIndex) : null;
       if (dropped) {
         this.onDropOutside(dropped);
         changed = true;
@@ -184,6 +213,7 @@ export class InventoryOverlay {
     this.dragOriginY = 0;
     this.dragGrabOffsetX = 0;
     this.dragGrabOffsetY = 0;
+    this.dragHasMoved = false;
   }
 
   private positionDraggedItem(clientX: number, clientY: number): void {
@@ -196,9 +226,17 @@ export class InventoryOverlay {
     this.dragItemElement.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0) scale(1.12)`;
   }
 
-  private createItemIcon(resource: ResourceType): HTMLSpanElement {
+  private itemLabel(item: InventoryItem): string {
+    return isToolId(item) ? TOOL_DEFINITIONS[item].label : resourceLabel(item);
+  }
+
+  private createItemIcon(item: InventoryItem): HTMLSpanElement {
     const icon = document.createElement('span');
-    icon.className = `resource-icon resource-icon--${resource.replaceAll(' ', '-')}`;
+    if (isToolId(item)) {
+      icon.className = `tool-icon tool-icon--${TOOL_DEFINITIONS[item].kind}`;
+    } else {
+      icon.className = `resource-icon resource-icon--${item.replaceAll(' ', '-')}`;
+    }
     icon.setAttribute('aria-hidden', 'true');
     const detail = document.createElement('span');
     detail.className = 'resource-icon__detail';

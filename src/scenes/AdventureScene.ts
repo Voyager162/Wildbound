@@ -7,6 +7,7 @@ import type { InteractionTarget } from '../player/interaction';
 import { isSaveGameData, type SaveGameData } from '../save/SaveGameData';
 import { DayNightOverlay } from '../ui/DayNightOverlay';
 import { InventoryOverlay } from '../ui/InventoryOverlay';
+import { CraftingOverlay } from '../ui/CraftingOverlay';
 import { MinimapOverlay } from '../ui/MinimapOverlay';
 import { NightAmbientOverlay } from '../ui/NightAmbientOverlay';
 import { WorldMapOverlay } from '../ui/WorldMapOverlay';
@@ -34,6 +35,10 @@ import {
 } from '../world/explorationConfig';
 import { landmarkAtTile, landmarksIntersectingTiles } from '../world/generation/landmarkGenerator';
 import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
+import { TERRAIN_MATERIAL_ASSETS } from '../world/terrainMaterialConfig';
+import { type CraftingRecipe } from '../crafting/recipeConfig';
+import { TOOL_DEFINITIONS, ToolId, isToolId, toolSpeedForFeature } from '../crafting/toolConfig';
+import { craftRecipe as applyCraftingRecipe } from '../crafting/craftingService';
 
 const BASE_PLAYER_SPEED = 220;
 const PLAYER_SPEED = BASE_PLAYER_SPEED * (PLAYER_SPEED_SCALE / 50);
@@ -48,6 +53,8 @@ const CAMERA_WORLD_VIEW_HEIGHT = 1440;
 const DEBUG_UPDATE_INTERVAL_MS = 250;
 const DROP_INTERACTION_INTERVAL_MS = 120;
 const SAVE_INTERVAL_MS = 900;
+const MINIMAP_UPDATE_INTERVAL_MS = 80;
+const NIGHT_AMBIENT_LIGHT_UPDATE_INTERVAL_MS = 33;
 const MINIMAP_TILES_PER_CELL = Math.max(1, Math.round(16 * (MINIMAP_AREA_SCALE / 50)));
 
 type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
@@ -62,6 +69,7 @@ export class AdventureScene extends Phaser.Scene {
   private sessionWorldState!: SessionWorldState;
   private inventory!: Inventory;
   private inventoryOverlay!: InventoryOverlay;
+  private craftingOverlay!: CraftingOverlay;
   private minimapOverlay!: MinimapOverlay;
   private dayNightOverlay!: DayNightOverlay;
   private nightAmbientOverlay!: NightAmbientOverlay;
@@ -74,6 +82,7 @@ export class AdventureScene extends Phaser.Scene {
   private harvestProgressGraphics!: Phaser.GameObjects.Graphics;
   private isDebugVisible = false;
   private inventoryOpen = false;
+  private craftingOpen = false;
   private worldMapOpen = false;
   private worldReady = false;
   private worldSeed = WORLD_SEED;
@@ -105,9 +114,17 @@ export class AdventureScene extends Phaser.Scene {
   private worldTimeMs = DAY_NIGHT_INITIAL_TIME_MS;
   private nightAmount = 0;
   private ambientLightAmount = 0;
+  private equippedTool: ToolId | null = null;
+  private lastMinimapUpdateMs = Number.NEGATIVE_INFINITY;
+  private lastMinimapTileX = Number.NaN;
+  private lastMinimapTileY = Number.NaN;
 
   constructor() {
     super('adventure');
+  }
+
+  preload(): void {
+    TERRAIN_MATERIAL_ASSETS.forEach(({ key, url }) => this.load.image(key, url));
   }
 
   create(): void {
@@ -158,6 +175,7 @@ export class AdventureScene extends Phaser.Scene {
     }) as MovementKeys;
     this.input.keyboard!.on('keydown-F3', this.toggleDebug, this);
     this.input.keyboard!.on('keydown-E', this.handlePrimaryAction, this);
+    this.input.keyboard!.on('keydown-C', this.handleCraftingKeyDown, this);
     this.input.keyboard!.on('keydown-F', this.handleWorldMapKeyDown, this);
     this.input.keyboard!.on('keydown-ESC', this.closeWorldMap, this);
 
@@ -171,8 +189,11 @@ export class AdventureScene extends Phaser.Scene {
       gameElement,
       this.inventory,
       () => this.markSaveDirty(),
-      (slot) => this.dropInventorySlot(slot)
+      (slot) => this.dropInventorySlot(slot),
+      () => this.equippedTool,
+      (tool) => this.setEquippedTool(tool)
     );
+    this.craftingOverlay = new CraftingOverlay(gameElement, this.inventory, (recipe) => this.craftRecipe(recipe));
     this.minimapOverlay = new MinimapOverlay(gameElement);
     this.dayNightOverlay = new DayNightOverlay(gameElement);
     this.nightAmbientOverlay = new NightAmbientOverlay(gameElement);
@@ -269,6 +290,8 @@ export class AdventureScene extends Phaser.Scene {
     if (savedGame) {
       this.worldSeed = savedGame.seed;
       this.inventory.restore(savedGame.inventory);
+      const savedTool = savedGame.equipment?.equippedTool;
+      this.equippedTool = isToolId(savedTool) && this.inventory.get(savedTool) > 0 ? savedTool : null;
       this.sessionWorldState.restore(savedGame.world);
       this.player.setPosition(savedGame.player.x, savedGame.player.y);
     }
@@ -385,6 +408,11 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
+    if (this.craftingOpen) {
+      this.toggleCrafting();
+      return;
+    }
+
     if (this.inventoryOpen) {
       this.toggleInventory();
       return;
@@ -399,8 +427,32 @@ export class AdventureScene extends Phaser.Scene {
 
   private toggleInventory(): void {
     this.inventoryOpen = !this.inventoryOpen;
+    if (this.inventoryOpen && this.craftingOpen) {
+      this.craftingOpen = false;
+      this.craftingOverlay.setOpen(false);
+    }
     this.cancelHarvesting();
     this.inventoryOverlay.setOpen(this.inventoryOpen);
+  }
+
+  private handleCraftingKeyDown(event: KeyboardEvent): void {
+    if (!event.repeat) {
+      this.toggleCrafting();
+    }
+  }
+
+  private toggleCrafting(): void {
+    if (!this.worldReady || this.worldMapOpen) {
+      return;
+    }
+
+    this.craftingOpen = !this.craftingOpen;
+    if (this.craftingOpen && this.inventoryOpen) {
+      this.inventoryOpen = false;
+      this.inventoryOverlay.setOpen(false);
+    }
+    this.cancelHarvesting();
+    this.craftingOverlay.setOpen(this.craftingOpen);
   }
 
   private toggleWorldMap(): void {
@@ -411,6 +463,10 @@ export class AdventureScene extends Phaser.Scene {
     this.worldMapOpen = !this.worldMapOpen;
     if (this.worldMapOpen && this.inventoryOpen) {
       this.toggleInventory();
+    }
+    if (this.worldMapOpen && this.craftingOpen) {
+      this.craftingOpen = false;
+      this.craftingOverlay.setOpen(false);
     }
 
     this.cancelHarvesting();
@@ -447,6 +503,7 @@ export class AdventureScene extends Phaser.Scene {
     window.removeEventListener('beforeunload', this.handleBeforeUnload);
     this.debugElement.remove();
     this.inventoryOverlay.destroy();
+    this.craftingOverlay.destroy();
     this.minimapOverlay.destroy();
     this.dayNightOverlay.destroy();
     this.nightAmbientOverlay.destroy();
@@ -484,7 +541,8 @@ export class AdventureScene extends Phaser.Scene {
     // The DOM glow canvas is intentionally updated every frame once light is visible, but doing
     // a full transparent canvas clear at 60 Hz during daylight is pure overhead—particularly in
     // a foliage-dense forest where the game otherwise has no active night lights.
-    if (this.ambientLightAmount <= 0 && time - this.lastNightAmbientLightingUpdateMs < 250) {
+    const updateInterval = this.ambientLightAmount <= 0 ? 250 : NIGHT_AMBIENT_LIGHT_UPDATE_INTERVAL_MS;
+    if (time - this.lastNightAmbientLightingUpdateMs < updateInterval) {
       return;
     }
 
@@ -580,7 +638,7 @@ export class AdventureScene extends Phaser.Scene {
     const animationFrame = isMoving
       ? Math.floor(this.animationElapsedMs / (this.isSwimming ? 145 : 115)) % (this.isSwimming ? 3 : 2)
       : 0;
-    const state = `${this.facing}:${this.isSwimming}:${animationFrame}`;
+    const state = `${this.facing}:${this.isSwimming}:${animationFrame}:${this.equippedTool ?? 'none'}`;
 
     if (state !== this.lastAvatarState) {
       this.lastAvatarState = state;
@@ -609,6 +667,7 @@ export class AdventureScene extends Phaser.Scene {
       avatar.fillStyle(0xe1ae86, 1);
       avatar.fillRoundedRect(-14 + direction.x * 3, -2 + stride, 7, 8, 3);
       avatar.fillRoundedRect(7 + direction.x * 3, -2 - stride, 7, 8, 3);
+      this.drawHeldTool(direction, stride);
       this.drawDirectionalHead(direction, true);
       return;
     }
@@ -630,7 +689,55 @@ export class AdventureScene extends Phaser.Scene {
     avatar.fillStyle(0xe1ae86, 1);
     avatar.fillRoundedRect(-14 + direction.x * 3, -3 + stride * 0.45, 6, 12, 2);
     avatar.fillRoundedRect(8 + direction.x * 3, -3 - stride * 0.45, 6, 12, 2);
+    this.drawHeldTool(direction, stride);
     this.drawDirectionalHead(direction, false);
+  }
+
+  private drawHeldTool(direction: Phaser.Math.Vector2, stride: number): void {
+    if (!this.equippedTool) {
+      return;
+    }
+
+    const avatar = this.playerAvatar;
+    const tool = TOOL_DEFINITIONS[this.equippedTool];
+    const perpendicularX = -direction.y;
+    const perpendicularY = direction.x;
+    const handX = direction.x * 10 + perpendicularX * 4;
+    const handY = 3 + direction.y * 7 + perpendicularY * 2 + stride * 0.22;
+    const headX = handX + direction.x * 18;
+    const headY = handY + direction.y * 18;
+
+    avatar.lineStyle(3.3, 0x6f4327, 1);
+    avatar.lineBetween(handX, handY, headX, headY);
+    avatar.lineStyle(1, 0xc89252, 0.9);
+    avatar.lineBetween(handX + perpendicularX, handY + perpendicularY, headX + perpendicularX, headY + perpendicularY);
+
+    if (tool.kind === 'axe') {
+      avatar.fillStyle(tool.id === ToolId.StoneAxe ? 0xaeb8bd : 0x9fca8e, 1);
+      avatar.fillTriangle(
+        headX - direction.x * 2 + perpendicularX * 7,
+        headY - direction.y * 2 + perpendicularY * 7,
+        headX + direction.x * 4 - perpendicularX * 6,
+        headY + direction.y * 4 - perpendicularY * 6,
+        headX + direction.x * 7 + perpendicularX * 5,
+        headY + direction.y * 7 + perpendicularY * 5
+      );
+    } else {
+      avatar.lineStyle(4.4, tool.id === ToolId.StonePickaxe ? 0xaeb8bd : 0xa3c29a, 1);
+      avatar.lineBetween(
+        headX - perpendicularX * 8,
+        headY - perpendicularY * 8,
+        headX + perpendicularX * 8,
+        headY + perpendicularY * 8
+      );
+      avatar.lineStyle(1.1, 0x44545a, 0.85);
+      avatar.lineBetween(
+        headX - perpendicularX * 8 - direction.x * 1.5,
+        headY - perpendicularY * 8 - direction.y * 1.5,
+        headX + perpendicularX * 8 + direction.x * 1.5,
+        headY + perpendicularY * 8 + direction.y * 1.5
+      );
+    }
   }
 
   private drawDirectionalHead(direction: Phaser.Math.Vector2, swimming: boolean): void {
@@ -689,7 +796,19 @@ export class AdventureScene extends Phaser.Scene {
     avatar.lineStyle(1.4, 0x7b4e3b, 0.95);
     avatar.lineBetween(-2 + faceOffset, headY + 4, 2 + faceOffset, headY + 4);
   }
-  private updateMinimap(_time: number, _force = false): void {
+  private updateMinimap(time: number, force = false): void {
+    const tileX = Math.floor(this.player.x / WORLD_TILE_SIZE);
+    const tileY = Math.floor(this.player.y / WORLD_TILE_SIZE);
+    if (!force && (
+      time - this.lastMinimapUpdateMs < MINIMAP_UPDATE_INTERVAL_MS
+      || (tileX === this.lastMinimapTileX && tileY === this.lastMinimapTileY)
+    )) {
+      return;
+    }
+
+    this.lastMinimapUpdateMs = time;
+    this.lastMinimapTileX = tileX;
+    this.lastMinimapTileY = tileY;
     this.minimapOverlay.draw(
       this.worldSeed,
       this.player.x / WORLD_TILE_SIZE,
@@ -813,8 +932,10 @@ export class AdventureScene extends Phaser.Scene {
       this.harvestTarget = { ...this.interactionTarget };
     }
 
-    this.harvestElapsedMs = Math.min(this.harvestElapsedMs + delta, HARVEST_DURATION_MS);
-    const progress = this.harvestElapsedMs / HARVEST_DURATION_MS;
+    const speedMultiplier = toolSpeedForFeature(this.equippedTool, this.harvestTarget.feature);
+    const durationMs = HARVEST_DURATION_MS / speedMultiplier;
+    this.harvestElapsedMs = Math.min(this.harvestElapsedMs + delta, durationMs);
+    const progress = this.harvestElapsedMs / durationMs;
     this.chunkManager.setHarvestAnimation(this.harvestTarget.tileX, this.harvestTarget.tileY, progress);
     this.drawHarvestProgress(this.harvestTarget, progress);
 
@@ -879,8 +1000,39 @@ export class AdventureScene extends Phaser.Scene {
     this.harvestProgressGraphics.strokePath();
   }
 
+  private craftRecipe(recipe: CraftingRecipe): boolean {
+    const result = applyCraftingRecipe(this.inventory, recipe);
+    if (result === 'missing-ingredients') {
+      this.showWorldFeedback(this.player.x, this.player.y - 28, 'Need more resources');
+      return false;
+    }
+    if (result === 'inventory-full') {
+      this.showWorldFeedback(this.player.x, this.player.y - 28, 'Inventory full');
+      return false;
+    }
+
+    this.showWorldFeedback(this.player.x, this.player.y - 28, `Crafted ${TOOL_DEFINITIONS[recipe.output].label}`);
+    this.markSaveDirty();
+    return true;
+  }
+
+  private setEquippedTool(tool: ToolId | null): void {
+    if (tool && this.inventory.get(tool) < 1) {
+      return;
+    }
+
+    this.equippedTool = tool;
+    this.lastAvatarState = '';
+    this.updatePlayerAvatar(0, false);
+    this.markSaveDirty();
+  }
+
   private dropInventorySlot(slot: InventorySlot): void {
     if (!this.worldReady) {
+      return;
+    }
+
+    if (isToolId(slot.item)) {
       return;
     }
 
@@ -891,11 +1043,11 @@ export class AdventureScene extends Phaser.Scene {
     const drop = this.sessionWorldState.createDropAt(
       dropPosition.x,
       dropPosition.y,
-      slot.resource,
+      slot.item,
       slot.amount
     );
     this.dropManager.add(drop);
-    this.showWorldFeedback(this.player.x, this.player.y - 28, `Dropped ${slot.amount} ${resourceLabel(slot.resource)}`);
+    this.showWorldFeedback(this.player.x, this.player.y - 28, `Dropped ${slot.amount} ${resourceLabel(slot.item)}`);
     this.markSaveDirty();
     this.updateDropInteraction(0, true);
   }
@@ -981,6 +1133,7 @@ export class AdventureScene extends Phaser.Scene {
       seed: this.worldSeed,
       player: { x: this.player.x, y: this.player.y },
       inventory: [...this.inventory.getSlots()],
+      equipment: { equippedTool: this.equippedTool },
       world: this.sessionWorldState.toSaveData()
     };
 
@@ -1033,6 +1186,7 @@ export class AdventureScene extends Phaser.Scene {
       `Explored    ${this.sessionWorldState.exploredRegionCount} regions`,
       `Drops       ${this.sessionWorldState.dropCount}`,
       `Inventory   ${usedInventorySlots}/${INVENTORY_SLOT_COUNT} slots`,
+      `Tool        ${this.equippedTool ? TOOL_DEFINITIONS[this.equippedTool].label : 'none'}`,
       `Seed        ${this.worldSeed}`,
       `Chunk       ${this.chunkManager.currentChunkX}, ${this.chunkManager.currentChunkY}`,
       `Loaded      ${this.chunkManager.loadedChunkCount} chunks`,

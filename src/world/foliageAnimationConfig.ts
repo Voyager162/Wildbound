@@ -16,6 +16,9 @@ export const HARVESTABLE_GRASS_BLADE_COUNT = 11;
 // Increase WIND_CYCLE_DURATION_MS to slow the layer down; FRAME_COUNT controls smoothness without
 // changing its speed. The update interval only controls how often a new pre-rendered frame is set.
 export const GROUND_GRASS_WIND_CYCLE_DURATION_MS = 3000;
-export const GROUND_GRASS_ANIMATION_UPDATE_INTERVAL_MS = 16;
+export const GROUND_GRASS_ANIMATION_UPDATE_INTERVAL_MS = 33;
 export const GROUND_GRASS_ANIMATION_FRAME_COUNT = 64;
 export const GROUND_GRASS_PATTERN_VARIANTS = 6;
+// Feature foliage has more individual sprites than the shared grass atlas. A 30 Hz pose update
+// retains organic motion while halving per-frame transform work in dense forests.
+export const FEATURE_FOLIAGE_ANIMATION_UPDATE_INTERVAL_MS = 33;

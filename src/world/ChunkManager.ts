@@ -6,6 +6,7 @@ import {
 } from './explorationConfig';
 import {
   AMBIENT_PARTICLE_RENDER_INTERVAL_MS,
+  WATER_SURFACE_UPDATE_INTERVAL_MS,
   WATER_RIPPLE_UPDATE_INTERVAL_MS
 } from './ambientPerformanceConfig';
 import {
@@ -59,6 +60,7 @@ export class ChunkManager {
   private lastPlayerSampleTime = Number.NaN;
   private lastPrefetchSignature = '';
   private lastWaterAnimationTime = Number.NEGATIVE_INFINITY;
+  private lastWaterSurfaceTime = Number.NEGATIVE_INFINITY;
   private lastAmbientParticleTime = Number.NEGATIVE_INFINITY;
   private lastChunkBuildTime = Number.NEGATIVE_INFINITY;
   private readonly ambientParticleManager: AmbientParticleManager;
@@ -131,14 +133,17 @@ export class ChunkManager {
   }
 
   updateWaterAnimation(time: number): void {
-    this.chunks.forEach((chunk) => {
-      if (
-        Math.abs(chunk.x - this.activeChunkX) <= AMBIENT_CHUNK_RADIUS_X
-        && Math.abs(chunk.y - this.activeChunkY) <= AMBIENT_CHUNK_RADIUS_Y
-      ) {
-        chunk.updateWaterSurfaceMotion(time);
-      }
-    });
+    if (time - this.lastWaterSurfaceTime >= WATER_SURFACE_UPDATE_INTERVAL_MS) {
+      this.lastWaterSurfaceTime = time;
+      this.chunks.forEach((chunk) => {
+        if (
+          Math.abs(chunk.x - this.activeChunkX) <= AMBIENT_CHUNK_RADIUS_X
+          && Math.abs(chunk.y - this.activeChunkY) <= AMBIENT_CHUNK_RADIUS_Y
+        ) {
+          chunk.updateWaterSurfaceMotion(time);
+        }
+      });
+    }
 
     if (time - this.lastWaterAnimationTime < WATER_RIPPLE_UPDATE_INTERVAL_MS) {
       return;

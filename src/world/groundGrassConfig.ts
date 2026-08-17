@@ -1,8 +1,9 @@
 import { Biome } from './generation/biomeGenerator';
 
 // This is the primary density control for the decorative, non-harvestable grass layer. Values
-// are chance multipliers from 0 (none) to 1 (the full climate-supported field). WorldChunk blends
-// these values through continuous climate weights, so different settings do not create hard lines.
+// are chance multipliers from 0 (none) to 1 (a patch on every eligible tile). Placement obeys
+// the final gameplay biome, so a zero here guarantees that no ground-grass patch is generated
+// in that biome. Adjust these values to tune each biome independently.
 export const GROUND_GRASS_DENSITY_BY_BIOME: Readonly<Record<Biome, number>> = {
   [Biome.Ocean]: 0,
   [Biome.Beach]: 0,
@@ -10,7 +11,7 @@ export const GROUND_GRASS_DENSITY_BY_BIOME: Readonly<Record<Biome, number>> = {
   [Biome.Forest]: 0.27,
   [Biome.Desert]: 0,
   [Biome.Swamp]: .1,
-  [Biome.Hills]: 0.12,
+  [Biome.Hills]: 0.1,
   [Biome.Mountains]: 0,
   [Biome.Snow]: 0
 };

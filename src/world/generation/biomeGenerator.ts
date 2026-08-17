@@ -38,6 +38,11 @@ export const OCEAN_ELEVATION_MAX = 0.28;
 export const BEACH_ELEVATION_MAX = 0.36;
 export const HILL_ELEVATION_MIN = 0.62;
 export const MOUNTAIN_ELEVATION_MIN = 0.76;
+export const SNOW_TEMPERATURE_MAX = 0.2;
+export const HIGH_SNOW_ELEVATION_MIN = 0.83;
+export const HIGH_SNOW_TEMPERATURE_MAX = 0.58;
+export const DESERT_TEMPERATURE_MIN = 0.67;
+export const DESERT_MOISTURE_MAX = 0.36;
 
 // Large climate wavelengths make each biome a region to explore instead of a small patch.
 export const climateAtTile = (seed: string, tileX: number, tileY: number): ClimateSample => ({
@@ -55,7 +60,10 @@ export const biomeForClimate = ({ elevation, moisture, temperature }: ClimateSam
     return Biome.Beach;
   }
 
-  if (temperature < 0.2 || (elevation > 0.83 && temperature < 0.58)) {
+  if (
+    temperature < SNOW_TEMPERATURE_MAX
+    || (elevation > HIGH_SNOW_ELEVATION_MIN && temperature < HIGH_SNOW_TEMPERATURE_MAX)
+  ) {
     return Biome.Snow;
   }
 
@@ -71,7 +79,7 @@ export const biomeForClimate = ({ elevation, moisture, temperature }: ClimateSam
     return Biome.Swamp;
   }
 
-  if (temperature > 0.67 && moisture < 0.36) {
+  if (temperature > DESERT_TEMPERATURE_MIN && moisture < DESERT_MOISTURE_MAX) {
     return Biome.Desert;
   }
 

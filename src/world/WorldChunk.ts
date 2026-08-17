@@ -1,8 +1,17 @@
 import Phaser from 'phaser';
-import { Biome } from './generation/biomeGenerator';
+import {
+  BEACH_ELEVATION_MAX,
+  Biome,
+  DESERT_MOISTURE_MAX,
+  DESERT_TEMPERATURE_MIN,
+  HIGH_SNOW_ELEVATION_MIN,
+  HIGH_SNOW_TEMPERATURE_MAX,
+  MOUNTAIN_ELEVATION_MIN,
+  SNOW_TEMPERATURE_MAX
+} from './generation/biomeGenerator';
 import { generateChunkFeatures, type TerrainFeature, TerrainFeatureType } from './generation/featureGenerator';
 import { TOPOGRAPHY_GENERATION_VERSION } from './generation/topographyGenerator';
-import { randomAtTile } from './generation/noise';
+import { coherentNoise, randomAtTile } from './generation/noise';
 import { surfaceAtTile, type TerrainSurface } from './generation/terrainGenerator';
 import { SessionWorldState } from './SessionWorldState';
 import {
@@ -27,11 +36,14 @@ import {
 } from './FoliageSpriteLibrary';
 import {
   GROUND_GRASS_ANIMATION_UPDATE_INTERVAL_MS,
+  FEATURE_FOLIAGE_ANIMATION_UPDATE_INTERVAL_MS,
   GROUND_GRASS_PATTERN_VARIANTS,
   HARVESTABLE_GRASS_SCALE_MULTIPLIER
 } from './foliageAnimationConfig';
 import { GROUND_GRASS_DENSITY_BY_BIOME } from './groundGrassConfig';
+import { TERRAIN_MATERIAL_TEXTURE_KEYS } from './terrainMaterialConfig';
 import {
+  BIOME_BLEND_WIDTH_SCALE,
   GROUND_GRASS_BASE_HEIGHT_PIXELS,
   GROUND_GRASS_FREQUENCY_SCALE,
   GROUND_GRASS_HEIGHT_VARIATION_PIXELS,
@@ -39,8 +51,8 @@ import {
 } from './worldVisualConfig';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 
-// Terrain is baked into one texture per chunk. The 8px visual cells retain detail while
-// keeping the renderer to a single terrain draw call for each static chunk.
+// Terrain is sampled in compact 8px cells, then bilinearly painted into one continuous canvas.
+// This keeps chunk generation bounded while avoiding a visible grid in the world itself.
 const VISUAL_TERRAIN_CELL_SIZE = 8;
 const VISUAL_CELLS_PER_TILE = WORLD_TILE_SIZE / VISUAL_TERRAIN_CELL_SIZE;
 const FEATURE_TEXTURE_PADDING = 128;
@@ -63,6 +75,28 @@ interface WaterWave {
 interface AnimatedFeatureFoliage {
   sprite: AnimatedFoliageSprite;
 }
+
+// One compact visual sample carries the continuous climate values required to shade terrain
+// materials. It is shared along chunk edges, so the baked result has no seams or tile grid.
+interface TerrainVisualVertex {
+  color: number;
+  elevation: number;
+  moisture: number;
+  temperature: number;
+  waterVisualAmount: number;
+  materialNoise: number;
+  landformNoise: number;
+}
+
+type TerrainMaterialName = keyof typeof TERRAIN_MATERIAL_TEXTURE_KEYS;
+
+interface TerrainMaterialPixels {
+  width: number;
+  height: number;
+  pixels: Uint8ClampedArray;
+}
+
+const terrainMaterialPixels = new Map<string, TerrainMaterialPixels>();
 
 export class WorldChunk {
   readonly key: string;
@@ -90,6 +124,7 @@ export class WorldChunk {
   private renderVisible = true;
   private groundGrassVisible = true;
   private lastGroundGrassFrame = Number.NEGATIVE_INFINITY;
+  private lastFeatureFoliageFrame = Number.NEGATIVE_INFINITY;
   private harvestingTileKey: string | null = null;
   private harvestOffset = 0;
 
@@ -168,7 +203,11 @@ export class WorldChunk {
       this.lastGroundGrassFrame = grassFrame;
       this.animatedGroundGrass.forEach((patch) => updateAnimatedGroundGrassPatch(patch, time));
     }
-    this.animatedFeatureFoliage.forEach(({ sprite }) => updateAnimatedFoliageSprite(sprite, time));
+    const featureFrame = Math.floor(time / FEATURE_FOLIAGE_ANIMATION_UPDATE_INTERVAL_MS);
+    if (featureFrame !== this.lastFeatureFoliageFrame) {
+      this.lastFeatureFoliageFrame = featureFrame;
+      this.animatedFeatureFoliage.forEach(({ sprite }) => updateAnimatedFoliageSprite(sprite, time));
+    }
   }
 
   setHarvestAnimation(tileX: number, tileY: number, progress: number): void {
@@ -293,27 +332,27 @@ export class WorldChunk {
   }
 
   private updateWaterSurfaceLayers(seconds: number): void {
-    const chunkPhaseX = this.x * 43.7 + this.y * 17.3;
-    const chunkPhaseY = this.y * 31.1 - this.x * 11.9;
+    const worldX = this.x * CHUNK_SIZE_PIXELS;
+    const worldY = this.y * CHUNK_SIZE_PIXELS;
 
-    // These are masked TileSprites, not repainted terrain canvases. The broad colored water
-    // marks therefore move continuously across every visible water cell at effectively constant
-    // cost, including quiet swamp pools.
+    // These offsets are a single field in world space, not a phase chosen per chunk. Adjacent
+    // masked TileSprites therefore sample the exact same texture coordinate at their shared
+    // edge and stay visually connected as chunks stream in or out.
     if (this.oceanWaterSurface) {
-      this.oceanWaterSurface.tilePositionX = chunkPhaseX + seconds * OCEAN_WATER_CURRENT_PIXELS_PER_SECOND;
-      this.oceanWaterSurface.tilePositionY = chunkPhaseY - seconds * 9;
+      this.oceanWaterSurface.tilePositionX = worldX + seconds * OCEAN_WATER_CURRENT_PIXELS_PER_SECOND;
+      this.oceanWaterSurface.tilePositionY = worldY - seconds * 9;
     }
     if (this.oceanWaterHighlights) {
-      this.oceanWaterHighlights.tilePositionX = chunkPhaseX * 0.62 - seconds * OCEAN_WATER_CURRENT_PIXELS_PER_SECOND * 0.56;
-      this.oceanWaterHighlights.tilePositionY = chunkPhaseY * 0.78 + seconds * 6;
+      this.oceanWaterHighlights.tilePositionX = worldX - seconds * OCEAN_WATER_CURRENT_PIXELS_PER_SECOND * 0.56;
+      this.oceanWaterHighlights.tilePositionY = worldY + seconds * 6;
     }
     if (this.swampWaterSurface) {
-      this.swampWaterSurface.tilePositionX = chunkPhaseX * 0.44 + seconds * SWAMP_WATER_CURRENT_PIXELS_PER_SECOND;
-      this.swampWaterSurface.tilePositionY = chunkPhaseY * 0.58 + seconds * 3.5;
+      this.swampWaterSurface.tilePositionX = worldX + seconds * SWAMP_WATER_CURRENT_PIXELS_PER_SECOND;
+      this.swampWaterSurface.tilePositionY = worldY + seconds * 3.5;
     }
     if (this.swampWaterHighlights) {
-      this.swampWaterHighlights.tilePositionX = chunkPhaseX * 0.34 - seconds * SWAMP_WATER_CURRENT_PIXELS_PER_SECOND * 0.56;
-      this.swampWaterHighlights.tilePositionY = chunkPhaseY * 0.42 + seconds * 2.25;
+      this.swampWaterHighlights.tilePositionX = worldX - seconds * SWAMP_WATER_CURRENT_PIXELS_PER_SECOND * 0.56;
+      this.swampWaterHighlights.tilePositionY = worldY + seconds * 2.25;
     }
   }
 
@@ -379,6 +418,8 @@ export class WorldChunk {
     const worldX = this.x * CHUNK_SIZE_PIXELS;
     const worldY = this.y * CHUNK_SIZE_PIXELS;
     const waveCandidates: Array<WaterWave & { priority: number }> = [];
+    const terrainVertexColors = this.createTerrainVertexColors();
+    this.paintContinuousTerrain(context, terrainVertexColors);
     // Compact alpha masks are built once while the baked terrain is sampled. The two TileSprites
     // above them can then flow across all water pixels without rebuilding a chunk canvas each tick.
     const waterMaskSize = CHUNK_SIZE_PIXELS / VISUAL_TERRAIN_CELL_SIZE;
@@ -416,11 +457,6 @@ export class WorldChunk {
             );
             const cellX = localX * WORLD_TILE_SIZE + visualX * VISUAL_TERRAIN_CELL_SIZE;
             const cellY = localY * WORLD_TILE_SIZE + visualY * VISUAL_TERRAIN_CELL_SIZE;
-
-            // A restrained deterministic tint restores the subtle pixel-color variation without changing world data.
-            context.fillStyle = this.colorToCss(this.terrainCellColor(surface.color, variation));
-            context.fillRect(cellX, cellY, VISUAL_TERRAIN_CELL_SIZE, VISUAL_TERRAIN_CELL_SIZE);
-            this.drawTerrainDetail(context, surface, variation, cellX, cellY);
 
             // Full water motion is confined to actual ocean water. A narrow high-water strip on
             // the beach remains eligible so ocean surf can roll onto wet sand and retreat, but
@@ -611,108 +647,287 @@ export class WorldChunk {
     return textureKey;
   }
 
-  private drawTerrainDetail(
-    context: CanvasRenderingContext2D,
-    surface: TerrainSurface,
-    variation: number,
-    cellX: number,
-    cellY: number
-  ): void {
-    if (surface.waterVisualAmount > 0.05) {
-      // Baked undertones blend through the visual shore. The dynamic layer above then carries
-      // slow color ribbons, crests, and small foam lines right up to the walkable shallows.
-      if (variation > 0.74) {
-        const alpha = 0.1 + surface.waterVisualAmount * 0.25;
-        context.fillStyle = surface.isShallowWater ? `rgba(203, 246, 232, ${alpha})` : `rgba(137, 214, 229, ${alpha})`;
-        context.fillRect(cellX + 1, cellY + 3, 5, 1);
-      } else if (variation < 0.15) {
-        context.fillStyle = `rgba(13, 72, 116, ${(0.08 + surface.waterVisualAmount * 0.18).toFixed(3)})`;
-        context.fillRect(cellX, cellY + 6, 7, 1);
+  private createTerrainVertexColors(): TerrainVisualVertex[][] {
+    const vertices: TerrainVisualVertex[][] = [];
+    const firstTileX = this.x * CHUNK_SIZE_TILES;
+    const firstTileY = this.y * CHUNK_SIZE_TILES;
+    const cellsPerChunk = CHUNK_SIZE_PIXELS / VISUAL_TERRAIN_CELL_SIZE;
+
+    // Vertex samples extend one cell farther than the chunk's last painted cell. Adjacent chunks
+    // query the same global coordinates at their shared edge, so their baked colours meet exactly.
+    for (let sampleY = 0; sampleY <= cellsPerChunk; sampleY += 1) {
+      const row: TerrainVisualVertex[] = [];
+      for (let sampleX = 0; sampleX <= cellsPerChunk; sampleX += 1) {
+        const worldPixelX = firstTileX * WORLD_TILE_SIZE + sampleX * VISUAL_TERRAIN_CELL_SIZE;
+        const worldPixelY = firstTileY * WORLD_TILE_SIZE + sampleY * VISUAL_TERRAIN_CELL_SIZE;
+        const surface = surfaceAtTile(
+          this.seed,
+          firstTileX + sampleX / VISUAL_CELLS_PER_TILE,
+          firstTileY + sampleY / VISUAL_CELLS_PER_TILE
+        );
+        row.push({
+          color: surface.color,
+          elevation: surface.elevation,
+          moisture: surface.moisture,
+          temperature: surface.temperature,
+          waterVisualAmount: surface.waterVisualAmount,
+          // Medium grain and broad landform fields are continuous value noise, not repeated
+          // symbols. They become material texture, soft mounds, and shallow depressions below.
+          materialNoise: coherentNoise(this.seed, worldPixelX, worldPixelY, 74, 0x5a3d19c7),
+          landformNoise: coherentNoise(this.seed, worldPixelX, worldPixelY, 268, 0x32c47ab1)
+        });
       }
-      if (surface.waterVisualAmount > 0.24) {
-        return;
-      }
+      vertices.push(row);
     }
 
+    return vertices;
+  }
 
+  private terrainMaterialPixelsFor(material: TerrainMaterialName): TerrainMaterialPixels | null {
+    const textureKey = TERRAIN_MATERIAL_TEXTURE_KEYS[material];
+    const cached = terrainMaterialPixels.get(textureKey);
+    if (cached) {
+      return cached;
+    }
+    if (!this.scene.textures.exists(textureKey)) {
+      return null;
+    }
+
+    const source = this.scene.textures.get(textureKey).getSourceImage() as HTMLImageElement;
+    const width = source.naturalWidth || source.width;
+    const height = source.naturalHeight || source.height;
+    if (width <= 0 || height <= 0) {
+      return null;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) {
+      return null;
+    }
+    context.drawImage(source, 0, 0, width, height);
+    const cachedPixels = { width, height, pixels: context.getImageData(0, 0, width, height).data };
+    terrainMaterialPixels.set(textureKey, cachedPixels);
+    return cachedPixels;
+  }
+
+  private paintContinuousTerrain(
+    context: CanvasRenderingContext2D,
+    vertices: readonly (readonly TerrainVisualVertex[])[]
+  ): void {
+    const imageData = context.createImageData(CHUNK_SIZE_PIXELS, CHUNK_SIZE_PIXELS);
+    const pixels = imageData.data;
+    const cellsPerChunk = CHUNK_SIZE_PIXELS / VISUAL_TERRAIN_CELL_SIZE;
+    const channel = (color: number, shift: number): number => (color >> shift) & 0xff;
+    const clampChannel = (value: number): number => Math.max(0, Math.min(255, Math.round(value)));
+    const materials = {
+      plains: this.terrainMaterialPixelsFor('plains'),
+      desert: this.terrainMaterialPixelsFor('desert'),
+      beach: this.terrainMaterialPixelsFor('beach'),
+      rocky: this.terrainMaterialPixelsFor('rocky'),
+      snow: this.terrainMaterialPixelsFor('snow')
+    };
     const smooth = (start: number, end: number, value: number): number => {
       const normalized = Math.max(0, Math.min(1, (value - start) / (end - start)));
       return normalized * normalized * (3 - 2 * normalized);
     };
+    const sample = (
+      topLeft: number,
+      topRight: number,
+      bottomLeft: number,
+      bottomRight: number,
+      horizontalAmount: number,
+      verticalAmount: number
+    ): number => {
+      const top = topLeft + (topRight - topLeft) * horizontalAmount;
+      const bottom = bottomLeft + (bottomRight - bottomLeft) * horizontalAmount;
+      return top + (bottom - top) * verticalAmount;
+    };
+    let pixel = 0;
 
-    // Detail density follows continuous climate weights, so flecks and plants fade through a
-    // border instead of suddenly switching when a discrete biome label changes.
-    const snow = Math.max(
-      1 - smooth(0.14, 0.34, surface.temperature),
-      smooth(0.72, 0.92, surface.elevation) * (1 - smooth(0.5, 0.68, surface.temperature))
-    );
-    const rock = smooth(0.6, 0.9, surface.elevation) * (1 - snow * 0.4);
-    const dry = smooth(0.6, 0.76, surface.temperature) * (1 - smooth(0.28, 0.46, surface.moisture));
-    const vegetation = smooth(0.38, 0.72, surface.moisture)
-      * (1 - dry * 0.85)
-      * (1 - rock * 0.62)
-      * (1 - snow);
+    for (let cellY = 0; cellY < cellsPerChunk; cellY += 1) {
+      const top = vertices[cellY];
+      const bottom = vertices[cellY + 1];
+      for (let offsetY = 0; offsetY < VISUAL_TERRAIN_CELL_SIZE; offsetY += 1) {
+        const verticalAmount = (offsetY + 0.5) / VISUAL_TERRAIN_CELL_SIZE;
+        for (let cellX = 0; cellX < cellsPerChunk; cellX += 1) {
+          const topLeft = top[cellX];
+          const topRight = top[cellX + 1];
+          const bottomLeft = bottom[cellX];
+          const bottomRight = bottom[cellX + 1];
 
-    if (surface.elevation < 0.39) {
-      if (variation > 0.91) {
-        context.fillStyle = variation > 0.97 ? '#a9864f' : '#eed692';
-        context.fillRect(cellX + 2, cellY + 4, 3, 1);
+          for (let offsetX = 0; offsetX < VISUAL_TERRAIN_CELL_SIZE; offsetX += 1) {
+            const horizontalAmount = (offsetX + 0.5) / VISUAL_TERRAIN_CELL_SIZE;
+            let red = sample(
+              channel(topLeft.color, 16), channel(topRight.color, 16),
+              channel(bottomLeft.color, 16), channel(bottomRight.color, 16), horizontalAmount, verticalAmount
+            );
+            let green = sample(
+              channel(topLeft.color, 8), channel(topRight.color, 8),
+              channel(bottomLeft.color, 8), channel(bottomRight.color, 8), horizontalAmount, verticalAmount
+            );
+            let blue = sample(
+              channel(topLeft.color, 0), channel(topRight.color, 0),
+              channel(bottomLeft.color, 0), channel(bottomRight.color, 0), horizontalAmount, verticalAmount
+            );
+            const elevation = sample(
+              topLeft.elevation, topRight.elevation, bottomLeft.elevation, bottomRight.elevation, horizontalAmount, verticalAmount
+            );
+            const moisture = sample(
+              topLeft.moisture, topRight.moisture, bottomLeft.moisture, bottomRight.moisture, horizontalAmount, verticalAmount
+            );
+            const temperature = sample(
+              topLeft.temperature, topRight.temperature, bottomLeft.temperature, bottomRight.temperature, horizontalAmount, verticalAmount
+            );
+            const waterAmount = sample(
+              topLeft.waterVisualAmount, topRight.waterVisualAmount,
+              bottomLeft.waterVisualAmount, bottomRight.waterVisualAmount, horizontalAmount, verticalAmount
+            );
+            const materialNoise = sample(
+              topLeft.materialNoise, topRight.materialNoise,
+              bottomLeft.materialNoise, bottomRight.materialNoise, horizontalAmount, verticalAmount
+            );
+            const landformNoise = sample(
+              topLeft.landformNoise, topRight.landformNoise,
+              bottomLeft.landformNoise, bottomRight.landformNoise, horizontalAmount, verticalAmount
+            );
+
+            // The terrain has a low-frequency relief field for broad bumps and dips, plus a
+            // medium material field. Unlike the former line/shape stamps, both are smoothly
+            // sampled into every pixel and therefore read as part of the ground itself.
+            const landAmount = 1 - waterAmount;
+            const relief = (landformNoise - 0.5) * 0.15 * landAmount;
+            red *= 1 + relief;
+            green *= 1 + relief;
+            blue *= 1 + relief;
+
+            const beach = (1 - smooth(0.28, 0.43, elevation)) * landAmount;
+            const desert = smooth(0.56, 0.78, temperature) * (1 - smooth(0.27, 0.47, moisture));
+            const snow = Math.max(
+              1 - smooth(0.16, 0.34, temperature),
+              smooth(0.73, 0.92, elevation) * (1 - smooth(0.5, 0.68, temperature))
+            );
+            const rocky = smooth(0.61, 0.9, elevation) * (1 - snow * 0.35);
+            const forest = smooth(0.46, 0.68, moisture) * (1 - desert) * (1 - snow) * (1 - rocky);
+            const swamp = smooth(0.7, 0.86, moisture)
+              * smooth(0.34, 0.56, temperature) * (1 - rocky);
+            const hills = smooth(0.58, 0.79, elevation) * (1 - rocky) * (1 - snow);
+            const plains = smooth(0.24, 0.58, moisture)
+              * (1 - desert) * (1 - snow) * (1 - rocky) * (1 - beach);
+            const broadMound = smooth(0.47, 0.72, landformNoise);
+            const materialVariation = materialNoise - 0.5;
+
+            const sandAmount = beach * (0.06 + materialVariation * 0.06);
+            red += (229 - red) * sandAmount;
+            green += (196 - green) * sandAmount;
+            blue += (124 - blue) * sandAmount;
+
+            const desertAmount = desert * (0.045 + materialVariation * 0.06);
+            red += (205 - red) * desertAmount;
+            green += (151 - green) * desertAmount;
+            blue += (74 - blue) * desertAmount;
+
+            const soilAmount = plains * (0.055 + materialVariation * 0.085);
+            red += (117 - red) * soilAmount;
+            green += (88 - green) * soilAmount;
+            blue += (57 - blue) * soilAmount;
+
+            const rockAmount = rocky * (0.075 + materialVariation * 0.12);
+            red += (80 - red) * rockAmount;
+            green += (91 - green) * rockAmount;
+            blue += (94 - blue) * rockAmount;
+
+            const snowMoundAmount = snow * broadMound * 0.19;
+            red += (246 - red) * snowMoundAmount;
+            green += (252 - green) * snowMoundAmount;
+            blue += (255 - blue) * snowMoundAmount;
+
+            // Generated materials are crossfaded exactly like the base colour. Sampling the
+            // strongest two fields avoids a texture hand-off line, while keeping chunk baking
+            // compact enough for streaming terrain.
+            let primaryMaterial = materials.plains;
+            let primaryWeight = Math.max(plains, forest * 0.9, swamp * 0.62);
+            let secondaryMaterial: TerrainMaterialPixels | null = null;
+            let secondaryWeight = 0;
+            const beachWeight = beach;
+            const desertWeight = desert;
+            const rockyWeight = Math.max(rocky, hills * 0.72);
+            const snowWeight = snow;
+            if (beachWeight > primaryWeight) {
+              secondaryMaterial = primaryMaterial;
+              secondaryWeight = primaryWeight;
+              primaryMaterial = materials.beach;
+              primaryWeight = beachWeight;
+            } else if (beachWeight > secondaryWeight) {
+              secondaryMaterial = materials.beach;
+              secondaryWeight = beachWeight;
+            }
+            if (desertWeight > primaryWeight) {
+              secondaryMaterial = primaryMaterial;
+              secondaryWeight = primaryWeight;
+              primaryMaterial = materials.desert;
+              primaryWeight = desertWeight;
+            } else if (desertWeight > secondaryWeight) {
+              secondaryMaterial = materials.desert;
+              secondaryWeight = desertWeight;
+            }
+            if (rockyWeight > primaryWeight) {
+              secondaryMaterial = primaryMaterial;
+              secondaryWeight = primaryWeight;
+              primaryMaterial = materials.rocky;
+              primaryWeight = rockyWeight;
+            } else if (rockyWeight > secondaryWeight) {
+              secondaryMaterial = materials.rocky;
+              secondaryWeight = rockyWeight;
+            }
+            if (snowWeight > primaryWeight) {
+              secondaryMaterial = primaryMaterial;
+              secondaryWeight = primaryWeight;
+              primaryMaterial = materials.snow;
+              primaryWeight = snowWeight;
+            } else if (snowWeight > secondaryWeight) {
+              secondaryMaterial = materials.snow;
+              secondaryWeight = snowWeight;
+            }
+            if (primaryMaterial && primaryWeight > 0.01) {
+              const worldPixelX = this.x * CHUNK_SIZE_PIXELS + cellX * VISUAL_TERRAIN_CELL_SIZE + offsetX;
+              const worldPixelY = this.y * CHUNK_SIZE_PIXELS + cellY * VISUAL_TERRAIN_CELL_SIZE + offsetY;
+              const primaryX = ((worldPixelX % primaryMaterial.width) + primaryMaterial.width) % primaryMaterial.width;
+              const primaryY = ((worldPixelY % primaryMaterial.height) + primaryMaterial.height) % primaryMaterial.height;
+              const primaryPixel = (primaryY * primaryMaterial.width + primaryX) * 4;
+              let materialRed = primaryMaterial.pixels[primaryPixel];
+              let materialGreen = primaryMaterial.pixels[primaryPixel + 1];
+              let materialBlue = primaryMaterial.pixels[primaryPixel + 2];
+              if (secondaryMaterial && secondaryWeight > 0.01) {
+                const secondaryX = ((worldPixelX % secondaryMaterial.width) + secondaryMaterial.width) % secondaryMaterial.width;
+                const secondaryY = ((worldPixelY % secondaryMaterial.height) + secondaryMaterial.height) % secondaryMaterial.height;
+                const secondaryPixel = (secondaryY * secondaryMaterial.width + secondaryX) * 4;
+                const totalWeight = primaryWeight + secondaryWeight;
+                materialRed = (materialRed * primaryWeight + secondaryMaterial.pixels[secondaryPixel] * secondaryWeight) / totalWeight;
+                materialGreen = (materialGreen * primaryWeight + secondaryMaterial.pixels[secondaryPixel + 1] * secondaryWeight) / totalWeight;
+                materialBlue = (materialBlue * primaryWeight + secondaryMaterial.pixels[secondaryPixel + 2] * secondaryWeight) / totalWeight;
+              }
+              const materialBlend = 0.08 + primaryWeight * 0.2;
+              red += (materialRed - red) * materialBlend;
+              green += (materialGreen - green) * materialBlend;
+              blue += (materialBlue - blue) * materialBlend;
+            }
+
+            pixels[pixel] = clampChannel(red);
+            pixels[pixel + 1] = clampChannel(green);
+            pixels[pixel + 2] = clampChannel(blue);
+            pixels[pixel + 3] = 255;
+            pixel += 4;
+          }
+        }
       }
-      return;
     }
 
-    if (snow > 0.2 && variation > 0.985 - snow * 0.11) {
-      context.fillStyle = this.colorToCss(this.shadeColor(surface.color, 0.32));
-      context.fillRect(cellX + 1, cellY + 2, 5, 1);
-      context.fillRect(cellX + 3, cellY + 1, 1, 4);
-      return;
-    }
-
-    if (rock > 0.18 && variation > 0.985 - rock * 0.12) {
-      context.fillStyle = this.colorToCss(this.shadeColor(surface.color, -0.32));
-      context.beginPath();
-      context.moveTo(cellX + 1, cellY + 7);
-      context.lineTo(cellX + 4, cellY + 2);
-      context.lineTo(cellX + 7, cellY + 7);
-      context.fill();
-      return;
-    }
-
-    if (dry > 0.2 && variation > 0.985 - dry * 0.1) {
-      context.fillStyle = this.colorToCss(this.shadeColor(surface.color, dry > 0.65 ? -0.22 : 0.2));
-      context.fillRect(cellX + 1, cellY + 4, 6, 1);
-      return;
-    }
-
-    if (vegetation > 0.16 && variation > 0.99 - vegetation * 0.08) {
-      context.fillStyle = this.colorToCss(this.shadeColor(surface.color, vegetation > 0.58 ? -0.3 : 0.26));
-      context.fillRect(cellX + 1, cellY + 4, 1, 3);
-      context.fillRect(cellX + 2, cellY + 2, 1, 5);
-      context.fillRect(cellX + 4, cellY, 1, 7);
-      context.fillRect(cellX + 6, cellY + 3, 1, 4);
-      context.fillStyle = this.colorToCss(this.shadeColor(surface.color, 0.24));
-      context.fillRect(cellX + 3, cellY + 2, 1, 3);
-      context.fillRect(cellX + 5, cellY + 4, 1, 2);
-    }
-  }
-  private colorToCss(color: number): string {
-    return `#${color.toString(16).padStart(6, '0')}`;
+    context.putImageData(imageData, 0, 0);
   }
 
-  private terrainCellColor(color: number, variation: number): number {
-    // Tints come from the continuously blended local color, never a discrete terrain label.
-    const base = this.shadeColor(color, (variation - 0.5) * 0.09);
 
-    if (variation < 0.18) {
-      return this.mixColor(base, this.shadeColor(base, -0.34), 0.18);
-    }
-
-    if (variation > 0.82) {
-      return this.mixColor(base, this.shadeColor(base, 0.34), 0.18);
-    }
-
-    return base;
-  }
   private mixColor(first: number, second: number, amount: number): number {
     const mixChannel = (shift: number): number => {
       const start = (first >> shift) & 0xff;
@@ -749,65 +964,85 @@ export class WorldChunk {
   }
 
   private groundGrassDensity(surface: TerrainSurface): number {
-    // This calculation deliberately uses the continuous climate samples, not `surface.biome`.
-    // As a result grass tapers naturally through forest, plains, hills, desert, snow, and swamp
-    // boundaries even though each location still has one discrete biome for gameplay purposes.
+    // The configuration is authoritative: a zero density guarantees this animated layer does
+    // not appear in that gameplay biome. Terrain colour and small baked details still blend
+    // continuously underneath, so this does not reintroduce tiled ground.
     if (surface.waterVisualAmount > 0.24) {
       return 0;
     }
+    const configuredDensity = GROUND_GRASS_DENSITY_BY_BIOME[surface.biome];
+    if (configuredDensity === 0) {
+      return 0;
+    }
 
-    const smooth = (start: number, end: number, value: number): number => {
-      const normalized = Math.max(0, Math.min(1, (value - start) / (end - start)));
-      return normalized * normalized * (3 - 2 * normalized);
-    };
-    const temperateMoisture = smooth(0.26, 0.5, surface.moisture);
-    const heatFade = 1 - smooth(0.56, 0.76, surface.temperature);
-    const coldFade = smooth(0.18, 0.32, surface.temperature);
-    const highlandFade = 1 - smooth(0.57, 0.82, surface.elevation);
-    // The per-biome multiplier below determines whether swamp supports ground grass. Keep this
-    // climate term independent so raising the Swamp entry in groundGrassConfig actually takes
-    // effect on dry, low marsh ground while the water cutoff above keeps ponds clear.
-    const climateCoverage = temperateMoisture * heatFade * coldFade * highlandFade;
-    const shoreFade = 1 - smooth(0.02, 0.24, surface.waterVisualAmount);
+    const forestAmount = this.visualBiomeBlend(0.39, 0.57, surface.moisture);
+    const hillAmount = this.visualBiomeBlend(0.44, 0.62, surface.elevation);
+    const swampAmount = this.visualBiomeBlend(0.58, 0.76, surface.moisture)
+      * this.visualBiomeBlend(0.24, 0.42, surface.temperature)
+      * (1 - hillAmount);
+    const blend = (from: number, to: number, amount: number): number => from + (to - from) * amount;
+    // Positive-density biomes blend into each other before their gameplay label changes. The
+    // direct-biome zero check above still guarantees that disabled biomes never emit a patch.
+    let blendedDensity = GROUND_GRASS_DENSITY_BY_BIOME[Biome.Plains];
+    blendedDensity = blend(blendedDensity, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Forest], forestAmount);
+    blendedDensity = blend(blendedDensity, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Swamp], swampAmount);
+    blendedDensity = blend(blendedDensity, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Hills], hillAmount);
     return Math.min(
       0.96,
-      climateCoverage * shoreFade * this.groundGrassBiomeDensityMultiplier(surface) * GROUND_GRASS_FREQUENCY_SCALE
+      blendedDensity * this.groundGrassEdgeFade(surface) * GROUND_GRASS_FREQUENCY_SCALE
     );
   }
 
-  private groundGrassBiomeDensityMultiplier(surface: TerrainSurface): number {
-    const smooth = (start: number, end: number, value: number): number => {
-      const normalized = Math.max(0, Math.min(1, (value - start) / (end - start)));
-      return normalized * normalized * (3 - 2 * normalized);
-    };
-    const blend = (from: number, to: number, amount: number): number => from + (to - from) * amount;
+  private visualBiomeBlend(start: number, end: number, value: number): number {
+    const midpoint = (start + end) * 0.5;
+    const halfRange = (end - start) * 0.5 * Math.max(0.01, BIOME_BLEND_WIDTH_SCALE / 50);
+    const normalized = Math.max(0, Math.min(1, (value - (midpoint - halfRange)) / (halfRange * 2)));
+    return normalized * normalized * (3 - 2 * normalized);
+  }
 
-    // The final gameplay biome is discrete, but foliage density should not be. These climate
-    // weights smoothly approach the matching entry in GROUND_GRASS_DENSITY_BY_BIOME on either
-    // side of a biome threshold, including plains-to-forest and plains-to-hills transitions.
-    const beach = 1 - smooth(0.27, 0.39, surface.elevation);
-    const snow = 1 - smooth(0.18, 0.32, surface.temperature);
-    const mountains = smooth(0.72, 0.84, surface.elevation);
-    const hills = smooth(0.56, 0.79, surface.elevation) * (1 - mountains);
-    const swamp = smooth(0.69, 0.86, surface.moisture)
-      * smooth(0.33, 0.56, surface.temperature)
-      * (1 - smooth(0.56, 0.75, surface.elevation));
-    const desert = smooth(0.57, 0.77, surface.temperature) * (1 - smooth(0.24, 0.46, surface.moisture));
-    const forest = smooth(0.49, 0.66, surface.moisture)
-      * (1 - desert)
-      * (1 - swamp)
-      * (1 - hills)
-      * (1 - mountains)
-      * (1 - snow);
+  private edgePressure(
+    value: number,
+    boundary: number,
+    leadIn: number,
+    increasesTowardZeroDensity: boolean
+  ): number {
+    // Unlike a centred colour blend, this curve finishes at the gameplay boundary itself.
+    // This is what removes the last visible grass step: a zero-density biome starts only after
+    // every nearby patch has already shrunk and faded to zero.
+    const scaledLeadIn = leadIn * Math.max(0.1, BIOME_BLEND_WIDTH_SCALE / 50);
+    if (increasesTowardZeroDensity) {
+      return this.smoothRange(boundary - scaledLeadIn, boundary, value);
+    }
+    return 1 - this.smoothRange(boundary, boundary + scaledLeadIn, value);
+  }
 
-    let density = GROUND_GRASS_DENSITY_BY_BIOME[Biome.Plains];
-    density = blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Forest], forest);
-    density = blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Desert], desert);
-    density = blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Swamp], swamp);
-    density = blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Hills], hills);
-    density = blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Mountains], mountains);
-    density = blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Snow], snow);
-    return blend(density, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Beach], beach);
+  private smoothRange(start: number, end: number, value: number): number {
+    const normalized = Math.max(0, Math.min(1, (value - start) / (end - start)));
+    return normalized * normalized * (3 - 2 * normalized);
+  }
+
+  private groundGrassEdgeFade(surface: TerrainSurface): number {
+    // Grass remains rooted only in an enabled gameplay biome, yet it thins out before a nearby
+    // zero-density biome takes over. The widened ranges intentionally begin before the gameplay
+    // label flips, avoiding a hard line at plains/desert, plains/beach, and hill/mountain edges.
+    // Each pressure reaches one exactly at the corresponding gameplay threshold, regardless
+    // of the configured visual blend width. The grass is therefore fully gone before a
+    // zero-density label can create a visible binary edge.
+    const beachPressure = this.edgePressure(surface.elevation, BEACH_ELEVATION_MAX, 0.12, false);
+    const desertPressure = this.edgePressure(surface.temperature, DESERT_TEMPERATURE_MIN, 0.14, true)
+      * this.edgePressure(surface.moisture, DESERT_MOISTURE_MAX, 0.14, false);
+    const coldSnowPressure = this.edgePressure(surface.temperature, SNOW_TEMPERATURE_MAX, 0.12, false);
+    const highSnowPressure = this.edgePressure(surface.elevation, HIGH_SNOW_ELEVATION_MIN, 0.1, true)
+      * this.edgePressure(surface.temperature, HIGH_SNOW_TEMPERATURE_MAX, 0.14, false);
+    const mountainPressure = this.edgePressure(surface.elevation, MOUNTAIN_ELEVATION_MIN, 0.13, true);
+    const zeroDensityPressure = Math.max(
+      beachPressure,
+      desertPressure,
+      coldSnowPressure,
+      highSnowPressure,
+      mountainPressure
+    );
+    return (1 - zeroDensityPressure) ** 1.7;
   }
 
   private createAnimatedGroundGrass(): void {
@@ -818,6 +1053,7 @@ export class WorldChunk {
         const worldTileY = this.y * CHUNK_SIZE_TILES + localY;
         const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
         const density = this.groundGrassDensity(surface);
+        const edgeFade = this.groundGrassEdgeFade(surface);
         const placement = randomAtTile(this.seed, worldTileX, worldTileY, 0x6d42aeb9);
         if (density === 0 || placement > density) {
           continue;
@@ -827,7 +1063,7 @@ export class WorldChunk {
         // into neighboring tiles makes a thick field without creating per-blade game objects.
         const height = (GROUND_GRASS_BASE_HEIGHT_PIXELS
           + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37) * GROUND_GRASS_HEIGHT_VARIATION_PIXELS)
-          * GROUND_GRASS_SIZE_SCALE;
+          * GROUND_GRASS_SIZE_SCALE * (0.58 + edgeFade * 0.42);
         const patch = createAnimatedGroundGrassPatch(
           this.scene,
           worldTileX * WORLD_TILE_SIZE + 5 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7) * 22,
@@ -838,6 +1074,10 @@ export class WorldChunk {
           randomAtTile(this.seed, worldTileX, worldTileY, 0x53da69c7),
           now
         );
+        // Density reduces the number of patches near a transition; these visual changes make
+        // surviving edge patches shorter and more transparent as well, so a field peters out
+        // instead of ending as a random binary band.
+        patch.image.setAlpha(0.22 + edgeFade * 0.78);
         patch.image.setVisible(this.renderVisible && this.groundGrassVisible);
         this.animatedGroundGrass.push(patch);
       }
@@ -952,10 +1192,26 @@ export class WorldChunk {
         graphics.fillEllipse(centerX, centerY + 24 * scale, 42 * scale, 12 * scale);
         graphics.fillStyle(0x327740, 1);
         graphics.fillRoundedRect(centerX - 9 * scale, centerY - 42 * scale, 18 * scale, 69 * scale, 8 * scale);
-        graphics.fillRoundedRect(centerX - 34 * scale * mirror, centerY - 17 * scale, 27 * scale, 13 * scale, 5 * scale);
-        graphics.fillRoundedRect(centerX - 34 * scale * mirror, centerY - 34 * scale, 11 * scale, 30 * scale, 5 * scale);
-        graphics.fillRoundedRect(centerX + 8 * scale * mirror, centerY + 1 * scale, 28 * scale, 13 * scale, 5 * scale);
-        graphics.fillRoundedRect(centerX + 24 * scale * mirror, centerY - 20 * scale, 12 * scale, 34 * scale, 5 * scale);
+        // Rounded-rectangle widths cannot be mirrored. Normalize each arm's left edge before
+        // drawing so both deterministic mirror variants stay connected to the central stalk.
+        const firstArmDirection = -mirror;
+        const secondArmDirection = mirror;
+        const horizontalArmX = (direction: number, nearEdge: number, farEdge: number): number =>
+          centerX + (direction < 0 ? farEdge : nearEdge) * scale;
+        const verticalArmX = (direction: number, leftEdge: number, rightEdge: number): number =>
+          centerX + (direction < 0 ? leftEdge : rightEdge) * scale;
+        graphics.fillRoundedRect(
+          horizontalArmX(firstArmDirection, 7, -34), centerY - 17 * scale, 27 * scale, 13 * scale, 5 * scale
+        );
+        graphics.fillRoundedRect(
+          verticalArmX(firstArmDirection, -34, 23), centerY - 34 * scale, 11 * scale, 30 * scale, 5 * scale
+        );
+        graphics.fillRoundedRect(
+          horizontalArmX(secondArmDirection, 8, -36), centerY + 1 * scale, 28 * scale, 13 * scale, 5 * scale
+        );
+        graphics.fillRoundedRect(
+          verticalArmX(secondArmDirection, -36, 24), centerY - 20 * scale, 12 * scale, 34 * scale, 5 * scale
+        );
         graphics.lineStyle(2 * scale, 0x93bd62, 0.86);
         [-5, 0, 5].forEach((offset) => graphics.lineBetween(centerX + offset * scale, centerY - 36 * scale, centerX + offset * scale, centerY + 20 * scale));
         graphics.lineStyle(0.75 * scale, 0xe6d69a, 0.74);

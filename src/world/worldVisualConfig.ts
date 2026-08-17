@@ -3,6 +3,13 @@
 export const GROUND_GRASS_SIZE_SCALE = 0.82;
 export const GROUND_GRASS_FREQUENCY_SCALE = 1.45;
 
+// 1-100 visual-biome transition width. Lower values create tighter regional borders; higher
+// values produce longer, gentler colour transitions. This changes rendering only, never the
+// deterministic gameplay biome labels, features, or collision/water rules.
+// 65 is intentionally broad enough that the eye reads a changing landscape rather than a
+// border. Reduce it for crisper regions or increase it for longer transitional ecotones.
+export const BIOME_BLEND_WIDTH_SCALE = 65;
+
 export const GROUND_GRASS_BASE_HEIGHT_PIXELS = 28;
 export const GROUND_GRASS_HEIGHT_VARIATION_PIXELS = 8;
 // GPU foliage animation is expressed in texture UV space so every blade in the transparent

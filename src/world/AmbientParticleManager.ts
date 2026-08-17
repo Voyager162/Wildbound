@@ -473,11 +473,12 @@ export class AmbientParticleManager {
         graphics.fillCircle(x + particle.size * 1.1, y - 1, particle.size * 0.65);
         break;
       case 'sand':
-        graphics.fillEllipse(x, y, particle.size * 6.4, particle.size * 1.05);
-        graphics.lineStyle(0.9, 0xffdc8e, alpha * 0.82);
-        graphics.lineBetween(x - particle.size * 2.6, y + 0.8, x + particle.size * 3.1, y - 0.7);
-        graphics.fillStyle(0xf7d587, alpha * 0.42);
-        graphics.fillCircle(x + particle.size * 1.8, y - 1.4, particle.size * 0.48);
+        // Sand is an atmospheric haze, not a row of bright dashes. Soft overlapping motes read
+        // as wind-blown grains while leaving the newly detailed desert surface unobscured.
+        graphics.fillStyle(particle.color, alpha * 0.38);
+        graphics.fillCircle(x, y, particle.size * 1.18);
+        graphics.fillStyle(0xf7d587, alpha * 0.18);
+        graphics.fillCircle(x + Math.cos(cycle) * particle.size * 0.72, y - particle.size * 0.32, particle.size * 0.72);
         break;
       case 'spore':
         graphics.fillCircle(x, y, particle.size * 0.8);

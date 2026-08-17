@@ -3,6 +3,7 @@ import { coherentNoise, randomAtTile } from './noise';
 import { sampleTopographyVisual, type TopographySample } from './topographyGenerator';
 import { CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from '../worldConfig';
 import {
+  BIOME_BLEND_WIDTH_SCALE,
   OCEAN_SHORELINE_RIPPLE_ELEVATION,
   OCEAN_SHORELINE_WOBBLE_ELEVATION,
   OCEAN_SURF_BLEND_ELEVATION
@@ -102,12 +103,20 @@ const smoothRange = (start: number, end: number, value: number): number => {
   return normalized * normalized * (3 - 2 * normalized);
 };
 
+// Scale each climate transition around its original midpoint. The input thresholds retain their
+// established meaning at 50, while designers can widen or tighten only the visual blending.
+const biomeBlend = (start: number, end: number, value: number): number => {
+  const midpoint = (start + end) * 0.5;
+  const halfRange = (end - start) * 0.5 * Math.max(0.01, BIOME_BLEND_WIDTH_SCALE / 50);
+  return smoothRange(midpoint - halfRange, midpoint + halfRange, value);
+};
+
 // This intentionally has no biome-label branch. It lets wetlands, their colors, and their pools
 // taper through a climate boundary rather than stepping when biomeForClimate changes its label.
 const swampClimateAmount = (climate: ReturnType<typeof climateAtTile>): number =>
-  smoothRange(0.7, 0.84, climate.moisture)
-    * smoothRange(0.36, 0.55, climate.temperature)
-    * (1 - smoothRange(0.58, 0.74, climate.elevation));
+  biomeBlend(0.7, 0.84, climate.moisture)
+    * biomeBlend(0.36, 0.55, climate.temperature)
+    * (1 - biomeBlend(0.58, 0.74, climate.elevation));
 
 // Biome labels are still useful for gameplay, but terrain color is derived from the continuous
 // climate values. This gives every visual boundary the same gradual treatment as a shoreline.
@@ -115,20 +124,20 @@ const blendedLandColor = (climate: ReturnType<typeof climateAtTile>): number => 
   const { elevation, moisture, temperature } = climate;
   let color = TERRAIN_COLORS[TerrainType.Grass];
 
-  const forestAmount = smoothRange(0.46, 0.67, moisture) * (1 - smoothRange(0.62, 0.8, temperature));
-  const desertAmount = smoothRange(0.6, 0.76, temperature) * (1 - smoothRange(0.28, 0.46, moisture));
+  const forestAmount = biomeBlend(0.46, 0.67, moisture) * (1 - biomeBlend(0.62, 0.8, temperature));
+  const desertAmount = biomeBlend(0.6, 0.76, temperature) * (1 - biomeBlend(0.28, 0.46, moisture));
   const swampAmount = swampClimateAmount(climate);
   color = blendColor(color, TERRAIN_COLORS[TerrainType.Forest], forestAmount);
   color = blendColor(color, TERRAIN_COLORS[TerrainType.Desert], desertAmount);
   color = blendColor(color, TERRAIN_COLORS[TerrainType.Swamp], swampAmount);
 
-  const hillAmount = smoothRange(0.6, 0.78, elevation);
-  const mountainAmount = smoothRange(0.76, 0.92, elevation);
+  const hillAmount = biomeBlend(0.6, 0.78, elevation);
+  const mountainAmount = biomeBlend(0.76, 0.92, elevation);
   color = blendColor(color, TERRAIN_COLORS[TerrainType.Dirt], hillAmount);
   color = blendColor(color, TERRAIN_COLORS[TerrainType.Mountain], mountainAmount);
 
-  const coldSnow = 1 - smoothRange(0.14, 0.34, temperature);
-  const highSnow = smoothRange(0.72, 0.92, elevation) * (1 - smoothRange(0.5, 0.68, temperature));
+  const coldSnow = 1 - biomeBlend(0.14, 0.34, temperature);
+  const highSnow = biomeBlend(0.72, 0.92, elevation) * (1 - biomeBlend(0.5, 0.68, temperature));
   color = blendColor(color, TERRAIN_COLORS[TerrainType.Snow], Math.max(coldSnow, highSnow));
 
   return color;

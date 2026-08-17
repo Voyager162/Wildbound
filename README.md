@@ -30,8 +30,10 @@ Setup, the installed executable, shortcuts, and the application window use the r
 - Terrain uses smoothly blended coastline/elevation bands, detailed grass/vegetation/sand/mud/ice/rock marks, rolling hill contours, mountain formations, and subtle animated water glints. These details are baked once into chunk textures.
 - Sparse code-generated trees, cacti, rocks, reeds, snowy rocks, and ice patches highlight when interactable and shake during harvesting.
 - Press `E` to open or close the 16-slot inventory. When a dropped item is in range, `E` picks it up instead; the drop receives a subtle world-space highlight.
-- Resources stack to 10, can be dragged between slots, and can be dragged outside the inventory to drop them into the world. Inventory items animate on hover, press, and drag.
-- The game automatically persists the seed, player position, inventory, harvested features, and dropped world items. Procedural terrain itself is regenerated from the saved seed.
+- Press `C` to open the crafting menu. Recipes consume gathered resources and create wooden/stone axes and pickaxes; click a tool in the inventory to equip or unequip it.
+- Resources stack to 10, can be dragged between slots, and can be dragged outside the inventory to drop them into the world. Tools are single-slot equipment items and stay safely in the inventory.
+- Axes speed up harvesting trees, shrubs, and cacti; pickaxes speed up rocks and stone features. The equipped tool is shown in the inventory and rendered in the player's hand.
+- The game automatically persists the seed, player position, inventory, equipped tool, harvested features, and dropped world items. Procedural terrain itself is regenerated from the saved seed.
 
 ## Save location
 
@@ -47,8 +49,13 @@ This file stores only player/world changes over the deterministic generated worl
 - `src/player/playerConfig.ts`: `PLAYER_SPEED_SCALE` is a 1-100 movement-speed control. Current value: `70`, which keeps 308 pixels per second on land.
 - `src/ui/uiConfig.ts`: `MINIMAP_AREA_SCALE` is a 1-100 minimap-coverage control. Current value: `50`, which preserves the previous coverage.
 - `src/world/generation/featureGenerator.ts`: `FEATURE_DENSITIES` controls deterministic feature density by biome.
+- `src/world/groundGrassConfig.ts`: `GROUND_GRASS_DENSITY_BY_BIOME` controls decorative ground-grass density for every biome; `0` prevents the layer from spawning there.
+- `src/world/worldVisualConfig.ts`: `BIOME_BLEND_WIDTH_SCALE` is a 1-100 visual transition-width control; `50` preserves the authored blend width.
 - `src/world/explorationConfig.ts` controls fog reveal granularity, day/night duration, and ambient effect budgets.
 - `src/world/landmarkConfig.ts` controls landmark rarity, placement spacing, footprints, and visibility range.
+- `src/crafting/recipeConfig.ts` contains resource costs and outputs for craftable items.
+- `src/crafting/toolConfig.ts` contains tool types and harvest-speed multipliers.
+- `src/world/ambientPerformanceConfig.ts` and `src/world/foliageAnimationConfig.ts` contain bounded visual update cadences for water and foliage.
 
 ## Procedural world configuration
 

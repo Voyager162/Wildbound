@@ -1,15 +1,23 @@
 ﻿import { RESOURCE_TYPES, ResourceType } from '../world/resources';
 
+import { isToolId, type ToolId } from '../crafting/toolConfig';
+
 export const INVENTORY_SLOT_COUNT = 16;
 export const MAX_STACK_SIZE = 10;
 
+export type InventoryItem = ResourceType | ToolId;
+
 export interface InventorySlot {
-  resource: ResourceType;
+  item: InventoryItem;
   amount: number;
 }
 
 const isResourceType = (value: unknown): value is ResourceType =>
   typeof value === 'string' && Object.values(ResourceType).includes(value as ResourceType);
+
+export const isInventoryItem = (value: unknown): value is InventoryItem => isResourceType(value) || isToolId(value);
+
+export const inventoryItemStackLimit = (item: InventoryItem): number => isToolId(item) ? 1 : MAX_STACK_SIZE;
 
 const isSlot = (value: unknown): value is InventorySlot => {
   if (!value || typeof value !== 'object') {
@@ -17,38 +25,55 @@ const isSlot = (value: unknown): value is InventorySlot => {
   }
 
   const slot = value as Partial<InventorySlot>;
-  return isResourceType(slot.resource)
+  return isInventoryItem(slot.item)
     && Number.isInteger(slot.amount)
     && (slot.amount ?? 0) > 0
-    && (slot.amount ?? 0) <= MAX_STACK_SIZE;
+    && (slot.amount ?? 0) <= inventoryItemStackLimit(slot.item);
+};
+
+const legacySlotItem = (value: unknown): InventorySlot | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const legacy = value as { resource?: unknown; amount?: unknown };
+  return isResourceType(legacy.resource)
+    && typeof legacy.amount === 'number'
+    && Number.isInteger(legacy.amount)
+    && legacy.amount > 0
+    && legacy.amount <= MAX_STACK_SIZE
+    ? { item: legacy.resource, amount: legacy.amount }
+    : null;
 };
 
 export class Inventory {
   private readonly slots: Array<InventorySlot | null> = Array.from({ length: INVENTORY_SLOT_COUNT }, () => null);
 
-  canAdd(resource: ResourceType, amount: number): boolean {
+  canAdd(item: InventoryItem, amount: number): boolean {
     let capacity = 0;
+    const stackLimit = inventoryItemStackLimit(item);
 
     for (const slot of this.slots) {
       if (!slot) {
-        capacity += MAX_STACK_SIZE;
-      } else if (slot.resource === resource) {
-        capacity += MAX_STACK_SIZE - slot.amount;
+        capacity += stackLimit;
+      } else if (slot.item === item) {
+        capacity += stackLimit - slot.amount;
       }
     }
 
     return capacity >= amount;
   }
 
-  add(resource: ResourceType, amount: number): number {
+  add(item: InventoryItem, amount: number): number {
     let remaining = amount;
+    const stackLimit = inventoryItemStackLimit(item);
 
     for (const slot of this.slots) {
-      if (!slot || slot.resource !== resource || slot.amount >= MAX_STACK_SIZE) {
+      if (!slot || slot.item !== item || slot.amount >= stackLimit) {
         continue;
       }
 
-      const added = Math.min(MAX_STACK_SIZE - slot.amount, remaining);
+      const added = Math.min(stackLimit - slot.amount, remaining);
       slot.amount += added;
       remaining -= added;
 
@@ -62,8 +87,8 @@ export class Inventory {
         continue;
       }
 
-      const added = Math.min(MAX_STACK_SIZE, remaining);
-      this.slots[index] = { resource, amount: added };
+      const added = Math.min(stackLimit, remaining);
+      this.slots[index] = { item, amount: added };
       remaining -= added;
     }
 
@@ -88,8 +113,9 @@ export class Inventory {
       return true;
     }
 
-    if (source.resource === destination.resource && destination.amount < MAX_STACK_SIZE) {
-      const moved = Math.min(MAX_STACK_SIZE - destination.amount, source.amount);
+    const stackLimit = inventoryItemStackLimit(source.item);
+    if (source.item === destination.item && destination.amount < stackLimit) {
+      const moved = Math.min(stackLimit - destination.amount, source.amount);
       destination.amount += moved;
       source.amount -= moved;
 
@@ -125,12 +151,38 @@ export class Inventory {
     savedSlots.slice(0, INVENTORY_SLOT_COUNT).forEach((slot, index) => {
       if (isSlot(slot)) {
         this.slots[index] = { ...slot };
+      } else {
+        const legacySlot = legacySlotItem(slot);
+        if (legacySlot) {
+          this.slots[index] = legacySlot;
+        }
       }
     });
   }
 
-  get(resource: ResourceType): number {
-    return this.slots.reduce((total, slot) => total + (slot?.resource === resource ? slot.amount : 0), 0);
+  get(item: InventoryItem): number {
+    return this.slots.reduce((total, slot) => total + (slot?.item === item ? slot.amount : 0), 0);
+  }
+
+  remove(item: InventoryItem, amount: number): boolean {
+    if (!Number.isInteger(amount) || amount < 1 || this.get(item) < amount) {
+      return false;
+    }
+
+    let remaining = amount;
+    this.slots.forEach((slot, index) => {
+      if (!slot || slot.item !== item || remaining === 0) {
+        return;
+      }
+
+      const removed = Math.min(slot.amount, remaining);
+      slot.amount -= removed;
+      remaining -= removed;
+      if (slot.amount === 0) {
+        this.slots[index] = null;
+      }
+    });
+    return true;
   }
 
   entries(): ReadonlyArray<readonly [ResourceType, number]> {
