@@ -430,6 +430,7 @@ export class WorldChunk {
     const waveCandidates: Array<WaterWave & { priority: number }> = [];
     const terrainVertexColors = this.createTerrainVertexColors();
     this.paintContinuousTerrain(context, terrainVertexColors);
+    this.paintCaveTerrainFormations(context);
     // Compact alpha masks are built once while the baked terrain is sampled. The two TileSprites
     // above them can then flow across all water pixels without rebuilding a chunk canvas each tick.
     const waterMaskSize = CHUNK_SIZE_PIXELS / VISUAL_TERRAIN_CELL_SIZE;
@@ -531,6 +532,40 @@ export class WorldChunk {
       .slice(0, WATER_WAVES_PER_VISIBLE_CHUNK)
       .forEach(({ priority: _priority, ...wave }) => this.waterWaves.push(wave));
     this.updateWaterAnimation(0);
+  }
+
+  // Broad, low-contrast erosion is painted directly into the terrain canvas before foreground
+  // rocks are added. This makes an entrance alter the biome material instead of floating on it.
+  private paintCaveTerrainFormations(context: CanvasRenderingContext2D): void {
+    this.caveEntrances.forEach((entrance) => {
+      const centerX = (entrance.tileX - this.x * CHUNK_SIZE_TILES + 0.5) * WORLD_TILE_SIZE;
+      const centerY = (entrance.tileY - this.y * CHUNK_SIZE_TILES + 0.5) * WORLD_TILE_SIZE;
+      const radius = entrance.formationRadiusTiles * WORLD_TILE_SIZE;
+      const elongatedX = radius * (1.34 + Math.abs(Math.cos(entrance.mouthAngle)) * 0.18);
+      const elongatedY = radius * (0.84 + Math.abs(Math.sin(entrance.mouthAngle)) * 0.2);
+      const gradient = context.createRadialGradient(centerX - radius * 0.18, centerY - radius * 0.08, radius * 0.08, centerX, centerY, elongatedX);
+      gradient.addColorStop(0, 'rgba(25, 28, 27, 0.62)');
+      gradient.addColorStop(0.5, 'rgba(54, 49, 39, 0.30)');
+      gradient.addColorStop(1, 'rgba(33, 28, 22, 0)');
+      context.save();
+      context.fillStyle = gradient;
+      context.beginPath();
+      context.ellipse(centerX, centerY + radius * 0.1, elongatedX, elongatedY, entrance.mouthAngle * 0.12, 0, Math.PI * 2);
+      context.fill();
+      context.globalAlpha = 0.22;
+      context.strokeStyle = entrance.biome === Biome.Desert ? '#5f4428' : entrance.biome === Biome.Snow ? '#526572' : '#38443a';
+      context.lineWidth = 2;
+      for (let crack = 0; crack < 9; crack += 1) {
+        const angle = entrance.mouthAngle + (crack / 9 - 0.5) * Math.PI * 1.55;
+        const start = radius * (0.36 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x5a71 + crack) * 0.18);
+        const end = radius * (0.75 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x6b91 + crack) * 0.24);
+        context.beginPath();
+        context.moveTo(centerX + Math.cos(angle) * start, centerY + Math.sin(angle) * start);
+        context.lineTo(centerX + Math.cos(angle + 0.18) * end, centerY + Math.sin(angle + 0.18) * end);
+        context.stroke();
+      }
+      context.restore();
+    });
   }
 
   private oceanShoreNormal(tileX: number, tileY: number): { x: number; y: number } {
@@ -1314,37 +1349,48 @@ export class WorldChunk {
   private drawCaveEntrance(entrance: CaveEntrance, tileX: number, tileY: number): void {
     const graphics = this.featureGraphics;
     const centerX = tileX + WORLD_TILE_SIZE / 2;
-    const centerY = tileY + WORLD_TILE_SIZE / 2 + 4;
+    const centerY = tileY + WORLD_TILE_SIZE / 2 + 8;
+    const radius = entrance.formationRadiusTiles * WORLD_TILE_SIZE;
     const palette = entrance.biome === Biome.Desert
-      ? { shadow: 0x7c552f, rock: 0xb27b42, light: 0xdbad67 }
+      ? { shadow: 0x6a482a, rock: 0x8a633d, light: 0xc89757, moss: 0x8d8041 }
       : entrance.biome === Biome.Snow
-        ? { shadow: 0x52616a, rock: 0x889ca4, light: 0xd3e5e8 }
+        ? { shadow: 0x4a5962, rock: 0x6e818a, light: 0xc6dde0, moss: 0x91abb0 }
         : entrance.biome === Biome.Forest || entrance.biome === Biome.Swamp
-          ? { shadow: 0x293b2b, rock: 0x53634b, light: 0x8d9a69 }
-          : { shadow: 0x3b3c3b, rock: 0x687074, light: 0xa7a59b };
+          ? { shadow: 0x283a2b, rock: 0x4c5d47, light: 0x819262, moss: 0x6f8b45 }
+          : { shadow: 0x353837, rock: 0x5d6768, light: 0x9ba49d, moss: 0x728158 };
 
-    // Layered earth and rocks keep the opening anchored in its surface biome instead of
-    // reading as an icon placed above the terrain.
-    graphics.fillStyle(palette.shadow, 0.46);
-    graphics.fillEllipse(centerX + 2, centerY + 15, 74, 29);
-    graphics.fillStyle(palette.rock, 0.95);
-    graphics.fillTriangle(centerX - 35, centerY + 13, centerX - 21, centerY - 22, centerX - 3, centerY + 14);
-    graphics.fillTriangle(centerX + 5, centerY + 15, centerX + 24, centerY - 20, centerX + 38, centerY + 13);
-    graphics.fillStyle(palette.light, 0.68);
-    graphics.fillTriangle(centerX - 30, centerY + 7, centerX - 21, centerY - 17, centerX - 13, centerY + 8);
-    graphics.fillTriangle(centerX + 12, centerY + 8, centerX + 24, centerY - 15, centerX + 30, centerY + 8);
-    graphics.fillStyle(0x090b0d, 0.98);
-    graphics.fillEllipse(centerX, centerY + 6, 45, 27);
-    graphics.fillStyle(0x171b1d, 0.9);
-    graphics.fillEllipse(centerX - 5, centerY + 3, 30, 16);
-    graphics.fillStyle(0x020304, 0.82);
-    graphics.fillEllipse(centerX + 8, centerY + 9, 24, 13);
-    graphics.lineStyle(2, palette.light, 0.52);
-    graphics.lineBetween(centerX - 18, centerY - 1, centerX - 5, centerY - 10);
-    graphics.lineBetween(centerX + 13, centerY - 6, centerX + 23, centerY + 3);
-    graphics.fillStyle(palette.rock, 0.88);
-    graphics.fillCircle(centerX - 37, centerY + 13, 7);
-    graphics.fillCircle(centerX + 37, centerY + 14, 6);
+    // The foreground is a broken exposed rock face. Its larger silhouette works with the
+    // terrain-canvas erosion beneath it, so the dark opening reads as a cut into a hillside.
+    graphics.fillStyle(palette.shadow, 0.42);
+    graphics.fillEllipse(centerX + 4, centerY + radius * 0.34, radius * 2.5, radius * 1.12);
+    for (let rock = 0; rock < 17; rock += 1) {
+      const angle = entrance.mouthAngle + (rock / 17) * Math.PI * 2;
+      const distance = radius * (0.66 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x7a01 + rock) * 0.4);
+      const size = 7 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x7b41 + rock) * 15;
+      const x = centerX + Math.cos(angle) * distance;
+      const y = centerY + Math.sin(angle) * distance * 0.62;
+      graphics.fillStyle(rock % 3 === 0 ? palette.light : palette.rock, 0.72 + (rock % 4) * 0.06);
+      graphics.fillEllipse(x, y, size * 1.28, size * 0.8);
+      if (rock % 3 === 0) {
+        graphics.fillStyle(palette.moss, 0.52);
+        graphics.fillEllipse(x - size * 0.17, y - size * 0.12, size * 0.54, size * 0.22);
+      }
+    }
+    graphics.fillStyle(0x07090a, 0.98);
+    graphics.beginPath();
+    graphics.moveTo(centerX - radius * 0.66, centerY + radius * 0.2);
+    graphics.lineTo(centerX - radius * 0.45, centerY - radius * 0.44);
+    graphics.lineTo(centerX + radius * 0.18, centerY - radius * 0.56);
+    graphics.lineTo(centerX + radius * 0.64, centerY - radius * 0.12);
+    graphics.lineTo(centerX + radius * 0.5, centerY + radius * 0.35);
+    graphics.lineTo(centerX - radius * 0.1, centerY + radius * 0.48);
+    graphics.lineTo(centerX - radius * 0.66, centerY + radius * 0.2);
+    graphics.closePath();
+    graphics.fillPath();
+    graphics.fillStyle(0x1c2222, 0.8);
+    graphics.fillEllipse(centerX - radius * 0.05, centerY - radius * 0.02, radius * 0.92, radius * 0.37);
+    graphics.fillStyle(0x030405, 0.9);
+    graphics.fillEllipse(centerX + radius * 0.12, centerY + radius * 0.18, radius * 0.74, radius * 0.25);
   }
 
   private tileKey(tileX: number, tileY: number): string {

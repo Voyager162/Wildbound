@@ -16,6 +16,7 @@ import { ChunkManager } from '../world/ChunkManager';
 import { DropManager } from '../world/DropManager';
 import { biomeAtTile, climateAtTile } from '../world/generation/biomeGenerator';
 import { featureAtTile } from '../world/generation/featureGenerator';
+import { randomAtTile } from '../world/generation/noise';
 import { isTraversableWaterAt } from '../world/generation/terrainGenerator';
 import type { TopographySample } from '../world/generation/topographyGenerator';
 import { RESOURCE_COLORS, ResourceType, resourceForFeature, resourceLabel } from '../world/resources';
@@ -1258,22 +1259,45 @@ export class AdventureScene extends Phaser.Scene {
     graphics.fillStyle(0x07090b, 1);
     graphics.fillRect(outerX, outerY, (layout.width + 2) * WORLD_TILE_SIZE, (layout.height + 2) * WORLD_TILE_SIZE);
 
+    // All floor cells use one underlying material, so adjacent passages read as one continuous
+    // rock surface. Detail is layered over it rather than encoded as a visible square grid.
     for (let y = 0; y < layout.height; y += 1) {
       for (let x = 0; x < layout.width; x += 1) {
         const worldX = origin.x + x * WORLD_TILE_SIZE;
         const worldY = origin.y + y * WORLD_TILE_SIZE;
         if (layout.floorTiles[y][x]) {
-          const shade = (x * 13 + y * 7) % 3;
-          graphics.fillStyle(shade === 0 ? 0x34383a : shade === 1 ? 0x303436 : 0x3b3c3a, 1);
+          graphics.fillStyle(0x343a37, 1);
           graphics.fillRect(worldX, worldY, WORLD_TILE_SIZE, WORLD_TILE_SIZE);
-          graphics.fillStyle(0x68706c, 0.12);
-          graphics.fillEllipse(worldX + 10 + (x * 5 % 10), worldY + 13 + (y * 7 % 8), 9, 3);
-        } else {
-          graphics.fillStyle(0x171b1d, 1);
-          graphics.fillRect(worldX, worldY, WORLD_TILE_SIZE, WORLD_TILE_SIZE);
-          graphics.fillStyle(0x252b2d, 0.8);
-          graphics.fillTriangle(worldX, worldY, worldX + WORLD_TILE_SIZE, worldY, worldX + (x % 2 ? 17 : 10), worldY + WORLD_TILE_SIZE);
         }
+      }
+    }
+
+    for (let y = 1; y < layout.height - 1; y += 1) {
+      for (let x = 1; x < layout.width - 1; x += 1) {
+        if (!layout.floorTiles[y][x]) continue;
+        const worldX = origin.x + x * WORLD_TILE_SIZE;
+        const worldY = origin.y + y * WORLD_TILE_SIZE;
+        const detail = randomAtTile(this.worldSeed, cave.entrance.tileX * 211 + x, cave.entrance.tileY * 211 + y, 0x6c7e);
+        if (detail > 0.57) {
+          graphics.fillStyle(detail > 0.85 ? 0x788077 : 0x596059, detail > 0.85 ? 0.15 : 0.1);
+          graphics.fillEllipse(worldX + 4 + detail * 21, worldY + 5 + (1 - detail) * 19, 8 + detail * 17, 2 + detail * 4);
+        }
+        if (detail > 0.93) {
+          graphics.lineStyle(1.2, 0x141918, 0.38);
+          graphics.lineBetween(worldX + 5, worldY + 9, worldX + 19, worldY + 13);
+          graphics.lineBetween(worldX + 19, worldY + 13, worldX + 25, worldY + 23);
+        }
+        [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach(([offsetX, offsetY]) => {
+          if (layout.floorTiles[y + offsetY][x + offsetX]) return;
+          graphics.fillStyle(0x1a2020, 0.92);
+          if (offsetX < 0) graphics.fillRect(worldX, worldY, 7, WORLD_TILE_SIZE);
+          else if (offsetX > 0) graphics.fillRect(worldX + WORLD_TILE_SIZE - 7, worldY, 7, WORLD_TILE_SIZE);
+          else if (offsetY < 0) graphics.fillRect(worldX, worldY, WORLD_TILE_SIZE, 7);
+          else graphics.fillRect(worldX, worldY + WORLD_TILE_SIZE - 7, WORLD_TILE_SIZE, 7);
+          const rubble = 4 + detail * 5;
+          graphics.fillStyle(0x5c635d, 0.84);
+          graphics.fillEllipse(worldX + 16 + offsetX * 12, worldY + 16 + offsetY * 12, rubble * 1.6, rubble);
+        });
       }
     }
 
@@ -1299,15 +1323,15 @@ export class AdventureScene extends Phaser.Scene {
     const color = RESOURCE_COLORS[ore.type === 'coal' ? ResourceType.Coal
       : ore.type === 'iron' ? ResourceType.Iron
         : ore.type === 'gold' ? ResourceType.Gold : ResourceType.Diamond];
-    graphics.fillStyle(0x1d2324, 1);
-    graphics.fillCircle(position.x, position.y + 5, 12);
-    graphics.fillStyle(0x69716e, 1);
-    graphics.fillTriangle(position.x - 11, position.y + 7, position.x - 3, position.y - 10, position.x + 11, position.y + 6);
-    graphics.fillStyle(color, 0.95);
-    graphics.fillCircle(position.x - 3, position.y - 1, 4.5);
-    graphics.fillCircle(position.x + 5, position.y + 4, 3.5);
-    graphics.fillStyle(0xffffff, ore.type === 'diamond' ? 0.58 : 0.28);
-    graphics.fillCircle(position.x - 4, position.y - 3, 1.5);
+    // Mineral is embedded as a vein in surrounding floor or wall rock, never a loose pickup icon.
+    graphics.fillStyle(ore.placement === 'wall' ? 0x4c5552 : 0x59605a, 0.92);
+    graphics.fillEllipse(position.x, position.y + 3, ore.placement === 'wall' ? 23 : 18, ore.placement === 'wall' ? 15 : 10);
+    [-6, -1, 5, 8].forEach((offset, index) => {
+      graphics.fillStyle(color, 0.72 + index * 0.06);
+      graphics.fillEllipse(position.x + offset, position.y + (index % 2 ? 3 : -2), 5 + index % 2 * 2, 4 + index % 2 * 2);
+    });
+    graphics.lineStyle(1.2, 0xffffff, ore.type === 'diamond' ? 0.48 : 0.2);
+    graphics.lineBetween(position.x - 7, position.y - 3, position.x + 6, position.y + 4);
   }
 
   private updateCave(time: number, delta: number): void {
