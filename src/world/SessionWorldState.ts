@@ -12,6 +12,7 @@ export interface DroppedItem {
 
 export interface SessionWorldStateData {
   harvestedFeatureKeys: string[];
+  harvestedCaveOreKeys?: string[];
   drops: DroppedItem[];
   nextDropId: number;
   // Exploration is deliberately coarse: each key represents a fixed map region, not a tile.
@@ -44,6 +45,7 @@ const isDroppedItem = (value: unknown): value is DroppedItem => {
 // save games only record changes, never every procedurally generated terrain tile.
 export class SessionWorldState {
   private readonly harvestedFeatureKeys = new Set<string>();
+  private readonly harvestedCaveOreKeys = new Set<string>();
   private readonly drops = new Map<string, DroppedItem>();
   private readonly exploredRegionKeys = new Set<string>();
   private readonly explorationRevealStampKeys = new Set<string>();
@@ -94,6 +96,19 @@ export class SessionWorldState {
     }
 
     return drop ? { ...drop } : null;
+  }
+
+  isCaveOreHarvested(oreId: string): boolean {
+    return this.harvestedCaveOreKeys.has(oreId);
+  }
+
+  harvestCaveOre(oreId: string): boolean {
+    if (!oreId || this.harvestedCaveOreKeys.has(oreId)) {
+      return false;
+    }
+
+    this.harvestedCaveOreKeys.add(oreId);
+    return true;
   }
 
   revealRegion(regionX: number, regionY: number): boolean {
@@ -195,6 +210,7 @@ export class SessionWorldState {
   toSaveData(): SessionWorldStateData {
     return {
       harvestedFeatureKeys: Array.from(this.harvestedFeatureKeys),
+      harvestedCaveOreKeys: Array.from(this.harvestedCaveOreKeys),
       drops: this.getDrops(),
       nextDropId: this.nextDropId,
       exploredRegionKeys: Array.from(this.exploredRegionKeys),
@@ -206,6 +222,7 @@ export class SessionWorldState {
 
   restore(data: unknown): void {
     this.harvestedFeatureKeys.clear();
+    this.harvestedCaveOreKeys.clear();
     this.drops.clear();
     this.exploredRegionKeys.clear();
     this.explorationRevealStampKeys.clear();
@@ -231,6 +248,14 @@ export class SessionWorldState {
 
     if (typeof state.nextDropId === 'number' && Number.isInteger(state.nextDropId) && state.nextDropId >= 0) {
       this.nextDropId = state.nextDropId;
+    }
+
+    if (Array.isArray(state.harvestedCaveOreKeys)) {
+      state.harvestedCaveOreKeys.forEach((key) => {
+        if (typeof key === 'string' && key.length <= 160) {
+          this.harvestedCaveOreKeys.add(key);
+        }
+      });
     }
 
     if (Array.isArray(state.exploredRegionKeys)) {
@@ -284,6 +309,10 @@ export class SessionWorldState {
 
   get dropCount(): number {
     return this.drops.size;
+  }
+
+  get harvestedCaveOreCount(): number {
+    return this.harvestedCaveOreKeys.size;
   }
 
   get exploredRegionCount(): number {

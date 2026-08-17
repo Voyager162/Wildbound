@@ -50,6 +50,7 @@ import {
   GROUND_GRASS_SIZE_SCALE
 } from './worldVisualConfig';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
+import { generateChunkCaveEntrances, type CaveEntrance } from './caves/caveGenerator';
 
 // Terrain is sampled in compact 8px cells, then bilinearly painted into one continuous canvas.
 // This keeps chunk generation bounded while avoiding a visible grid in the world itself.
@@ -117,6 +118,7 @@ export class WorldChunk {
   private readonly featureImage: Phaser.GameObjects.Image;
   private readonly featureGraphics: Phaser.GameObjects.Graphics;
   private readonly features: TerrainFeature[];
+  private readonly caveEntrances: readonly CaveEntrance[];
   private readonly animatedGroundGrass: AnimatedGroundGrassPatch[] = [];
   private readonly animatedFeatureFoliage = new Map<string, AnimatedFeatureFoliage>();
   private readonly waterWaves: WaterWave[] = [];
@@ -156,6 +158,7 @@ export class WorldChunk {
     // This is an off-screen scratch pad only. It is immediately baked into featureImage's texture.
     this.featureGraphics = scene.add.graphics().setVisible(false);
     this.features = generateChunkFeatures(seed, x, y);
+    this.caveEntrances = generateChunkCaveEntrances(seed, x, y);
 
     this.drawTerrain(terrainTexture);
     this.createAnimatedGroundGrass();
@@ -380,6 +383,13 @@ export class WorldChunk {
           worldTileY
         );
       }
+    });
+    this.caveEntrances.forEach((entrance) => {
+      this.drawCaveEntrance(
+        entrance,
+        (entrance.tileX - this.x * CHUNK_SIZE_TILES) * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING,
+        (entrance.tileY - this.y * CHUNK_SIZE_TILES) * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING
+      );
     });
 
     this.featureGraphics.generateTexture(this.featureTextureKey, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
@@ -1299,6 +1309,42 @@ export class WorldChunk {
         break;
       }
     }
+  }
+
+  private drawCaveEntrance(entrance: CaveEntrance, tileX: number, tileY: number): void {
+    const graphics = this.featureGraphics;
+    const centerX = tileX + WORLD_TILE_SIZE / 2;
+    const centerY = tileY + WORLD_TILE_SIZE / 2 + 4;
+    const palette = entrance.biome === Biome.Desert
+      ? { shadow: 0x7c552f, rock: 0xb27b42, light: 0xdbad67 }
+      : entrance.biome === Biome.Snow
+        ? { shadow: 0x52616a, rock: 0x889ca4, light: 0xd3e5e8 }
+        : entrance.biome === Biome.Forest || entrance.biome === Biome.Swamp
+          ? { shadow: 0x293b2b, rock: 0x53634b, light: 0x8d9a69 }
+          : { shadow: 0x3b3c3b, rock: 0x687074, light: 0xa7a59b };
+
+    // Layered earth and rocks keep the opening anchored in its surface biome instead of
+    // reading as an icon placed above the terrain.
+    graphics.fillStyle(palette.shadow, 0.46);
+    graphics.fillEllipse(centerX + 2, centerY + 15, 74, 29);
+    graphics.fillStyle(palette.rock, 0.95);
+    graphics.fillTriangle(centerX - 35, centerY + 13, centerX - 21, centerY - 22, centerX - 3, centerY + 14);
+    graphics.fillTriangle(centerX + 5, centerY + 15, centerX + 24, centerY - 20, centerX + 38, centerY + 13);
+    graphics.fillStyle(palette.light, 0.68);
+    graphics.fillTriangle(centerX - 30, centerY + 7, centerX - 21, centerY - 17, centerX - 13, centerY + 8);
+    graphics.fillTriangle(centerX + 12, centerY + 8, centerX + 24, centerY - 15, centerX + 30, centerY + 8);
+    graphics.fillStyle(0x090b0d, 0.98);
+    graphics.fillEllipse(centerX, centerY + 6, 45, 27);
+    graphics.fillStyle(0x171b1d, 0.9);
+    graphics.fillEllipse(centerX - 5, centerY + 3, 30, 16);
+    graphics.fillStyle(0x020304, 0.82);
+    graphics.fillEllipse(centerX + 8, centerY + 9, 24, 13);
+    graphics.lineStyle(2, palette.light, 0.52);
+    graphics.lineBetween(centerX - 18, centerY - 1, centerX - 5, centerY - 10);
+    graphics.lineBetween(centerX + 13, centerY - 6, centerX + 23, centerY + 3);
+    graphics.fillStyle(palette.rock, 0.88);
+    graphics.fillCircle(centerX - 37, centerY + 13, 7);
+    graphics.fillCircle(centerX + 37, centerY + 14, 6);
   }
 
   private tileKey(tileX: number, tileY: number): string {

@@ -1,5 +1,6 @@
 import { CRAFTING_RECIPES, type CraftingRecipe } from '../crafting/recipeConfig';
-import { TOOL_DEFINITIONS, type ToolId } from '../crafting/toolConfig';
+import { TOOL_DEFINITIONS } from '../crafting/toolConfig';
+import { peakHarvestSpeedForTool } from '../crafting/harvestSpeedConfig';
 import type { Inventory } from '../player/Inventory';
 import { resourceLabel } from '../world/resources';
 
@@ -29,7 +30,7 @@ export class CraftingOverlay {
 
     const description = document.createElement('p');
     description.className = 'crafting-description';
-    description.textContent = 'Craft a tool, then select it in your inventory to equip it.';
+    description.textContent = 'Craft a tool, then place it in quick access and select it to equip.';
 
     this.recipes = document.createElement('div');
     this.recipes.className = 'crafting-recipes';
@@ -70,7 +71,7 @@ export class CraftingOverlay {
     button.setAttribute('aria-label', `Craft ${tool.label}`);
 
     const icon = document.createElement('span');
-    icon.className = `tool-icon tool-icon--${tool.kind}`;
+    icon.className = `tool-icon tool-icon--${tool.kind} tool-icon--${tool.headMaterial}`;
     icon.setAttribute('aria-hidden', 'true');
 
     const details = document.createElement('span');
@@ -78,7 +79,7 @@ export class CraftingOverlay {
     const label = document.createElement('strong');
     label.textContent = tool.label;
     const speed = document.createElement('small');
-    speed.textContent = `${tool.harvestSpeedMultiplier.toFixed(2)}× ${tool.kind} speed`;
+    speed.textContent = `Up to ${peakHarvestSpeedForTool(tool.id).toFixed(2)}× harvest speed`;
     const ingredients = document.createElement('span');
     ingredients.className = 'crafting-recipe__ingredients';
     ingredients.textContent = recipe.ingredients.map((ingredient) => {

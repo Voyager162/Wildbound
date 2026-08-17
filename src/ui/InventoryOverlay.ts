@@ -1,10 +1,19 @@
 import { TOOL_DEFINITIONS, isToolId, type ToolId } from '../crafting/toolConfig';
-import type { Inventory, InventoryItem, InventorySlot } from '../player/Inventory';
+import { peakHarvestSpeedForTool } from '../crafting/harvestSpeedConfig';
+import { CRAFTING_RECIPES, type CraftingRecipe } from '../crafting/recipeConfig';
+import { HOTBAR_SLOT_COUNT, type Inventory, type InventoryItem, type InventorySlot } from '../player/Inventory';
 import { resourceLabel } from '../world/resources';
 
 export class InventoryOverlay {
   private readonly element: HTMLDivElement;
+  private readonly panel: HTMLElement;
+  private readonly titleLabel: HTMLSpanElement;
+  private readonly titleHint: HTMLSpanElement;
+  private readonly hotbar: HTMLDivElement;
   private readonly grid: HTMLDivElement;
+  private readonly inventoryContent: HTMLDivElement;
+  private readonly crafting: HTMLDivElement;
+  private craftingOpen = false;
   private draggingIndex: number | null = null;
   private dragSourceSlot: HTMLButtonElement | null = null;
   private dragItemElement: HTMLDivElement | null = null;
@@ -21,31 +30,45 @@ export class InventoryOverlay {
     private readonly onChanged: () => void,
     private readonly onDropOutside: (slot: InventorySlot) => void,
     private readonly equippedTool: () => ToolId | null,
-    private readonly onEquipTool: (tool: ToolId | null) => void
+    private readonly onEquipTool: (tool: ToolId | null) => void,
+    private readonly onCraft: (recipe: CraftingRecipe) => boolean
   ) {
     this.element = document.createElement('div');
     this.element.className = 'inventory-overlay';
     this.element.setAttribute('aria-hidden', 'true');
 
-    const panel = document.createElement('section');
-    panel.className = 'inventory-panel';
-    panel.setAttribute('aria-label', 'Inventory');
+    this.panel = document.createElement('section');
+    this.panel.className = 'inventory-panel';
+    this.panel.setAttribute('aria-label', 'Inventory');
 
     const title = document.createElement('div');
     title.className = 'inventory-title';
-    title.textContent = 'Inventory';
-    const hint = document.createElement('span');
-    hint.textContent = 'E to close';
-    title.append(hint);
+    this.titleLabel = document.createElement('span');
+    this.titleLabel.className = 'inventory-title__label';
+    this.titleLabel.textContent = 'Inventory';
+    this.titleHint = document.createElement('span');
+    this.titleHint.className = 'inventory-title__hint';
+    title.append(this.titleLabel, this.titleHint);
 
     const equipped = document.createElement('div');
     equipped.className = 'inventory-equipped';
-    panel.append(title, equipped);
+    this.panel.append(title, equipped);
 
+    this.inventoryContent = document.createElement('div');
+    this.inventoryContent.className = 'inventory-content';
+    const hotbarLabel = document.createElement('div');
+    hotbarLabel.className = 'inventory-hotbar-label';
+    hotbarLabel.textContent = 'Quick access';
+    this.hotbar = document.createElement('div');
+    this.hotbar.className = 'inventory-hotbar';
     this.grid = document.createElement('div');
     this.grid.className = 'inventory-grid';
-    panel.append(this.grid);
-    this.element.append(panel);
+    this.inventoryContent.append(hotbarLabel, this.hotbar, this.grid);
+
+    this.crafting = document.createElement('div');
+    this.crafting.className = 'inventory-crafting';
+    this.panel.append(this.inventoryContent, this.crafting);
+    this.element.append(this.panel);
     parent.append(this.element);
     this.render();
   }
@@ -63,13 +86,32 @@ export class InventoryOverlay {
     }
   }
 
+  setCraftingOpen(open: boolean): void {
+    if (this.craftingOpen === open) {
+      return;
+    }
+
+    this.cancelDrag();
+    this.craftingOpen = open;
+    this.panel.classList.toggle('is-crafting', open);
+    this.panel.setAttribute('aria-label', open ? 'Crafting in inventory' : 'Inventory');
+    this.render();
+  }
+
   destroy(): void {
     this.cancelDrag();
     this.element.remove();
   }
 
+  refresh(): void {
+    this.render();
+  }
+
   private render(): void {
     this.grid.replaceChildren();
+    this.hotbar.replaceChildren();
+    this.titleLabel.textContent = this.craftingOpen ? 'Crafting' : 'Inventory';
+    this.titleHint.textContent = this.craftingOpen ? 'C inventory · E close' : 'C crafting · E close';
     const equippedLabel = this.element.querySelector<HTMLElement>('.inventory-equipped');
     const equipped = this.equippedTool();
     if (equippedLabel) {
@@ -77,29 +119,88 @@ export class InventoryOverlay {
     }
 
     this.inventory.getSlots().forEach((slot, index) => {
-      const slotElement = document.createElement('button');
-      slotElement.type = 'button';
-      slotElement.className = 'inventory-slot';
-      slotElement.dataset.inventorySlot = String(index);
-      slotElement.setAttribute('aria-label', slot ? `${this.itemLabel(slot.item)}, ${slot.amount}` : 'Empty inventory slot');
+      const slotElement = this.createSlot(index, slot, equipped);
+      (index < HOTBAR_SLOT_COUNT ? this.hotbar : this.grid).append(slotElement);
+    });
 
-      if (slot) {
-        const itemElement = document.createElement('div');
-        itemElement.className = 'inventory-item';
-        itemElement.append(this.createItemIcon(slot.item));
+    this.crafting.replaceChildren();
+    if (this.craftingOpen) {
+      const description = document.createElement('p');
+      description.className = 'inventory-crafting__description';
+      description.textContent = 'Craft tools using resources from this inventory.';
+      const recipes = document.createElement('div');
+      recipes.className = 'inventory-crafting__recipes';
+      recipes.append(...CRAFTING_RECIPES.map((recipe) => this.createRecipe(recipe)));
+      this.crafting.append(description, recipes);
+    }
+  }
+
+  private createRecipe(recipe: CraftingRecipe): HTMLButtonElement {
+    const canCraft = recipe.ingredients.every((ingredient) => this.inventory.get(ingredient.resource) >= ingredient.amount)
+      && this.inventory.canAdd(recipe.output, 1);
+    const tool = TOOL_DEFINITIONS[recipe.output];
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'crafting-recipe';
+    button.disabled = !canCraft;
+    button.setAttribute('aria-label', `Craft ${tool.label}`);
+
+    const icon = document.createElement('span');
+    icon.className = `tool-icon tool-icon--${tool.kind} tool-icon--${tool.headMaterial}`;
+    icon.setAttribute('aria-hidden', 'true');
+
+    const details = document.createElement('span');
+    details.className = 'crafting-recipe__details';
+    const label = document.createElement('strong');
+    label.textContent = tool.label;
+    const speed = document.createElement('small');
+    speed.textContent = `Up to ${peakHarvestSpeedForTool(tool.id).toFixed(2)}× harvest speed`;
+    const ingredients = document.createElement('span');
+    ingredients.className = 'crafting-recipe__ingredients';
+    ingredients.textContent = recipe.ingredients.map((ingredient) => {
+      const available = this.inventory.get(ingredient.resource);
+      return `${resourceLabel(ingredient.resource)} ${available}/${ingredient.amount}`;
+    }).join(' · ');
+    details.append(label, speed, ingredients);
+    button.append(icon, details);
+    button.addEventListener('click', () => {
+      if (this.onCraft(recipe)) {
+        this.render();
+      }
+    });
+    return button;
+  }
+
+  private createSlot(index: number, slot: InventorySlot | null, equipped: ToolId | null): HTMLButtonElement {
+    const slotElement = document.createElement('button');
+    slotElement.type = 'button';
+    slotElement.className = 'inventory-slot';
+    slotElement.dataset.inventorySlot = String(index);
+    slotElement.setAttribute('aria-label', slot ? `${this.itemLabel(slot.item)}, ${slot.amount}` : 'Empty inventory slot');
+
+    const indexLabel = document.createElement('span');
+    indexLabel.className = 'inventory-slot__key';
+    indexLabel.textContent = String(index + 1);
+    slotElement.append(indexLabel);
+
+    if (slot) {
+      const itemElement = document.createElement('div');
+      itemElement.className = 'inventory-item';
+      itemElement.append(this.createItemIcon(slot.item));
+      if (!isToolId(slot.item)) {
         const amount = document.createElement('span');
         amount.className = 'inventory-slot__amount';
         amount.textContent = String(slot.amount);
         itemElement.append(amount);
-        slotElement.append(itemElement);
-        if (slot.item === equipped) {
-          slotElement.classList.add('is-equipped');
-        }
       }
+      slotElement.append(itemElement);
+      if (slot.item === equipped) {
+        slotElement.classList.add('is-equipped');
+      }
+    }
 
-      slotElement.addEventListener('pointerdown', (event) => this.beginDrag(event, index, slotElement));
-      this.grid.append(slotElement);
-    });
+    slotElement.addEventListener('pointerdown', (event) => this.beginDrag(event, index, slotElement));
+    return slotElement;
   }
 
   private beginDrag(event: PointerEvent, slotIndex: number, sourceSlot: HTMLButtonElement): void {
@@ -233,7 +334,8 @@ export class InventoryOverlay {
   private createItemIcon(item: InventoryItem): HTMLSpanElement {
     const icon = document.createElement('span');
     if (isToolId(item)) {
-      icon.className = `tool-icon tool-icon--${TOOL_DEFINITIONS[item].kind}`;
+      const tool = TOOL_DEFINITIONS[item];
+      icon.className = `tool-icon tool-icon--${tool.kind} tool-icon--${tool.headMaterial}`;
     } else {
       icon.className = `resource-icon resource-icon--${item.replaceAll(' ', '-')}`;
     }

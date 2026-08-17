@@ -3,6 +3,7 @@
 import { isToolId, type ToolId } from '../crafting/toolConfig';
 
 export const INVENTORY_SLOT_COUNT = 16;
+export const HOTBAR_SLOT_COUNT = 6;
 export const MAX_STACK_SIZE = 10;
 
 export type InventoryItem = ResourceType | ToolId;

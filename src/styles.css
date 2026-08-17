@@ -288,7 +288,7 @@ body {
 }
 
 .inventory-panel {
-  width: min(360px, calc(100vw - 40px));
+  width: min(420px, calc(100vw - 40px));
   padding: 16px;
   border: 2px solid #91b99d;
   border-radius: 12px;
@@ -315,17 +315,46 @@ body {
   letter-spacing: 0.03em;
 }
 
-.inventory-title span {
+.inventory-title__hint {
   color: #b2cfbb;
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0;
 }
 
+.inventory-title__label {
+  color: inherit;
+  font: inherit;
+}
+
 .inventory-equipped {
   margin: -7px 2px 13px;
   color: #d9edaa;
   font: 700 12px/1.3 "Cascadia Mono", Consolas, monospace;
+}
+
+.inventory-hotbar-label {
+  margin: 0 2px 7px;
+  color: #b9d8bb;
+  font: 800 10px/1.2 "Cascadia Mono", Consolas, monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.inventory-hotbar {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 13px;
+  padding: 7px;
+  border: 1px solid rgba(197, 171, 102, 0.58);
+  border-radius: 9px;
+  background: linear-gradient(135deg, rgba(83, 72, 42, 0.55), rgba(20, 39, 28, 0.84));
+  box-shadow: inset 0 0 16px rgba(0, 0, 0, 0.2);
+}
+
+.inventory-hotbar .inventory-slot {
+  border-color: #8b835f;
 }
 
 .inventory-grid {
@@ -405,6 +434,42 @@ body {
   filter: drop-shadow(0 12px 10px rgba(0, 0, 0, 0.42));
 }
 
+.inventory-crafting {
+  display: none;
+}
+
+.inventory-panel.is-crafting .inventory-equipped,
+.inventory-panel.is-crafting .inventory-content {
+  display: none;
+}
+
+.inventory-panel.is-crafting .inventory-crafting {
+  display: grid;
+  gap: 12px;
+}
+
+.inventory-crafting__description {
+  margin: -6px 2px 0;
+  color: #c6cbb0;
+  font: 600 12px/1.35 "Cascadia Mono", Consolas, monospace;
+}
+
+.inventory-crafting__recipes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.inventory-slot__key {
+  position: absolute;
+  top: 3px;
+  left: 5px;
+  z-index: 1;
+  color: rgba(222, 241, 219, 0.72);
+  font: 800 9px/1 "Cascadia Mono", Consolas, monospace;
+  text-shadow: 1px 1px 0 #07110b;
+}
+
 .inventory-slot.is-equipped {
   border-color: #f3d979;
   box-shadow: inset 0 0 0 2px rgba(246, 219, 112, 0.32), 0 0 12px rgba(240, 205, 96, 0.18);
@@ -416,6 +481,9 @@ body {
 }
 
 .tool-icon {
+  --tool-head-edge: #596970;
+  --tool-head-light: #d9e1df;
+  --tool-head-dark: #84939a;
   position: relative;
   display: block;
   width: 36px;
@@ -439,27 +507,142 @@ body {
 
 .tool-icon::after {
   position: absolute;
-  border: 2px solid #52626a;
-  background: linear-gradient(135deg, #d9e1df, #809097 68%, #4d5c64);
+  border: 2px solid var(--tool-head-edge);
+  background: linear-gradient(135deg, var(--tool-head-light), var(--tool-head-dark));
   content: "";
 }
 
+.tool-icon--wood {
+  --tool-head-edge: #654026;
+  --tool-head-light: #d6a45d;
+  --tool-head-dark: #8b522d;
+}
+
+.tool-icon--stone {
+  --tool-head-edge: #4d5b61;
+  --tool-head-light: #dfe8e8;
+  --tool-head-dark: #718289;
+}
+
 .tool-icon--axe::after {
-  left: 5px;
-  top: 5px;
-  width: 20px;
-  height: 13px;
-  border-radius: 12px 4px 9px 4px;
-  transform: rotate(25deg) skewX(-16deg);
+  left: 4px;
+  top: 4px;
+  width: 22px;
+  height: 15px;
+  clip-path: polygon(0 6%, 79% 0, 100% 32%, 76% 100%, 16% 84%, 0 58%);
+  transform: rotate(26deg) skewX(-10deg);
 }
 
 .tool-icon--pickaxe::after {
-  left: 4px;
+  left: 2px;
+  top: 3px;
+  width: 32px;
+  height: 13px;
+  clip-path: polygon(0 74%, 9% 20%, 35% 39%, 46% 49%, 54% 49%, 65% 39%, 91% 20%, 100% 74%, 73% 58%, 57% 81%, 43% 81%, 27% 58%);
+}
+
+/* Keep the pick head perpendicular to its short central handle. Sharing the axe's diagonal
+   shaft made the old pictogram read as a bent branch instead of a pickaxe. */
+.tool-icon--pickaxe::before {
+  left: 16px;
+  top: 10px;
+  width: 5px;
+  height: 23px;
+  transform: none;
+  transform-origin: center top;
+}
+
+.hotbar-overlay {
+  position: absolute;
+  bottom: max(15px, env(safe-area-inset-bottom));
+  left: 50%;
+  z-index: 32;
+  pointer-events: auto;
+  transform: translateX(-50%);
+  transition: opacity 150ms ease, transform 170ms cubic-bezier(0.2, 0.75, 0.25, 1.12);
+}
+
+.hotbar-overlay.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 18px) scale(0.96);
+}
+
+.hotbar-frame {
+  padding: 7px;
+  border: 2px solid #c5ac6f;
+  border-radius: 13px;
+  background:
+    linear-gradient(180deg, rgba(255, 237, 175, 0.13), transparent 34%),
+    linear-gradient(135deg, rgba(50, 68, 46, 0.97), rgba(10, 24, 19, 0.98));
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(238, 255, 210, 0.16);
+}
+
+.hotbar-slots {
+  display: flex;
+  gap: 5px;
+}
+
+.hotbar-slot {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: clamp(43px, 6vw, 64px);
+  aspect-ratio: 1;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #71836c;
+  border-radius: 7px;
+  color: #f4fae7;
+  background: linear-gradient(145deg, #2b4735, #14271e);
+  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+  transition: border-color 110ms ease, background-color 110ms ease, transform 110ms ease, box-shadow 110ms ease;
+}
+
+.hotbar-slot:hover {
+  border-color: #e5d488;
+  background: linear-gradient(145deg, #3c5e42, #1a3524);
+  transform: translateY(-2px);
+}
+
+.hotbar-slot.is-active {
+  border: 2px solid #ffe27b;
+  background: linear-gradient(145deg, #617143, #293b26);
+  box-shadow: inset 0 0 0 2px rgba(255, 245, 166, 0.23), 0 0 14px rgba(245, 210, 85, 0.38);
+}
+
+.hotbar-slot__key,
+.hotbar-slot__amount {
+  position: absolute;
+  z-index: 1;
+  font: 800 10px/1 "Cascadia Mono", Consolas, monospace;
+  text-shadow: 1px 1px 0 #07110b, -1px -1px 0 #07110b;
+}
+
+.hotbar-slot__key {
   top: 5px;
-  width: 27px;
-  height: 9px;
-  border-radius: 12px 12px 3px 3px;
-  transform: rotate(24deg);
+  left: 6px;
+  color: #d4e5c8;
+}
+
+.hotbar-slot__amount {
+  right: 5px;
+  bottom: 4px;
+  color: #ffffff;
+}
+
+.hotbar-slot__item {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+}
+
+.hotbar-slot .resource-icon,
+.hotbar-slot .tool-icon {
+  transform: scale(0.88);
 }
 
 .resource-icon--wood {
@@ -578,6 +761,33 @@ body {
   transform: rotate(25deg);
 }
 
+.resource-icon--coal,
+.resource-icon--iron,
+.resource-icon--gold,
+.resource-icon--diamond {
+  width: 31px;
+  height: 31px;
+  border: 2px solid #394148;
+  clip-path: polygon(49% 0, 91% 24%, 82% 79%, 48% 100%, 8% 76%, 0 35%);
+}
+
+.resource-icon--coal { background: linear-gradient(135deg, #79828a, #2c333a 52%, #151b21); }
+.resource-icon--iron { border-color: #824f3c; background: linear-gradient(135deg, #ebb292, #b4674c 52%, #633c34); }
+.resource-icon--gold { border-color: #a77a21; background: linear-gradient(135deg, #fff0a0, #e2b43b 50%, #9d6d1e); }
+.resource-icon--diamond { border-color: #3b9da8; background: linear-gradient(135deg, #ecffff, #77e1de 48%, #2e8fa1); }
+
+.resource-icon--coal .resource-icon__detail,
+.resource-icon--iron .resource-icon__detail,
+.resource-icon--gold .resource-icon__detail,
+.resource-icon--diamond .resource-icon__detail {
+  top: 6px;
+  left: 13px;
+  width: 4px;
+  height: 17px;
+  background: rgba(255, 255, 255, 0.45);
+  transform: rotate(27deg);
+}
+
 .crafting-overlay {
   position: absolute;
   inset: 0;
@@ -598,7 +808,11 @@ body {
 }
 
 .crafting-panel {
-  width: min(510px, calc(100vw - 40px));
+  /* Match the inventory panel footprint so both menus open in the same place. */
+  width: min(420px, calc(100vw - 40px));
+  min-height: min(490px, calc(100vh - 40px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   padding: 17px;
   border: 2px solid #b5a777;
   border-radius: 12px;
@@ -640,6 +854,7 @@ body {
 .crafting-recipes {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
   gap: 9px;
 }
 

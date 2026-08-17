@@ -1,13 +1,13 @@
 import Phaser from 'phaser';
 import type { InventorySlot } from '../player/Inventory';
-import { Inventory, INVENTORY_SLOT_COUNT } from '../player/Inventory';
+import { HOTBAR_SLOT_COUNT, Inventory, INVENTORY_SLOT_COUNT } from '../player/Inventory';
 import { FacingDirection, getInteractionTarget } from '../player/interaction';
 import { PLAYER_SPEED_SCALE } from '../player/playerConfig';
 import type { InteractionTarget } from '../player/interaction';
 import { isSaveGameData, type SaveGameData } from '../save/SaveGameData';
 import { DayNightOverlay } from '../ui/DayNightOverlay';
 import { InventoryOverlay } from '../ui/InventoryOverlay';
-import { CraftingOverlay } from '../ui/CraftingOverlay';
+import { HotbarOverlay } from '../ui/HotbarOverlay';
 import { MinimapOverlay } from '../ui/MinimapOverlay';
 import { NightAmbientOverlay } from '../ui/NightAmbientOverlay';
 import { WorldMapOverlay } from '../ui/WorldMapOverlay';
@@ -18,7 +18,7 @@ import { biomeAtTile, climateAtTile } from '../world/generation/biomeGenerator';
 import { featureAtTile } from '../world/generation/featureGenerator';
 import { isTraversableWaterAt } from '../world/generation/terrainGenerator';
 import type { TopographySample } from '../world/generation/topographyGenerator';
-import { RESOURCE_COLORS, resourceForFeature, resourceLabel } from '../world/resources';
+import { RESOURCE_COLORS, ResourceType, resourceForFeature, resourceLabel } from '../world/resources';
 import { SessionWorldState } from '../world/SessionWorldState';
 import type { DroppedItem } from '../world/SessionWorldState';
 import { normalizeWorldTime, sampleDayNight, worldTimeForHour } from '../world/dayNight';
@@ -37,8 +37,19 @@ import { landmarkAtTile, landmarksIntersectingTiles } from '../world/generation/
 import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
 import { TERRAIN_MATERIAL_ASSETS } from '../world/terrainMaterialConfig';
 import { type CraftingRecipe } from '../crafting/recipeConfig';
-import { TOOL_DEFINITIONS, ToolId, isToolId, toolSpeedForFeature } from '../crafting/toolConfig';
+import { TOOL_DEFINITIONS, isToolId, type ToolId } from '../crafting/toolConfig';
 import { craftRecipe as applyCraftingRecipe } from '../crafting/craftingService';
+import { harvestSpeedForFeature } from '../crafting/harvestSpeedConfig';
+import {
+  caveEntranceAtTile,
+  caveWorldOrigin,
+  caveWorldTilePosition,
+  generateCaveLayout,
+  type CaveEntrance,
+  type CaveLayout,
+  type CaveOre,
+  type CaveWorldOrigin
+} from '../world/caves/caveGenerator';
 
 const BASE_PLAYER_SPEED = 220;
 const PLAYER_SPEED = BASE_PLAYER_SPEED * (PLAYER_SPEED_SCALE / 50);
@@ -59,6 +70,14 @@ const MINIMAP_TILES_PER_CELL = Math.max(1, Math.round(16 * (MINIMAP_AREA_SCALE /
 
 type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
 
+interface ActiveCave {
+  readonly entrance: CaveEntrance;
+  readonly layout: CaveLayout;
+  readonly origin: CaveWorldOrigin;
+  readonly returnWorldX: number;
+  readonly returnWorldY: number;
+}
+
 export class AdventureScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Rectangle;
   private playerAvatar!: Phaser.GameObjects.Graphics;
@@ -69,7 +88,7 @@ export class AdventureScene extends Phaser.Scene {
   private sessionWorldState!: SessionWorldState;
   private inventory!: Inventory;
   private inventoryOverlay!: InventoryOverlay;
-  private craftingOverlay!: CraftingOverlay;
+  private hotbarOverlay!: HotbarOverlay;
   private minimapOverlay!: MinimapOverlay;
   private dayNightOverlay!: DayNightOverlay;
   private nightAmbientOverlay!: NightAmbientOverlay;
@@ -80,6 +99,9 @@ export class AdventureScene extends Phaser.Scene {
   private dropHintPanel!: Phaser.GameObjects.Graphics;
   private dropHint!: Phaser.GameObjects.Text;
   private harvestProgressGraphics!: Phaser.GameObjects.Graphics;
+  private caveGraphics!: Phaser.GameObjects.Graphics;
+  private caveHintPanel!: Phaser.GameObjects.Graphics;
+  private caveHint!: Phaser.GameObjects.Text;
   private isDebugVisible = false;
   private inventoryOpen = false;
   private craftingOpen = false;
@@ -91,6 +113,11 @@ export class AdventureScene extends Phaser.Scene {
   private terrainSurface = 'ground';
   private currentTopography: TopographySample | null = null;
   private interactionTarget: InteractionTarget | null = null;
+  private nearbyCaveEntrance: CaveEntrance | null = null;
+  private activeCave: ActiveCave | null = null;
+  private caveOreTarget: CaveOre | null = null;
+  private caveHarvestOre: CaveOre | null = null;
+  private caveExitNearby = false;
   private nearbyDrop: DroppedItem | null = null;
   private harvestTarget: InteractionTarget | null = null;
   private harvestElapsedMs = 0;
@@ -115,9 +142,12 @@ export class AdventureScene extends Phaser.Scene {
   private nightAmount = 0;
   private ambientLightAmount = 0;
   private equippedTool: ToolId | null = null;
+  private activeHotbarSlot = 0;
   private lastMinimapUpdateMs = Number.NEGATIVE_INFINITY;
   private lastMinimapTileX = Number.NaN;
   private lastMinimapTileY = Number.NaN;
+  private lastCaveEntranceTileX = Number.NaN;
+  private lastCaveEntranceTileY = Number.NaN;
 
   constructor() {
     super('adventure');
@@ -133,6 +163,7 @@ export class AdventureScene extends Phaser.Scene {
     this.player = this.add.rectangle(WORLD_TILE_SIZE / 2, WORLD_TILE_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE).setVisible(false);
     this.playerAvatar = this.add.graphics().setDepth(10).setScale(PLAYER_AVATAR_SCALE);
     this.harvestProgressGraphics = this.add.graphics().setDepth(15);
+    this.caveGraphics = this.add.graphics().setDepth(2).setVisible(false);
     this.interactionHighlight = this.add
       .circle(0, 0, 62, 0xf5d76e, 0.09)
       .setStrokeStyle(3, 0xffec8b, 0.95)
@@ -145,6 +176,17 @@ export class AdventureScene extends Phaser.Scene {
       .setVisible(false);
     this.dropHintPanel = this.add.graphics().setDepth(10.8).setVisible(false);
     this.dropHint = this.add
+      .text(0, 0, '', {
+        fontFamily: 'Cascadia Mono, Consolas, system-ui, sans-serif',
+        fontSize: '12px',
+        color: '#f4fff6',
+        fontStyle: '700'
+      })
+      .setOrigin(0.5)
+      .setDepth(11)
+      .setVisible(false);
+    this.caveHintPanel = this.add.graphics().setDepth(10.8).setVisible(false);
+    this.caveHint = this.add
       .text(0, 0, '', {
         fontFamily: 'Cascadia Mono, Consolas, system-ui, sans-serif',
         fontSize: '12px',
@@ -185,15 +227,22 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     this.createDebugElement(gameElement);
+    this.hotbarOverlay = new HotbarOverlay(
+      gameElement,
+      this.inventory,
+      () => this.activeHotbarSlot,
+      (slotIndex) => this.selectHotbarSlot(slotIndex),
+      () => this.worldReady && !this.inventoryOpen && !this.craftingOpen && !this.worldMapOpen
+    );
     this.inventoryOverlay = new InventoryOverlay(
       gameElement,
       this.inventory,
-      () => this.markSaveDirty(),
+      () => this.handleInventoryChanged(),
       (slot) => this.dropInventorySlot(slot),
       () => this.equippedTool,
-      (tool) => this.setEquippedTool(tool)
+      (tool) => this.setEquippedTool(tool),
+      (recipe) => this.craftRecipe(recipe)
     );
-    this.craftingOverlay = new CraftingOverlay(gameElement, this.inventory, (recipe) => this.craftRecipe(recipe));
     this.minimapOverlay = new MinimapOverlay(gameElement);
     this.dayNightOverlay = new DayNightOverlay(gameElement);
     this.nightAmbientOverlay = new NightAmbientOverlay(gameElement);
@@ -210,6 +259,15 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     this.updateWorldTime(time, delta);
+    if (this.activeCave) {
+      this.updateCave(time, delta);
+      this.persistIfNeeded(time);
+      if (this.isDebugVisible && time - this.lastDebugUpdateMs >= DEBUG_UPDATE_INTERVAL_MS) {
+        this.lastDebugUpdateMs = time;
+        this.updateDebugText();
+      }
+      return;
+    }
     this.updateExploration();
 
     if (this.worldMapOpen) {
@@ -250,7 +308,6 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     this.updateSwimmingState();
-    this.updatePlayerAvatar(delta, isMoving);
     this.chunkManager.update(this.player.x, this.player.y, time);
     this.chunkManager.updateFoliage(time);
     this.chunkManager.updateWaterAnimation(time);
@@ -266,8 +323,10 @@ export class AdventureScene extends Phaser.Scene {
     this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.ambientLightAmount);
     this.updateNightAmbientLighting(time);
     this.updateInteractionTarget();
+    this.updateCaveEntranceInteraction();
     this.updateDropInteraction(time);
     this.updateHarvesting(delta);
+    this.updatePlayerAvatar(delta, isMoving);
     this.updateMinimap(time);
     this.persistIfNeeded(time);
 
@@ -279,6 +338,7 @@ export class AdventureScene extends Phaser.Scene {
 
   private async loadSavedWorld(): Promise<void> {
     let savedGame: SaveGameData | null = null;
+    let savedActiveCave: SaveGameData['activeCave'] | undefined;
 
     try {
       const loaded = await window.wildboundSave?.load();
@@ -292,8 +352,19 @@ export class AdventureScene extends Phaser.Scene {
       this.inventory.restore(savedGame.inventory);
       const savedTool = savedGame.equipment?.equippedTool;
       this.equippedTool = isToolId(savedTool) && this.inventory.get(savedTool) > 0 ? savedTool : null;
+      const savedHotbarSlot = savedGame.equipment?.activeHotbarSlot;
+      this.activeHotbarSlot = typeof savedHotbarSlot === 'number'
+        && Number.isInteger(savedHotbarSlot)
+        && savedHotbarSlot >= 0
+        && savedHotbarSlot < HOTBAR_SLOT_COUNT
+        ? savedHotbarSlot
+        : 0;
       this.sessionWorldState.restore(savedGame.world);
-      this.player.setPosition(savedGame.player.x, savedGame.player.y);
+      savedActiveCave = savedGame.activeCave;
+      this.player.setPosition(
+        savedActiveCave?.returnWorldX ?? savedGame.player.x,
+        savedActiveCave?.returnWorldY ?? savedGame.player.y
+      );
     }
 
     const hadSavedWorldTime = this.sessionWorldState.worldTimeMs !== null;
@@ -310,6 +381,14 @@ export class AdventureScene extends Phaser.Scene {
     this.terrainSurface = this.currentTopography.surface;
     this.updateSwimmingState(true);
     this.updatePlayerAvatar(0, false);
+    this.inventoryOverlay.refresh();
+    this.hotbarOverlay.refresh();
+    if (savedActiveCave) {
+      const entrance = caveEntranceAtTile(this.worldSeed, savedActiveCave.entranceTileX, savedActiveCave.entranceTileY);
+      if (entrance) {
+        this.enterCave(entrance, savedActiveCave.returnWorldX, savedActiveCave.returnWorldY, false);
+      }
+    }
     this.updateInteractionTarget(true);
     this.updateDropInteraction(0, true);
     this.updateMinimap(0, true);
@@ -409,12 +488,29 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     if (this.craftingOpen) {
-      this.toggleCrafting();
+      this.craftingOpen = false;
+      this.inventoryOpen = false;
+      this.cancelHarvesting();
+      this.inventoryOverlay.setCraftingOpen(false);
+      this.inventoryOverlay.setOpen(false);
+      this.updateHotbarVisibility();
       return;
     }
 
     if (this.inventoryOpen) {
       this.toggleInventory();
+      return;
+    }
+
+    if (this.activeCave) {
+      if (this.caveExitNearby) {
+        this.exitCave();
+      }
+      return;
+    }
+
+    if (this.nearbyCaveEntrance) {
+      this.enterCave(this.nearbyCaveEntrance, this.player.x, this.player.y);
       return;
     }
 
@@ -429,10 +525,11 @@ export class AdventureScene extends Phaser.Scene {
     this.inventoryOpen = !this.inventoryOpen;
     if (this.inventoryOpen && this.craftingOpen) {
       this.craftingOpen = false;
-      this.craftingOverlay.setOpen(false);
+      this.inventoryOverlay.setCraftingOpen(false);
     }
     this.cancelHarvesting();
     this.inventoryOverlay.setOpen(this.inventoryOpen);
+    this.updateHotbarVisibility();
   }
 
   private handleCraftingKeyDown(event: KeyboardEvent): void {
@@ -446,13 +543,22 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
-    this.craftingOpen = !this.craftingOpen;
-    if (this.craftingOpen && this.inventoryOpen) {
-      this.inventoryOpen = false;
-      this.inventoryOverlay.setOpen(false);
+    if (this.craftingOpen) {
+      this.craftingOpen = false;
+      this.inventoryOpen = true;
+      this.cancelHarvesting();
+      this.inventoryOverlay.setCraftingOpen(false);
+      this.inventoryOverlay.setOpen(true);
+      this.updateHotbarVisibility();
+      return;
     }
+
+    this.craftingOpen = true;
+    this.inventoryOpen = false;
     this.cancelHarvesting();
-    this.craftingOverlay.setOpen(this.craftingOpen);
+    this.inventoryOverlay.setCraftingOpen(this.craftingOpen);
+    this.inventoryOverlay.setOpen(this.craftingOpen);
+    this.updateHotbarVisibility();
   }
 
   private toggleWorldMap(): void {
@@ -466,11 +572,13 @@ export class AdventureScene extends Phaser.Scene {
     }
     if (this.worldMapOpen && this.craftingOpen) {
       this.craftingOpen = false;
-      this.craftingOverlay.setOpen(false);
+      this.inventoryOverlay.setCraftingOpen(false);
+      this.inventoryOverlay.setOpen(false);
     }
 
     this.cancelHarvesting();
     this.worldMapOverlay.setOpen(this.worldMapOpen);
+    this.updateHotbarVisibility();
     if (this.worldMapOpen) {
       this.updateWorldMap();
     }
@@ -489,6 +597,7 @@ export class AdventureScene extends Phaser.Scene {
 
     this.worldMapOpen = false;
     this.worldMapOverlay.setOpen(false);
+    this.updateHotbarVisibility();
   }
 
   private handleResize(): void {
@@ -503,7 +612,7 @@ export class AdventureScene extends Phaser.Scene {
     window.removeEventListener('beforeunload', this.handleBeforeUnload);
     this.debugElement.remove();
     this.inventoryOverlay.destroy();
-    this.craftingOverlay.destroy();
+    this.hotbarOverlay.destroy();
     this.minimapOverlay.destroy();
     this.dayNightOverlay.destroy();
     this.nightAmbientOverlay.destroy();
@@ -638,7 +747,9 @@ export class AdventureScene extends Phaser.Scene {
     const animationFrame = isMoving
       ? Math.floor(this.animationElapsedMs / (this.isSwimming ? 145 : 115)) % (this.isSwimming ? 3 : 2)
       : 0;
-    const state = `${this.facing}:${this.isSwimming}:${animationFrame}:${this.equippedTool ?? 'none'}`;
+    const harvestAnimationFrame = this.harvestTarget || this.caveHarvestOre ? Math.floor(this.harvestElapsedMs / 45) % 8 : -1;
+    const heldResource = this.heldHotbarResource();
+    const state = `${this.facing}:${this.isSwimming}:${animationFrame}:${harvestAnimationFrame}:${this.equippedTool ?? 'none'}:${heldResource ?? 'none'}`;
 
     if (state !== this.lastAvatarState) {
       this.lastAvatarState = state;
@@ -652,6 +763,9 @@ export class AdventureScene extends Phaser.Scene {
     const stride = this.isSwimming
       ? Math.sin(animationFrame / 3 * Math.PI * 2) * 2
       : animationFrame === 1 ? 3 : -3;
+    const harvestSwing = this.harvestSwingAmount();
+    const isUnarmedHarvesting = !this.equippedTool && (this.harvestTarget !== null || this.caveHarvestOre !== null);
+    const heldResource = this.heldHotbarResource();
 
     avatar.clear();
     avatar.fillStyle(this.isSwimming ? 0x4ca7bd : 0x152129, this.isSwimming ? 0.45 : 0.32);
@@ -666,8 +780,18 @@ export class AdventureScene extends Phaser.Scene {
       avatar.fillRect(-7, -2, 14, 2);
       avatar.fillStyle(0xe1ae86, 1);
       avatar.fillRoundedRect(-14 + direction.x * 3, -2 + stride, 7, 8, 3);
-      avatar.fillRoundedRect(7 + direction.x * 3, -2 - stride, 7, 8, 3);
-      this.drawHeldTool(direction, stride);
+      if (!isUnarmedHarvesting) {
+        avatar.fillRoundedRect(7 + direction.x * 3, -2 - stride, 7, 8, 3);
+      }
+      this.drawHeldTool(direction, stride, harvestSwing);
+      if (isUnarmedHarvesting) {
+        this.drawHarvestFist(direction, stride);
+        if (heldResource) {
+          this.drawHeldResource(direction, stride, heldResource, this.harvestStrikeReach());
+        }
+      } else if (!this.equippedTool && heldResource) {
+        this.drawHeldResource(direction, stride, heldResource);
+      }
       this.drawDirectionalHead(direction, true);
       return;
     }
@@ -688,12 +812,32 @@ export class AdventureScene extends Phaser.Scene {
     avatar.fillRect(-9, 7, 18, 3);
     avatar.fillStyle(0xe1ae86, 1);
     avatar.fillRoundedRect(-14 + direction.x * 3, -3 + stride * 0.45, 6, 12, 2);
-    avatar.fillRoundedRect(8 + direction.x * 3, -3 - stride * 0.45, 6, 12, 2);
-    this.drawHeldTool(direction, stride);
+    if (!isUnarmedHarvesting) {
+      avatar.fillRoundedRect(8 + direction.x * 3, -3 - stride * 0.45, 6, 12, 2);
+    }
+    this.drawHeldTool(direction, stride, harvestSwing);
+    if (isUnarmedHarvesting) {
+      this.drawHarvestFist(direction, stride);
+      if (heldResource) {
+        this.drawHeldResource(direction, stride, heldResource, this.harvestStrikeReach());
+      }
+    } else if (!this.equippedTool && heldResource) {
+      this.drawHeldResource(direction, stride, heldResource);
+    }
     this.drawDirectionalHead(direction, false);
   }
 
-  private drawHeldTool(direction: Phaser.Math.Vector2, stride: number): void {
+  private harvestSwingAmount(): number {
+    if (!this.harvestTarget && !this.caveHarvestOre) {
+      return 0;
+    }
+
+    // A complete wind-up/impact/recovery cycle is driven by accumulated game time rather than
+    // frame count, so the motion remains smooth and consistent at any frame rate.
+    return Math.sin((this.harvestElapsedMs % 220) / 220 * Math.PI);
+  }
+
+  private drawHeldTool(direction: Phaser.Math.Vector2, stride: number, swing: number): void {
     if (!this.equippedTool) {
       return;
     }
@@ -702,41 +846,195 @@ export class AdventureScene extends Phaser.Scene {
     const tool = TOOL_DEFINITIONS[this.equippedTool];
     const perpendicularX = -direction.y;
     const perpendicularY = direction.x;
-    const handX = direction.x * 10 + perpendicularX * 4;
-    const handY = 3 + direction.y * 7 + perpendicularY * 2 + stride * 0.22;
-    const headX = handX + direction.x * 18;
-    const headY = handY + direction.y * 18;
+    const shoulderX = direction.x * 3 + perpendicularX * 5;
+    const shoulderY = 1 + direction.y * 2 + perpendicularY * 2;
+    const handX = shoulderX + direction.x * (10 + swing * 4) + perpendicularX * (4 - swing * 6);
+    const handY = shoulderY + direction.y * (10 + swing * 4) + perpendicularY * (4 - swing * 6) + stride * 0.14;
+    let toolDirectionX = direction.x + perpendicularX * (0.22 - swing * 0.46);
+    let toolDirectionY = direction.y + perpendicularY * (0.22 - swing * 0.46);
+    const toolDirectionLength = Math.hypot(toolDirectionX, toolDirectionY) || 1;
+    toolDirectionX /= toolDirectionLength;
+    toolDirectionY /= toolDirectionLength;
+    const toolPerpendicularX = -toolDirectionY;
+    const toolPerpendicularY = toolDirectionX;
+    const headX = handX + toolDirectionX * 13;
+    const headY = handY + toolDirectionY * 13;
 
+    avatar.lineStyle(5.7, 0xe1ae86, 1);
+    avatar.lineBetween(shoulderX, shoulderY, handX, handY);
+    avatar.fillStyle(0xe1ae86, 1);
+    avatar.fillCircle(handX, handY, 4);
     avatar.lineStyle(3.3, 0x6f4327, 1);
     avatar.lineBetween(handX, handY, headX, headY);
     avatar.lineStyle(1, 0xc89252, 0.9);
-    avatar.lineBetween(handX + perpendicularX, handY + perpendicularY, headX + perpendicularX, headY + perpendicularY);
+    avatar.lineBetween(handX + toolPerpendicularX, handY + toolPerpendicularY, headX + toolPerpendicularX, headY + toolPerpendicularY);
 
     if (tool.kind === 'axe') {
-      avatar.fillStyle(tool.id === ToolId.StoneAxe ? 0xaeb8bd : 0x9fca8e, 1);
+      const headColor = tool.headMaterial === 'stone' ? 0xaeb8bd : 0xb77a3d;
+      const edgeColor = tool.headMaterial === 'stone' ? 0x52646b : 0x704124;
+      avatar.fillStyle(edgeColor, 1);
       avatar.fillTriangle(
-        headX - direction.x * 2 + perpendicularX * 7,
-        headY - direction.y * 2 + perpendicularY * 7,
-        headX + direction.x * 4 - perpendicularX * 6,
-        headY + direction.y * 4 - perpendicularY * 6,
-        headX + direction.x * 7 + perpendicularX * 5,
-        headY + direction.y * 7 + perpendicularY * 5
+        headX - toolDirectionX * 2 + toolPerpendicularX * 6.4,
+        headY - toolDirectionY * 2 + toolPerpendicularY * 6.4,
+        headX + toolDirectionX * 6 - toolPerpendicularX * 5.7,
+        headY + toolDirectionY * 6 - toolPerpendicularY * 5.7,
+        headX + toolDirectionX * 7 + toolPerpendicularX * 5.7,
+        headY + toolDirectionY * 7 + toolPerpendicularY * 5.7
+      );
+      avatar.fillStyle(headColor, 1);
+      avatar.fillTriangle(
+        headX - toolDirectionX + toolPerpendicularX * 4.4,
+        headY - toolDirectionY + toolPerpendicularY * 4.4,
+        headX + toolDirectionX * 4.5 - toolPerpendicularX * 4,
+        headY + toolDirectionY * 4.5 - toolPerpendicularY * 4,
+        headX + toolDirectionX * 5.5 + toolPerpendicularX * 4,
+        headY + toolDirectionY * 5.5 + toolPerpendicularY * 4
       );
     } else {
-      avatar.lineStyle(4.4, tool.id === ToolId.StonePickaxe ? 0xaeb8bd : 0xa3c29a, 1);
+      const headColor = tool.headMaterial === 'stone' ? 0xaeb8bd : 0xb77a3d;
+      const edgeColor = tool.headMaterial === 'stone' ? 0x52646b : 0x704124;
+      avatar.lineStyle(5.6, edgeColor, 1);
       avatar.lineBetween(
-        headX - perpendicularX * 8,
-        headY - perpendicularY * 8,
-        headX + perpendicularX * 8,
-        headY + perpendicularY * 8
+        headX - toolPerpendicularX * 7.5,
+        headY - toolPerpendicularY * 7.5,
+        headX + toolPerpendicularX * 7.5,
+        headY + toolPerpendicularY * 7.5
       );
-      avatar.lineStyle(1.1, 0x44545a, 0.85);
+      avatar.lineStyle(3, headColor, 1);
       avatar.lineBetween(
-        headX - perpendicularX * 8 - direction.x * 1.5,
-        headY - perpendicularY * 8 - direction.y * 1.5,
-        headX + perpendicularX * 8 + direction.x * 1.5,
-        headY + perpendicularY * 8 + direction.y * 1.5
+        headX - toolPerpendicularX * 7.2,
+        headY - toolPerpendicularY * 7.2,
+        headX + toolPerpendicularX * 7.2,
+        headY + toolPerpendicularY * 7.2
       );
+      avatar.fillStyle(headColor, 1);
+      avatar.fillTriangle(
+        headX - toolPerpendicularX * 9,
+        headY - toolPerpendicularY * 9,
+        headX - toolPerpendicularX * 4.5 - toolDirectionX * 3,
+        headY - toolPerpendicularY * 4.5 - toolDirectionY * 3,
+        headX - toolPerpendicularX * 4.5 + toolDirectionX * 2,
+        headY - toolPerpendicularY * 4.5 + toolDirectionY * 2
+      );
+      avatar.fillTriangle(
+        headX + toolPerpendicularX * 9,
+        headY + toolPerpendicularY * 9,
+        headX + toolPerpendicularX * 4.5 - toolDirectionX * 3,
+        headY + toolPerpendicularY * 4.5 - toolDirectionY * 3,
+        headX + toolPerpendicularX * 4.5 + toolDirectionX * 2,
+        headY + toolPerpendicularY * 4.5 + toolDirectionY * 2
+      );
+    }
+  }
+
+  private drawHarvestFist(direction: Phaser.Math.Vector2, stride: number): void {
+    const avatar = this.playerAvatar;
+    // Anchor to the resting foreground arm, then bend through a small elbow arc. The extra side
+    // offset keeps the arm on one side of the body as the facing changes instead of flipping it.
+    const restingHandX = (this.isSwimming ? 10.5 : 11) + direction.x * 3;
+    const restingHandY = this.isSwimming ? 2 - stride : 3 - stride * 0.45;
+    const sideX = direction.y;
+    const sideY = -direction.x;
+    const reach = this.harvestStrikeReach();
+    const shoulderX = restingHandX - direction.x * 4 - sideX * 2;
+    const shoulderY = restingHandY - direction.y * 4 - sideY * 2;
+    const elbowX = restingHandX - direction.x + sideX * 2;
+    const elbowY = restingHandY - direction.y + sideY * 2;
+    const wristX = restingHandX + direction.x * reach + sideX;
+    const wristY = restingHandY + direction.y * reach + sideY;
+
+    avatar.lineStyle(5.6, 0xe1ae86, 1);
+    avatar.lineBetween(shoulderX, shoulderY, elbowX, elbowY);
+    avatar.lineBetween(elbowX, elbowY, wristX, wristY);
+    avatar.fillStyle(0xd59e77, 1);
+    avatar.fillCircle(wristX, wristY, 4.2);
+  }
+
+  private harvestStrikeReach(): number {
+    if (!this.harvestTarget && !this.caveHarvestOre) {
+      return 0;
+    }
+
+    const phase = (this.harvestElapsedMs % 260) / 260;
+    if (phase < 0.28) {
+      // Pull back a little before each strike.
+      return -2 * Math.sin(phase / 0.28 * Math.PI / 2);
+    }
+
+    const impactPhase = (phase - 0.28) / 0.72;
+    const release = Math.min(1, impactPhase / 0.18);
+    return -2 * (1 - release) + 5 * Math.sin(impactPhase * Math.PI);
+  }
+
+  private heldHotbarResource(): ResourceType | null {
+    if (this.equippedTool) {
+      return null;
+    }
+
+    const item = this.inventory.getSlots()[this.activeHotbarSlot]?.item;
+    return item && !isToolId(item) ? item : null;
+  }
+
+  private drawHeldResource(
+    direction: Phaser.Math.Vector2,
+    stride: number,
+    resource: ResourceType,
+    harvestReach: number | null = null
+  ): void {
+    const avatar = this.playerAvatar;
+    const restingHandX = (this.isSwimming ? 10.5 : 11) + direction.x * 3;
+    const restingHandY = this.isSwimming ? 2 - stride : 3 - stride * 0.45;
+    const handX = harvestReach === null
+      ? restingHandX + direction.x * 2
+      : restingHandX + direction.x * harvestReach + direction.y;
+    const handY = harvestReach === null
+      ? restingHandY + direction.y * 2
+      : restingHandY + direction.y * harvestReach - direction.x;
+    const outline = 0x24332a;
+
+    switch (resource) {
+      case ResourceType.Wood:
+        avatar.fillStyle(outline, 1);
+        avatar.fillRoundedRect(handX - 6, handY - 3.5, 12, 7, 3);
+        avatar.fillStyle(RESOURCE_COLORS[resource], 1);
+        avatar.fillRoundedRect(handX - 5, handY - 2.5, 10, 5, 2);
+        avatar.fillStyle(0xe5b16d, 0.9);
+        avatar.fillCircle(handX + 3.5, handY, 1.4);
+        break;
+      case ResourceType.Stone:
+      case ResourceType.Coal:
+      case ResourceType.Iron:
+      case ResourceType.Gold:
+      case ResourceType.Diamond:
+        avatar.fillStyle(outline, 1);
+        avatar.fillTriangle(handX, handY - 6, handX + 6, handY - 1, handX + 3, handY + 5);
+        avatar.fillTriangle(handX, handY - 6, handX + 3, handY + 5, handX - 5, handY + 3);
+        avatar.fillStyle(RESOURCE_COLORS[resource], 1);
+        avatar.fillTriangle(handX, handY - 4.5, handX + 4.5, handY - 1, handX + 2.2, handY + 3.7);
+        avatar.fillTriangle(handX, handY - 4.5, handX + 2.2, handY + 3.7, handX - 3.8, handY + 2.2);
+        break;
+      case ResourceType.Fiber:
+        avatar.lineStyle(3.2, outline, 1);
+        avatar.lineBetween(handX - 3.5, handY + 4, handX - 3.5, handY - 5);
+        avatar.lineBetween(handX, handY + 4, handX, handY - 6);
+        avatar.lineBetween(handX + 3.5, handY + 4, handX + 3.5, handY - 5);
+        avatar.lineStyle(1.7, RESOURCE_COLORS[resource], 1);
+        avatar.lineBetween(handX - 3.5, handY + 4, handX - 3.5, handY - 5);
+        avatar.lineBetween(handX, handY + 4, handX, handY - 6);
+        avatar.lineBetween(handX + 3.5, handY + 4, handX + 3.5, handY - 5);
+        break;
+      case ResourceType.Cactus:
+        avatar.fillStyle(outline, 1);
+        avatar.fillRoundedRect(handX - 3.5, handY - 6, 7, 12, 3);
+        avatar.fillStyle(RESOURCE_COLORS[resource], 1);
+        avatar.fillRoundedRect(handX - 2.3, handY - 5, 4.6, 10, 2);
+        break;
+      case ResourceType.IceShard:
+        avatar.fillStyle(outline, 1);
+        avatar.fillTriangle(handX, handY - 7, handX + 4.5, handY + 5, handX - 4.5, handY + 5);
+        avatar.fillStyle(RESOURCE_COLORS[resource], 1);
+        avatar.fillTriangle(handX, handY - 5.5, handX + 3, handY + 3.8, handX - 3, handY + 3.8);
+        break;
     }
   }
 
@@ -797,6 +1095,23 @@ export class AdventureScene extends Phaser.Scene {
     avatar.lineBetween(-2 + faceOffset, headY + 4, 2 + faceOffset, headY + 4);
   }
   private updateMinimap(time: number, force = false): void {
+    if (this.activeCave) {
+      const localTileX = (this.player.x - this.activeCave.origin.x) / WORLD_TILE_SIZE;
+      const localTileY = (this.player.y - this.activeCave.origin.y) / WORLD_TILE_SIZE;
+      const tileX = Math.floor(localTileX);
+      const tileY = Math.floor(localTileY);
+      if (!force && (
+        time - this.lastMinimapUpdateMs < MINIMAP_UPDATE_INTERVAL_MS
+        || (tileX === this.lastMinimapTileX && tileY === this.lastMinimapTileY)
+      )) {
+        return;
+      }
+      this.lastMinimapUpdateMs = time;
+      this.lastMinimapTileX = tileX;
+      this.lastMinimapTileY = tileY;
+      this.minimapOverlay.drawCave(this.activeCave.layout, localTileX, localTileY);
+      return;
+    }
     const tileX = Math.floor(this.player.x / WORLD_TILE_SIZE);
     const tileY = Math.floor(this.player.y / WORLD_TILE_SIZE);
     if (!force && (
@@ -815,6 +1130,323 @@ export class AdventureScene extends Phaser.Scene {
       this.player.y / WORLD_TILE_SIZE,
       MINIMAP_TILES_PER_CELL
     );
+  }
+
+  private updateCaveEntranceInteraction(force = false): void {
+    const tileX = worldToTile(this.player.x);
+    const tileY = worldToTile(this.player.y);
+    if (!force && tileX === this.lastCaveEntranceTileX && tileY === this.lastCaveEntranceTileY) {
+      return;
+    }
+
+    this.lastCaveEntranceTileX = tileX;
+    this.lastCaveEntranceTileY = tileY;
+    let nearest: CaveEntrance | null = null;
+    let nearestDistanceSquared = 78 * 78;
+    for (let candidateY = tileY - 3; candidateY <= tileY + 3; candidateY += 1) {
+      for (let candidateX = tileX - 3; candidateX <= tileX + 3; candidateX += 1) {
+        const entrance = caveEntranceAtTile(this.worldSeed, candidateX, candidateY);
+        if (!entrance) {
+          continue;
+        }
+        const centerX = (candidateX + 0.5) * WORLD_TILE_SIZE;
+        const centerY = (candidateY + 0.5) * WORLD_TILE_SIZE;
+        const distanceSquared = Phaser.Math.Distance.Squared(this.player.x, this.player.y, centerX, centerY);
+        if (distanceSquared < nearestDistanceSquared) {
+          nearest = entrance;
+          nearestDistanceSquared = distanceSquared;
+        }
+      }
+    }
+
+    this.nearbyCaveEntrance = nearest;
+    if (!nearest) {
+      this.caveHintPanel.clear().setVisible(false);
+      this.caveHint.setVisible(false);
+      return;
+    }
+
+    this.interactionHighlight
+      .setPosition((nearest.tileX + 0.5) * WORLD_TILE_SIZE, (nearest.tileY + 0.5) * WORLD_TILE_SIZE)
+      .setVisible(true);
+    this.drawCaveHint(
+      (nearest.tileX + 0.5) * WORLD_TILE_SIZE,
+      (nearest.tileY + 0.5) * WORLD_TILE_SIZE - 40,
+      'Press E to enter'
+    );
+  }
+
+  private drawCaveHint(worldX: number, worldY: number, label: string): void {
+    this.caveHint.setText(label).setPosition(worldX, worldY).setVisible(true);
+    const width = Math.max(118, this.caveHint.width + 22);
+    const height = Math.max(28, this.caveHint.height + 10);
+    const left = worldX - width / 2;
+    const top = worldY - height / 2;
+    this.caveHintPanel.clear();
+    this.caveHintPanel.fillStyle(0x090b0d, 0.92);
+    this.caveHintPanel.fillRoundedRect(left, top, width, height, 7);
+    this.caveHintPanel.lineStyle(1.5, 0x91a7b0, 0.92);
+    this.caveHintPanel.strokeRoundedRect(left, top, width, height, 7);
+    this.caveHintPanel.fillStyle(0x11161a, 0.95);
+    this.caveHintPanel.fillTriangle(worldX - 6, top + height - 1, worldX + 6, top + height - 1, worldX, top + height + 7);
+    this.caveHintPanel.setVisible(true);
+  }
+
+  private enterCave(entrance: CaveEntrance, returnWorldX: number, returnWorldY: number, markDirty = true): void {
+    this.cancelHarvesting();
+    this.nearbyCaveEntrance = null;
+    this.caveHintPanel.clear().setVisible(false);
+    this.caveHint.setVisible(false);
+    this.dropHighlight.setVisible(false);
+    this.dropHintPanel.clear().setVisible(false);
+    this.dropHint.setVisible(false);
+    this.interactionHighlight.setVisible(false);
+
+    const layout = generateCaveLayout(this.worldSeed, entrance);
+    const origin = caveWorldOrigin(entrance);
+    this.activeCave = { entrance, layout, origin, returnWorldX, returnWorldY };
+    const spawn = caveWorldTilePosition(origin, layout.entranceTileX, layout.entranceTileY);
+    this.player.setPosition(spawn.x, spawn.y);
+    this.isSwimming = false;
+    this.terrainSurface = 'cave floor';
+    this.drawActiveCave();
+    this.updateCaveInteraction(true);
+    this.updateMinimap(0, true);
+    this.updatePlayerAvatar(0, false);
+    if (markDirty) {
+      this.markSaveDirty();
+    }
+  }
+
+  private exitCave(): void {
+    const cave = this.activeCave;
+    if (!cave) {
+      return;
+    }
+
+    this.cancelHarvesting();
+    this.activeCave = null;
+    this.caveOreTarget = null;
+    this.caveExitNearby = false;
+    this.caveGraphics.clear().setVisible(false);
+    this.caveHintPanel.clear().setVisible(false);
+    this.caveHint.setVisible(false);
+    this.player.setPosition(cave.returnWorldX, cave.returnWorldY);
+    this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
+    this.terrainSurface = this.currentTopography.surface;
+    this.updateSwimmingState(true);
+    this.chunkManager.update(this.player.x, this.player.y);
+    this.updateInteractionTarget(true);
+    this.updateCaveEntranceInteraction(true);
+    this.updateDropInteraction(0, true);
+    this.updateMinimap(0, true);
+    this.updatePlayerAvatar(0, false);
+    this.markSaveDirty();
+  }
+
+  private drawActiveCave(): void {
+    const cave = this.activeCave;
+    if (!cave) {
+      return;
+    }
+
+    const graphics = this.caveGraphics;
+    const { layout, origin } = cave;
+    const outerX = origin.x - WORLD_TILE_SIZE;
+    const outerY = origin.y - WORLD_TILE_SIZE;
+    graphics.clear().setVisible(true);
+    graphics.fillStyle(0x07090b, 1);
+    graphics.fillRect(outerX, outerY, (layout.width + 2) * WORLD_TILE_SIZE, (layout.height + 2) * WORLD_TILE_SIZE);
+
+    for (let y = 0; y < layout.height; y += 1) {
+      for (let x = 0; x < layout.width; x += 1) {
+        const worldX = origin.x + x * WORLD_TILE_SIZE;
+        const worldY = origin.y + y * WORLD_TILE_SIZE;
+        if (layout.floorTiles[y][x]) {
+          const shade = (x * 13 + y * 7) % 3;
+          graphics.fillStyle(shade === 0 ? 0x34383a : shade === 1 ? 0x303436 : 0x3b3c3a, 1);
+          graphics.fillRect(worldX, worldY, WORLD_TILE_SIZE, WORLD_TILE_SIZE);
+          graphics.fillStyle(0x68706c, 0.12);
+          graphics.fillEllipse(worldX + 10 + (x * 5 % 10), worldY + 13 + (y * 7 % 8), 9, 3);
+        } else {
+          graphics.fillStyle(0x171b1d, 1);
+          graphics.fillRect(worldX, worldY, WORLD_TILE_SIZE, WORLD_TILE_SIZE);
+          graphics.fillStyle(0x252b2d, 0.8);
+          graphics.fillTriangle(worldX, worldY, worldX + WORLD_TILE_SIZE, worldY, worldX + (x % 2 ? 17 : 10), worldY + WORLD_TILE_SIZE);
+        }
+      }
+    }
+
+    // A lighter rim at the entrance gives the exit a clear, natural direction in the darkness.
+    const exit = caveWorldTilePosition(origin, layout.entranceTileX, layout.entranceTileY);
+    graphics.fillStyle(0x7a6545, 0.72);
+    graphics.fillEllipse(exit.x, exit.y + 4, 25, 17);
+    graphics.fillStyle(0x101214, 0.96);
+    graphics.fillEllipse(exit.x, exit.y + 2, 17, 11);
+    graphics.lineStyle(2, 0xbda16b, 0.65);
+    graphics.strokeEllipse(exit.x, exit.y + 4, 25, 17);
+
+    layout.ores.forEach((ore) => {
+      if (!this.sessionWorldState.isCaveOreHarvested(ore.id)) {
+        this.drawCaveOre(ore, origin);
+      }
+    });
+  }
+
+  private drawCaveOre(ore: CaveOre, origin: CaveWorldOrigin): void {
+    const graphics = this.caveGraphics;
+    const position = caveWorldTilePosition(origin, ore.tileX, ore.tileY);
+    const color = RESOURCE_COLORS[ore.type === 'coal' ? ResourceType.Coal
+      : ore.type === 'iron' ? ResourceType.Iron
+        : ore.type === 'gold' ? ResourceType.Gold : ResourceType.Diamond];
+    graphics.fillStyle(0x1d2324, 1);
+    graphics.fillCircle(position.x, position.y + 5, 12);
+    graphics.fillStyle(0x69716e, 1);
+    graphics.fillTriangle(position.x - 11, position.y + 7, position.x - 3, position.y - 10, position.x + 11, position.y + 6);
+    graphics.fillStyle(color, 0.95);
+    graphics.fillCircle(position.x - 3, position.y - 1, 4.5);
+    graphics.fillCircle(position.x + 5, position.y + 4, 3.5);
+    graphics.fillStyle(0xffffff, ore.type === 'diamond' ? 0.58 : 0.28);
+    graphics.fillCircle(position.x - 4, position.y - 3, 1.5);
+  }
+
+  private updateCave(time: number, delta: number): void {
+    if (this.worldMapOpen || this.inventoryOpen || this.craftingOpen) {
+      this.updatePlayerAvatar(delta, false);
+      return;
+    }
+
+    const horizontal = Number(this.isDown('right')) - Number(this.isDown('left'));
+    const vertical = Number(this.isDown('down')) - Number(this.isDown('up'));
+    const isMoving = horizontal !== 0 || vertical !== 0;
+    this.updateFacing(horizontal, vertical);
+    if (isMoving) {
+      const length = Math.hypot(horizontal, vertical);
+      const distance = PLAYER_SPEED * delta / 1000;
+      this.moveCavePlayer(horizontal / length * distance, vertical / length * distance);
+      this.markSaveDirty();
+    }
+    this.updateCaveInteraction();
+    this.updateCaveHarvesting(delta);
+    this.updatePlayerAvatar(delta, isMoving);
+    this.updateMinimap(time);
+  }
+
+  private moveCavePlayer(deltaX: number, deltaY: number): void {
+    const cave = this.activeCave;
+    if (!cave) {
+      return;
+    }
+    const tryMove = (x: number, y: number): boolean => {
+      const tileX = Math.floor((x - cave.origin.x) / WORLD_TILE_SIZE);
+      const tileY = Math.floor((y - cave.origin.y) / WORLD_TILE_SIZE);
+      return tileY >= 0 && tileY < cave.layout.height && tileX >= 0 && tileX < cave.layout.width && cave.layout.floorTiles[tileY][tileX];
+    };
+    if (tryMove(this.player.x + deltaX, this.player.y)) {
+      this.player.x += deltaX;
+    }
+    if (tryMove(this.player.x, this.player.y + deltaY)) {
+      this.player.y += deltaY;
+    }
+  }
+
+  private updateCaveInteraction(force = false): void {
+    const cave = this.activeCave;
+    if (!cave) {
+      return;
+    }
+    const exit = caveWorldTilePosition(cave.origin, cave.layout.entranceTileX, cave.layout.entranceTileY);
+    this.caveExitNearby = Phaser.Math.Distance.Between(this.player.x, this.player.y, exit.x, exit.y) < 52;
+    let nearest: CaveOre | null = null;
+    let nearestDistanceSquared = 84 * 84;
+    cave.layout.ores.forEach((ore) => {
+      if (this.sessionWorldState.isCaveOreHarvested(ore.id)) {
+        return;
+      }
+      const position = caveWorldTilePosition(cave.origin, ore.tileX, ore.tileY);
+      const distanceSquared = Phaser.Math.Distance.Squared(this.player.x, this.player.y, position.x, position.y);
+      if (distanceSquared < nearestDistanceSquared) {
+        nearest = ore;
+        nearestDistanceSquared = distanceSquared;
+      }
+    });
+    this.caveOreTarget = nearest;
+
+    if (this.caveExitNearby) {
+      this.interactionHighlight.setPosition(exit.x, exit.y).setVisible(true);
+      this.drawCaveHint(exit.x, exit.y - 33, 'Press E to exit');
+    } else if (nearest) {
+      const ore = nearest as CaveOre;
+      const position = caveWorldTilePosition(cave.origin, ore.tileX, ore.tileY);
+      this.interactionHighlight.setPosition(position.x, position.y).setVisible(true);
+      this.caveHintPanel.clear().setVisible(false);
+      this.caveHint.setVisible(false);
+    } else {
+      this.interactionHighlight.setVisible(false);
+      this.caveHintPanel.clear().setVisible(false);
+      this.caveHint.setVisible(false);
+    }
+  }
+
+  private updateCaveHarvesting(delta: number): void {
+    if (this.harvestRequiresMouseRelease) {
+      if (!this.input.activePointer.leftButtonDown()) {
+        this.harvestRequiresMouseRelease = false;
+      }
+      return;
+    }
+    if (!this.input.activePointer.leftButtonDown() || !this.caveOreTarget) {
+      if (this.caveHarvestOre) {
+        this.caveHarvestOre = null;
+        this.harvestElapsedMs = 0;
+        this.harvestProgressGraphics.clear();
+      }
+      return;
+    }
+    if (!this.caveHarvestOre || this.caveHarvestOre.id !== this.caveOreTarget.id) {
+      this.caveHarvestOre = this.caveOreTarget;
+      this.harvestElapsedMs = 0;
+    }
+    const speed = this.caveMiningSpeed();
+    const durationMs = HARVEST_DURATION_MS / speed;
+    this.harvestElapsedMs = Math.min(durationMs, this.harvestElapsedMs + delta);
+    const cave = this.activeCave;
+    if (!cave) {
+      return;
+    }
+    const position = caveWorldTilePosition(cave.origin, this.caveHarvestOre.tileX, this.caveHarvestOre.tileY);
+    this.drawHarvestProgressAt(position.x, position.y - 32, this.harvestElapsedMs / durationMs);
+    if (this.harvestElapsedMs >= durationMs) {
+      const ore = this.caveHarvestOre;
+      this.caveHarvestOre = null;
+      this.harvestElapsedMs = 0;
+      this.harvestProgressGraphics.clear();
+      this.harvestRequiresMouseRelease = true;
+      const resource = ore.type === 'coal' ? ResourceType.Coal : ore.type === 'iron' ? ResourceType.Iron
+        : ore.type === 'gold' ? ResourceType.Gold : ResourceType.Diamond;
+      if (!this.inventory.canAdd(resource, 1)) {
+        this.showWorldFeedback(this.player.x, this.player.y - 28, 'Inventory full');
+        return;
+      }
+      if (this.sessionWorldState.harvestCaveOre(ore.id)) {
+        this.inventory.add(resource, 1);
+        this.showWorldFeedback(this.player.x, this.player.y - 28, `+ 1 ${resourceLabel(resource)}`);
+        this.handleInventoryChanged();
+        this.drawActiveCave();
+        this.updateCaveInteraction(true);
+      }
+    }
+  }
+
+  private caveMiningSpeed(): number {
+    if (!this.equippedTool) {
+      return 0.55;
+    }
+    const tool = TOOL_DEFINITIONS[this.equippedTool];
+    if (tool.kind !== 'pickaxe') {
+      return 0.7;
+    }
+    return tool.headMaterial === 'stone' ? 2.35 : 1.6;
   }
 
   private updateInteractionTarget(force = false): void {
@@ -906,7 +1538,7 @@ export class AdventureScene extends Phaser.Scene {
     if (collected) {
       this.inventory.add(collected.resource, collected.amount);
       this.showWorldFeedback(this.player.x, this.player.y - 28, `+ ${collected.amount} ${resourceLabel(collected.resource)}`);
-      this.markSaveDirty();
+      this.handleInventoryChanged();
       this.updateDropInteraction(0, true);
     }
 
@@ -922,7 +1554,7 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
-    if (this.inventoryOpen || !this.input.activePointer.leftButtonDown() || !this.interactionTarget) {
+    if (this.inventoryOpen || this.craftingOpen || !this.input.activePointer.leftButtonDown() || !this.interactionTarget) {
       this.cancelHarvesting();
       return;
     }
@@ -932,7 +1564,7 @@ export class AdventureScene extends Phaser.Scene {
       this.harvestTarget = { ...this.interactionTarget };
     }
 
-    const speedMultiplier = toolSpeedForFeature(this.equippedTool, this.harvestTarget.feature);
+    const speedMultiplier = harvestSpeedForFeature(this.equippedTool, this.harvestTarget.feature);
     const durationMs = HARVEST_DURATION_MS / speedMultiplier;
     this.harvestElapsedMs = Math.min(this.harvestElapsedMs + delta, durationMs);
     const progress = this.harvestElapsedMs / durationMs;
@@ -965,7 +1597,7 @@ export class AdventureScene extends Phaser.Scene {
 
     this.inventory.add(resource, 1);
     this.showWorldFeedback(this.player.x, this.player.y - 28, `+ 1 ${resourceLabel(resource)}`);
-    this.markSaveDirty();
+    this.handleInventoryChanged();
     this.updateInteractionTarget(true);
   }
 
@@ -975,6 +1607,7 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     this.harvestTarget = null;
+    this.caveHarvestOre = null;
     this.harvestElapsedMs = 0;
     this.harvestProgressGraphics.clear();
   }
@@ -982,6 +1615,10 @@ export class AdventureScene extends Phaser.Scene {
   private drawHarvestProgress(target: InteractionTarget, progress: number): void {
     const centerX = (target.tileX + 0.5) * WORLD_TILE_SIZE + 32;
     const centerY = (target.tileY + 0.5) * WORLD_TILE_SIZE - 32;
+    this.drawHarvestProgressAt(centerX, centerY, progress);
+  }
+
+  private drawHarvestProgressAt(centerX: number, centerY: number, progress: number): void {
     this.harvestProgressGraphics.clear();
     this.harvestProgressGraphics.fillStyle(0x102019, 0.88);
     this.harvestProgressGraphics.fillCircle(centerX, centerY, HARVEST_RING_RADIUS + 4);
@@ -1012,8 +1649,18 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     this.showWorldFeedback(this.player.x, this.player.y - 28, `Crafted ${TOOL_DEFINITIONS[recipe.output].label}`);
-    this.markSaveDirty();
+    this.handleInventoryChanged();
     return true;
+  }
+
+  private selectHotbarSlot(slotIndex: number): void {
+    if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= HOTBAR_SLOT_COUNT) {
+      return;
+    }
+
+    this.activeHotbarSlot = slotIndex;
+    const selectedItem = this.inventory.getSlots()[slotIndex]?.item;
+    this.setEquippedTool(selectedItem && isToolId(selectedItem) ? selectedItem : null);
   }
 
   private setEquippedTool(tool: ToolId | null): void {
@@ -1024,7 +1671,23 @@ export class AdventureScene extends Phaser.Scene {
     this.equippedTool = tool;
     this.lastAvatarState = '';
     this.updatePlayerAvatar(0, false);
+    this.hotbarOverlay.refresh();
     this.markSaveDirty();
+  }
+
+  private handleInventoryChanged(): void {
+    if (this.equippedTool && this.inventory.get(this.equippedTool) < 1) {
+      this.equippedTool = null;
+      this.lastAvatarState = '';
+      this.updatePlayerAvatar(0, false);
+    }
+
+    this.hotbarOverlay.refresh();
+    this.markSaveDirty();
+  }
+
+  private updateHotbarVisibility(): void {
+    this.hotbarOverlay.setVisible(!this.inventoryOpen && !this.craftingOpen && !this.worldMapOpen);
   }
 
   private dropInventorySlot(slot: InventorySlot): void {
@@ -1133,8 +1796,14 @@ export class AdventureScene extends Phaser.Scene {
       seed: this.worldSeed,
       player: { x: this.player.x, y: this.player.y },
       inventory: [...this.inventory.getSlots()],
-      equipment: { equippedTool: this.equippedTool },
-      world: this.sessionWorldState.toSaveData()
+      equipment: { equippedTool: this.equippedTool, activeHotbarSlot: this.activeHotbarSlot },
+      world: this.sessionWorldState.toSaveData(),
+      activeCave: this.activeCave ? {
+        entranceTileX: this.activeCave.entrance.tileX,
+        entranceTileY: this.activeCave.entrance.tileY,
+        returnWorldX: this.activeCave.returnWorldX,
+        returnWorldY: this.activeCave.returnWorldY
+      } : undefined
     };
 
     try {
@@ -1155,6 +1824,25 @@ export class AdventureScene extends Phaser.Scene {
 
   private updateDebugText(): void {
     if (!this.worldReady) {
+      return;
+    }
+
+    if (this.activeCave) {
+      const cave = this.activeCave;
+      const localTileX = Math.floor((this.player.x - cave.origin.x) / WORLD_TILE_SIZE);
+      const localTileY = Math.floor((this.player.y - cave.origin.y) / WORLD_TILE_SIZE);
+      const remainingOres = cave.layout.ores.filter((ore) => !this.sessionWorldState.isCaveOreHarvested(ore.id)).length;
+      this.debugElement.textContent = [
+        'WILDBOUND // CAVE STATUS',
+        `Cave        ${cave.entrance.id}`,
+        `Depth       ${cave.entrance.depth}`,
+        `Interior    ${cave.layout.width} x ${cave.layout.height} tiles`,
+        `Tile        ${localTileX}, ${localTileY}`,
+        `Target      ${this.caveOreTarget?.type ?? (this.caveExitNearby ? 'exit' : 'none')}`,
+        `Ores        ${remainingOres} remaining / ${this.sessionWorldState.harvestedCaveOreCount} harvested`,
+        `Tool        ${this.equippedTool ? TOOL_DEFINITIONS[this.equippedTool].label : 'hand'}`,
+        `FPS         ${this.game.loop.actualFps.toFixed(0)}`
+      ].join('\n');
       return;
     }
 

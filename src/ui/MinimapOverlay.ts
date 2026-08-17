@@ -1,4 +1,5 @@
 import { minimapColorAtTile } from '../world/generation/biomeGenerator';
+import type { CaveLayout } from '../world/caves/caveGenerator';
 import { MINIMAP_BORDER_SMOOTHNESS_SCALE } from './uiConfig';
 
 const MINIMAP_SIZE = 144;
@@ -81,6 +82,38 @@ export class MinimapOverlay {
     }
 
     this.drawVisibleMap(request);
+  }
+
+  drawCave(layout: CaveLayout, playerTileX: number, playerTileY: number): void {
+    if (this.animationFrameId !== null) {
+      window.cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
+    this.renderJob = null;
+    this.ensureVisibleCanvasSize();
+    const deviceScale = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const context = this.context;
+    context.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
+    context.clearRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
+    const cellSize = Math.min(7, (MINIMAP_SIZE - 22) / Math.max(layout.width, layout.height));
+    const offsetX = (MINIMAP_SIZE - layout.width * cellSize) / 2;
+    const offsetY = (MINIMAP_SIZE - layout.height * cellSize) / 2;
+    context.fillStyle = '#07090b';
+    context.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
+    for (let y = 0; y < layout.height; y += 1) {
+      for (let x = 0; x < layout.width; x += 1) {
+        context.fillStyle = layout.floorTiles[y][x] ? '#59605d' : '#1a2021';
+        context.fillRect(offsetX + x * cellSize, offsetY + y * cellSize, Math.ceil(cellSize), Math.ceil(cellSize));
+      }
+    }
+    context.fillStyle = '#c7a56a';
+    context.fillRect(offsetX + layout.entranceTileX * cellSize, offsetY + layout.entranceTileY * cellSize, cellSize, cellSize);
+    context.fillStyle = '#ffffff';
+    context.beginPath();
+    context.arc(offsetX + (playerTileX + 0.5) * cellSize, offsetY + (playerTileY + 0.5) * cellSize, 3.5, 0, Math.PI * 2);
+    context.fill();
+    this.drawFrame(context);
+    context.setTransform(1, 0, 0, 1, 0, 0);
   }
 
   destroy(): void {
