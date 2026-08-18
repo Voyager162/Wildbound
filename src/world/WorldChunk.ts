@@ -128,6 +128,9 @@ interface CaveTerrainFacet {
   red: number;
   green: number;
   blue: number;
+  opacity?: number;
+  textureSalt?: number;
+  textureStrength?: number;
 }
 
 const terrainMaterialPixels = new Map<string, TerrainMaterialPixels>();
@@ -607,143 +610,121 @@ export class WorldChunk {
             });
             const [rockRed, rockGreen, rockBlue] = caveRockColorForBiome(entrance.biome);
             const rockFacets: CaveTerrainFacet[] = [];
-            // Each entrance receives a separate seeded talus field. These are compact angular
-            // terrain facets, not placed scene objects, so no two caves share the same outline.
-            const rockCount = 22 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8a61) * 11);
-            for (let rock = 0; rock < rockCount; rock += 1) {
-              const ringAngle = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8b21 + rock) * Math.PI * 2;
-              const ringDistance = radiusPixels * (0.72 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8c61 + rock) * 0.72);
-              const rockCenterForward = Math.cos(ringAngle) * ringDistance * 1.24;
-              const rockCenterSide = Math.sin(ringAngle) * ringDistance * 0.86;
-              const radiusForward = 10 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8db1 + rock) * 22;
-              const radiusSide = radiusForward * (0.58 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8ef1 + rock) * 0.42);
-              const cornerCount = 5 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9031 + rock) * 3);
-              const rotation = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9131 + rock) * Math.PI * 2;
-              const vertices: TerrainPoint[] = [];
+            const addRockMesh = (
+              centerForward: number,
+              centerSide: number,
+              radiusForward: number,
+              radiusSide: number,
+              rotation: number,
+              cornerCount: number,
+              salt: number,
+              tone: number,
+              raised: boolean
+            ): void => {
+              const outer: TerrainPoint[] = [];
+              // Keep the rock readable as one weathered mass rather than a fan of triangles.
+              // A single high-vertex contour lets each stone retain a genuinely irregular
+              // silhouette; its surface detail is painted procedurally per pixel below.
+              const lightAngle = randomAtTile(this.seed, entrance.tileX, entrance.tileY, salt + 1) * Math.PI * 2;
               for (let corner = 0; corner < cornerCount; corner += 1) {
-                const angle = rotation + corner / cornerCount * Math.PI * 2;
-                const irregularity = 0.78 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9251 + rock * 11 + corner) * 0.42;
-                vertices.push(toWorldPoint(
-                  rockCenterForward + Math.cos(angle) * radiusForward * irregularity,
-                  rockCenterSide + Math.sin(angle) * radiusSide * irregularity,
+                const angularJitter = (randomAtTile(this.seed, entrance.tileX, entrance.tileY, salt + 2 + corner * 4) - 0.5)
+                  * Math.PI * 0.22 / cornerCount;
+                const angle = rotation + (corner / cornerCount) * Math.PI * 2 + angularJitter;
+                const irregularity = 0.7 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, salt + 3 + corner * 4) * 0.55;
+                outer.push(toWorldPoint(
+                  centerForward + Math.cos(angle) * radiusForward * irregularity,
+                  centerSide + Math.sin(angle) * radiusSide * irregularity,
                 ));
               }
-              const center = toWorldPoint(rockCenterForward, rockCenterSide);
-              const lightSide = Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x94a1 + rock) * cornerCount);
-              const shadowSide = (lightSide + Math.floor(cornerCount / 2) + 1) % cornerCount;
-              const tone = -7 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x95d1 + rock) * 15);
+              const baseTone = tone + (raised ? -9 : -4);
+              const litTone = Math.round(Math.cos(rotation - lightAngle) * (raised ? 11 : 5));
               rockFacets.push({
-                vertices,
-                red: rockRed + tone,
-                green: rockGreen + tone,
-                blue: rockBlue + tone,
+                vertices: outer,
+                red: rockRed + baseTone + litTone,
+                green: rockGreen + baseTone + litTone,
+                blue: rockBlue + baseTone + litTone,
+                opacity: raised ? 0.62 : 0.2,
+                textureSalt: salt,
+                textureStrength: raised ? 15 : 8,
               });
-              rockFacets.push({
-                vertices: [center, vertices[lightSide], vertices[(lightSide + 1) % cornerCount]],
-                red: rockRed + tone + 25,
-                green: rockGreen + tone + 24,
-                blue: rockBlue + tone + 22,
-              });
-              rockFacets.push({
-                vertices: [center, vertices[shadowSide], vertices[(shadowSide + 1) % cornerCount]],
-                red: rockRed + tone - 23,
-                green: rockGreen + tone - 23,
-                blue: rockBlue + tone - 22,
-              });
+            };
+            // Low, broad strata are part of the exposed geological face; raised talus remains
+            // sparse so the terrain reads as a cave formation, not a pile of game tokens.
+            const strataCount = 5 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9601) * 4);
+            for (let stratum = 0; stratum < strataCount; stratum += 1) {
+              const stratumAngle = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9611 + stratum) * Math.PI * 2;
+              const stratumDistance = radiusPixels * (0.14 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9651 + stratum) * 0.74);
+              const centerForward = Math.cos(stratumAngle) * stratumDistance * 1.15;
+              const centerSide = Math.sin(stratumAngle) * stratumDistance * 0.76;
+              addRockMesh(
+                centerForward,
+                centerSide,
+                28 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9691 + stratum) * 36,
+                16 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x96d1 + stratum) * 24,
+                randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9711 + stratum) * Math.PI * 2,
+                10 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9751 + stratum) * 5),
+                0x9791 + stratum * 23,
+                -17 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x97d1 + stratum) * 27),
+                false,
+              );
             }
-            // Long fracture plates cover the exposed face between loose stones. Their sizes,
-            // offsets, and directions come from the cave coordinate stream, giving every
-            // entrance an individual geological pattern instead of a reusable ring graphic.
-            const plateCount = 13 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9601) * 8);
-            for (let plate = 0; plate < plateCount; plate += 1) {
-              const plateAngle = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9611 + plate) * Math.PI * 2;
-              const plateDistance = radiusPixels * (0.24 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9651 + plate) * 0.74);
-              const plateCenterForward = Math.cos(plateAngle) * plateDistance * 1.16;
-              const plateCenterSide = Math.sin(plateAngle) * plateDistance * 0.74;
-              const plateLength = 21 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9691 + plate) * 42;
-              const plateWidth = 7 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x96d1 + plate) * 15;
-              const rotation = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9711 + plate) * Math.PI * 2;
-              const plateTone = -15 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9751 + plate) * 31);
-              const axisForward = Math.cos(rotation);
-              const axisSide = Math.sin(rotation);
-              const perpendicularForward = -axisSide;
-              const perpendicularSide = axisForward;
-              const first = toWorldPoint(
-                plateCenterForward + axisForward * plateLength + perpendicularForward * plateWidth,
-                plateCenterSide + axisSide * plateLength + perpendicularSide * plateWidth,
+            const rockCount = 6 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8a61) * 4);
+            for (let rock = 0; rock < rockCount; rock += 1) {
+              const ringAngle = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8b21 + rock) * Math.PI * 2;
+              const ringDistance = radiusPixels * (0.52 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8c61 + rock) * 0.78);
+              const centerForward = Math.cos(ringAngle) * ringDistance * 1.24;
+              const centerSide = Math.sin(ringAngle) * ringDistance * 0.86;
+              const isLarge = rock < Math.ceil(rockCount * 0.5);
+              const radiusForward = isLarge
+                ? 28 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8db1 + rock) * 30
+                : 12 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8db1 + rock) * 16;
+              const radiusSide = radiusForward * (0.56 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8ef1 + rock) * 0.46);
+              addRockMesh(
+                centerForward,
+                centerSide,
+                radiusForward,
+                radiusSide,
+                randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9031 + rock) * Math.PI * 2,
+                14 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9131 + rock) * 6),
+                0x9251 + rock * 29,
+                -9 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x94a1 + rock) * 19),
+                true,
               );
-              const second = toWorldPoint(
-                plateCenterForward + axisForward * plateLength - perpendicularForward * plateWidth * 0.6,
-                plateCenterSide + axisSide * plateLength - perpendicularSide * plateWidth * 0.6,
-              );
-              const third = toWorldPoint(
-                plateCenterForward - axisForward * plateLength * 0.78 - perpendicularForward * plateWidth,
-                plateCenterSide - axisSide * plateLength * 0.78 - perpendicularSide * plateWidth,
-              );
-              const fourth = toWorldPoint(
-                plateCenterForward - axisForward * plateLength * 0.78 + perpendicularForward * plateWidth,
-                plateCenterSide - axisSide * plateLength * 0.78 + perpendicularSide * plateWidth,
-              );
-              rockFacets.push({
-                vertices: [first, third, second, fourth],
-                red: rockRed + plateTone,
-                green: rockGreen + plateTone,
-                blue: rockBlue + plateTone,
-              });
-              rockFacets.push({
-                vertices: [first, third, toWorldPoint(plateCenterForward, plateCenterSide)],
-                red: rockRed + plateTone + 20,
-                green: rockGreen + plateTone + 19,
-                blue: rockBlue + plateTone + 18,
-              });
             }
             const mouthLocalPoints: Array<{ forward: number; side: number }> = [];
-            const mouthPointCount = 11 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x96e1) * 5);
+            const mouthPointCount = 27 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x96e1) * 7);
             const mouthCenterForward = entrance.mouthCenterForwardTiles * WORLD_TILE_SIZE;
             const mouthCenterSide = entrance.mouthCenterSideTiles * WORLD_TILE_SIZE;
             const mouthForwardRadius = entrance.mouthForwardRadiusTiles * WORLD_TILE_SIZE;
             const mouthSideRadius = entrance.mouthSideRadiusTiles * WORLD_TILE_SIZE;
             for (let point = 0; point < mouthPointCount; point += 1) {
               const angle = point / mouthPointCount * Math.PI * 2;
-              const irregularity = 0.78 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9721 + point) * 0.4;
+              // Average adjacent seed samples so the mouth has a naturally chipped contour
+              // without the oversized spikes that made it look like an assembled icon.
+              const prior = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9721 + (point + mouthPointCount - 1) % mouthPointCount);
+              const current = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9721 + point);
+              const next = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9721 + (point + 1) % mouthPointCount);
+              const irregularity = 0.86 + (prior + current + next) / 3 * 0.2;
               mouthLocalPoints.push({
                 forward: mouthCenterForward + Math.cos(angle) * mouthForwardRadius * irregularity,
                 side: mouthCenterSide + Math.sin(angle) * mouthSideRadius * irregularity,
               });
             }
-            const mouthLipFacets: CaveTerrainFacet[] = mouthLocalPoints.flatMap((point, index) => {
-              const next = mouthLocalPoints[(index + 1) % mouthLocalPoints.length];
-              const outerScale = 1.17 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9841 + index) * 0.12;
-              const lipTone = -16 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9951 + index) * 34);
-              const outerPoint = toWorldPoint(
-                mouthCenterForward + (point.forward - mouthCenterForward) * outerScale,
-                mouthCenterSide + (point.side - mouthCenterSide) * outerScale,
-              );
-              const outerNext = toWorldPoint(
-                mouthCenterForward + (next.forward - mouthCenterForward) * outerScale,
-                mouthCenterSide + (next.side - mouthCenterSide) * outerScale,
-              );
-              const innerPoint = toWorldPoint(point.forward, point.side);
-              const innerNext = toWorldPoint(next.forward, next.side);
-              const center = toWorldPoint(
-                mouthCenterForward + (point.forward + next.forward - mouthCenterForward * 2) * 0.34,
-                mouthCenterSide + (point.side + next.side - mouthCenterSide * 2) * 0.34,
-              );
-              return [
-                {
-                  vertices: [outerPoint, outerNext, innerNext, innerPoint],
-                  red: rockRed + lipTone,
-                  green: rockGreen + lipTone,
-                  blue: rockBlue + lipTone,
-                },
-                {
-                  vertices: [outerPoint, innerPoint, center],
-                  red: rockRed + lipTone - 19,
-                  green: rockGreen + lipTone - 19,
-                  blue: rockBlue + lipTone - 18,
-                },
-              ];
-            });
+            const mouthLipFacets: CaveTerrainFacet[] = [{
+              vertices: mouthLocalPoints.map((point, index) => {
+                const outerScale = 1.2 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9841 + index) * 0.06;
+                return toWorldPoint(
+                  mouthCenterForward + (point.forward - mouthCenterForward) * outerScale,
+                  mouthCenterSide + (point.side - mouthCenterSide) * outerScale,
+                );
+              }),
+              red: rockRed + 3,
+              green: rockGreen + 3,
+              blue: rockBlue + 4,
+              opacity: 0.58,
+              textureSalt: 0x9981,
+              textureStrength: 15,
+            }];
             const mouthStalactiteFacets: CaveTerrainFacet[] = [];
             const stalactiteCount = CAVE_MOUTH_STALACTITE_COUNT_MIN + Math.floor(
               randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9a31)
@@ -754,24 +735,22 @@ export class WorldChunk {
                 / stalactiteCount - 0.5;
               const baseForward = mouthCenterForward - mouthForwardRadius * (0.78 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9ab1 + stalactite) * 0.12);
               const baseSide = mouthCenterSide + spacing * mouthSideRadius * 1.48;
-              const halfWidth = 5 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9af1 + stalactite) * 8;
-              const tipForward = baseForward + mouthForwardRadius * (0.38 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9b31 + stalactite) * 0.36);
+              const halfWidth = 4 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9af1 + stalactite) * 6;
+              const tipForward = baseForward + mouthForwardRadius * (0.22 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9b31 + stalactite) * 0.2);
               const tipSide = baseSide + (randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9b71 + stalactite) - 0.5) * halfWidth * 0.8;
-              const tone = -30 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9bb1 + stalactite) * 16);
+              const tone = -12 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9bb1 + stalactite) * 12);
               const left = toWorldPoint(baseForward, baseSide - halfWidth);
               const right = toWorldPoint(baseForward, baseSide + halfWidth);
+              const shoulderLeft = toWorldPoint(baseForward + (tipForward - baseForward) * 0.18, baseSide - halfWidth * 0.64);
+              const shoulderRight = toWorldPoint(baseForward + (tipForward - baseForward) * 0.18, baseSide + halfWidth * 0.64);
               const tip = toWorldPoint(tipForward, tipSide);
               mouthStalactiteFacets.push({
-                vertices: [left, right, tip],
+                vertices: [left, right, shoulderRight, tip, shoulderLeft],
                 red: rockRed + tone,
                 green: rockGreen + tone,
                 blue: rockBlue + tone,
-              });
-              mouthStalactiteFacets.push({
-                vertices: [left, tip, toWorldPoint(baseForward + mouthForwardRadius * 0.12, baseSide)],
-                red: rockRed + tone + 20,
-                green: rockGreen + tone + 19,
-                blue: rockBlue + tone + 17,
+                textureSalt: 0x9c01 + stalactite,
+                textureStrength: 7,
               });
             }
             influences.push({
@@ -785,7 +764,7 @@ export class WorldChunk {
               rockBlue,
               mouthVertices: mouthLocalPoints.map((point) => toWorldPoint(point.forward, point.side)),
               mouthRecessVertices: mouthLocalPoints.map((point, index) => {
-                const inset = 0.57 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9a51 + index) * 0.11;
+                const inset = 0.42 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9a51 + index) * 0.07;
                 return toWorldPoint(
                   mouthCenterForward + (point.forward - mouthCenterForward) * inset
                     + mouthForwardRadius * CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE,
@@ -1237,12 +1216,15 @@ export class WorldChunk {
               if (outer >= 0.94 + outlineNoise) {
                 return;
               }
-              const stratum = Math.floor(coherentNoise(this.seed, worldPixelX, worldPixelY, 18, 0x74b20f) * 5) - 2;
-              const fracture = Math.abs(coherentNoise(this.seed, worldPixelX + 147, worldPixelY - 89, 9, 0x1a2e7b) - 0.5);
-              const fractureShade = fracture < 0.018 ? -19 : 0;
-              red = cave.rockRed + stratum * 5 + fractureShade;
-              green = cave.rockGreen + stratum * 5 + fractureShade;
-              blue = cave.rockBlue + stratum * 5 + fractureShade;
+              // Broad, continuous mineral variation gives the exposed face volume without
+              // drawing the former dashed fracture marks or a tiled surface pattern.
+              const bedrock = coherentNoise(this.seed, worldPixelX, worldPixelY, 29, 0x74b20f) - 0.5;
+              const grain = coherentNoise(this.seed, worldPixelX + 147, worldPixelY - 89, 7, 0x1a2e7b) - 0.5;
+              const weathering = coherentNoise(this.seed, worldPixelX - 61, worldPixelY + 193, 61, 0x6145df) - 0.5;
+              const bedrockTone = bedrock * 30 + grain * 9 + weathering * 14;
+              red = cave.rockRed + bedrockTone;
+              green = cave.rockGreen + bedrockTone;
+              blue = cave.rockBlue + bedrockTone;
             });
 
             pixels[pixel] = clampChannel(red);
@@ -1289,23 +1271,41 @@ export class WorldChunk {
       for (let pixelY = startY; pixelY <= endY; pixelY += 1) {
         const worldY = chunkWorldY + pixelY + 0.5;
         for (let pixelX = startX; pixelX <= endX; pixelX += 1) {
-          if (!isInsidePolygon(chunkWorldX + pixelX + 0.5, worldY, facet.vertices)) {
+          const worldX = chunkWorldX + pixelX + 0.5;
+          if (!isInsidePolygon(worldX, worldY, facet.vertices)) {
             continue;
           }
           const pixelIndex = (pixelY * CHUNK_SIZE_PIXELS + pixelX) * 4;
-          pixels[pixelIndex] = facet.red;
-          pixels[pixelIndex + 1] = facet.green;
-          pixels[pixelIndex + 2] = facet.blue;
+          const opacity = facet.opacity ?? 1;
+          const textureSalt = facet.textureSalt;
+          const textureStrength = facet.textureStrength ?? 0;
+          const broadTexture = textureSalt === undefined
+            ? 0
+            : coherentNoise(this.seed, worldX, worldY, 23, textureSalt) - 0.5;
+          const grainTexture = textureSalt === undefined
+            ? 0
+            : coherentNoise(this.seed, worldX + 83, worldY - 127, 5, textureSalt + 0x41) - 0.5;
+          const stoneTone = (broadTexture * 0.72 + grainTexture * 0.28) * textureStrength;
+          pixels[pixelIndex] = pixels[pixelIndex] + (facet.red + stoneTone - pixels[pixelIndex]) * opacity;
+          pixels[pixelIndex + 1] = pixels[pixelIndex + 1] + (facet.green + stoneTone - pixels[pixelIndex + 1]) * opacity;
+          pixels[pixelIndex + 2] = pixels[pixelIndex + 2] + (facet.blue + stoneTone - pixels[pixelIndex + 2]) * opacity;
         }
       }
     };
 
     caveInfluences.forEach((cave) => {
       cave.rockFacets.forEach(paintFacet);
-      // The opening is an exact, jagged polygon. Its hard edge and the individual stone lip
-      // facets deliberately avoid a feathered dark halo around the cave mouth.
-      paintFacet({ vertices: cave.mouthVertices, red: 28, green: 33, blue: 35 });
+      // Paint a single, weathered rim below the mouth rather than a fan of geometric wedges.
+      // The opening itself stays hard-edged and sharply cut into that bedrock.
       cave.mouthLipFacets.forEach(paintFacet);
+      paintFacet({
+        vertices: cave.mouthVertices,
+        red: 43,
+        green: 48,
+        blue: 50,
+        textureSalt: 0xa211,
+        textureStrength: 8,
+      });
       paintFacet({ vertices: cave.mouthRecessVertices, red: 6, green: 8, blue: 10 });
       cave.mouthStalactiteFacets.forEach(paintFacet);
     });
