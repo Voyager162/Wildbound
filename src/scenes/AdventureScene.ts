@@ -1298,13 +1298,13 @@ export class AdventureScene extends Phaser.Scene {
     // uneven rock slopes, which keeps the visible cave curved without hiding solid rock.
     const contours = this.createCaveContours(layout, origin);
     contours.forEach((contour) => {
-      graphics.lineStyle(82, 0x101516, 1);
+      graphics.lineStyle(48, 0x101516, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(62, 0x1e2927, 1);
+      graphics.lineStyle(35, 0x1e2927, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(42, 0x303e39, 0.98);
+      graphics.lineStyle(22, 0x303e39, 0.98);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(21, 0x526159, 0.86);
+      graphics.lineStyle(9, 0x526159, 0.86);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
     });
     contours.forEach((contour, index) => {
