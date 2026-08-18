@@ -103,19 +103,47 @@ interface CaveTerrainInfluence {
   radiusPixels: number;
   forwardX: number;
   forwardY: number;
-  rimRocks: readonly CaveTerrainRock[];
+  rockRed: number;
+  rockGreen: number;
+  rockBlue: number;
+  mouthVertices: readonly TerrainPoint[];
+  mouthRecessVertices: readonly TerrainPoint[];
+  mouthLipFacets: readonly CaveTerrainFacet[];
+  rockFacets: readonly CaveTerrainFacet[];
 }
 
-interface CaveTerrainRock {
-  centerWorldX: number;
-  centerWorldY: number;
-  radiusX: number;
-  radiusY: number;
-  lightX: number;
-  lightY: number;
+interface TerrainPoint {
+  x: number;
+  y: number;
+}
+
+interface CaveTerrainFacet {
+  vertices: readonly TerrainPoint[];
+  red: number;
+  green: number;
+  blue: number;
 }
 
 const terrainMaterialPixels = new Map<string, TerrainMaterialPixels>();
+
+const caveRockColorForBiome = (biome: Biome): readonly [number, number, number] => {
+  switch (biome) {
+    case Biome.Desert:
+      return [112, 83, 51];
+    case Biome.Snow:
+      return [96, 105, 111];
+    case Biome.Hills:
+      return [83, 79, 65];
+    case Biome.Mountains:
+      return [69, 75, 77];
+    case Biome.Plains:
+    case Biome.Forest:
+    case Biome.Swamp:
+      return [77, 80, 62];
+    default:
+      return [80, 77, 66];
+  }
+};
 
 export class WorldChunk {
   readonly key: string;
@@ -137,6 +165,7 @@ export class WorldChunk {
   private readonly featureGraphics: Phaser.GameObjects.Graphics;
   private readonly features: TerrainFeature[];
   private readonly caveEntrances: readonly CaveEntrance[];
+  private readonly caveTerrainInfluences: readonly CaveTerrainInfluence[];
   private readonly animatedGroundGrass: AnimatedGroundGrassPatch[] = [];
   private readonly animatedFeatureFoliage = new Map<string, AnimatedFeatureFoliage>();
   private readonly waterWaves: WaterWave[] = [];
@@ -177,6 +206,7 @@ export class WorldChunk {
     this.featureGraphics = scene.add.graphics().setVisible(false);
     this.features = generateChunkFeatures(seed, x, y);
     this.caveEntrances = generateChunkCaveEntrances(seed, x, y);
+    this.caveTerrainInfluences = this.collectCaveTerrainInfluences();
 
     this.drawTerrain(terrainTexture);
     this.createAnimatedGroundGrass();
@@ -390,7 +420,8 @@ export class WorldChunk {
       const worldTileX = this.x * CHUNK_SIZE_TILES + feature.localTileX;
       const worldTileY = this.y * CHUNK_SIZE_TILES + feature.localTileY;
 
-      if (!this.sessionState.isFeatureHarvested(worldTileX, worldTileY)) {
+      if (!this.sessionState.isFeatureHarvested(worldTileX, worldTileY)
+        && !this.isCaveTerrainTile(worldTileX, worldTileY)) {
         const offset = this.harvestingTileKey === this.tileKey(worldTileX, worldTileY) ? this.harvestOffset : 0;
         this.drawFeature(
           feature.type,
@@ -439,7 +470,7 @@ export class WorldChunk {
     const worldY = this.y * CHUNK_SIZE_PIXELS;
     const waveCandidates: Array<WaterWave & { priority: number }> = [];
     const terrainVertexColors = this.createTerrainVertexColors();
-    this.paintContinuousTerrain(context, terrainVertexColors, this.collectCaveTerrainInfluences());
+    this.paintContinuousTerrain(context, terrainVertexColors, this.caveTerrainInfluences);
     // Compact alpha masks are built once while the baked terrain is sampled. The two TileSprites
     // above them can then flow across all water pixels without rebuilding a chunk canvas each tick.
     const waterMaskSize = CHUNK_SIZE_PIXELS / VISUAL_TERRAIN_CELL_SIZE;
@@ -564,39 +595,191 @@ export class WorldChunk {
             const forwardY = Math.sin(entrance.mouthAngle);
             const sideX = -forwardY;
             const sideY = forwardX;
-            const rimRocks: CaveTerrainRock[] = [];
-            // These boulders sit in the collapsed perimeter and are sampled into terrain pixels
-            // below. They are coordinate data, not scene objects or an entrance icon.
-            for (let rock = 0; rock < 30; rock += 1) {
+            const toWorldPoint = (forward: number, side: number): TerrainPoint => ({
+              x: centerWorldX + forwardX * forward + sideX * side,
+              y: centerWorldY + forwardY * forward + sideY * side,
+            });
+            const [rockRed, rockGreen, rockBlue] = caveRockColorForBiome(entrance.biome);
+            const rockFacets: CaveTerrainFacet[] = [];
+            // Each entrance receives a separate seeded talus field. These are compact angular
+            // terrain facets, not placed scene objects, so no two caves share the same outline.
+            const rockCount = 22 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8a61) * 11);
+            for (let rock = 0; rock < rockCount; rock += 1) {
               const ringAngle = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8b21 + rock) * Math.PI * 2;
-              const ringDistance = radiusPixels * (0.78 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8c61 + rock) * 0.7);
-              const forwardDistance = Math.cos(ringAngle) * ringDistance * 1.38;
-              const sideDistance = Math.sin(ringAngle) * ringDistance * 0.86;
-              const radiusX = 4 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8db1 + rock) * 10;
-              const radiusY = radiusX * (0.58 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8ef1 + rock) * 0.42);
-              const lightAngle = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9031 + rock) * Math.PI * 2;
-              rimRocks.push({
-                centerWorldX: centerWorldX + forwardX * forwardDistance + sideX * sideDistance,
-                centerWorldY: centerWorldY + forwardY * forwardDistance + sideY * sideDistance,
-                radiusX,
-                radiusY,
-                lightX: Math.cos(lightAngle),
-                lightY: Math.sin(lightAngle),
+              const ringDistance = radiusPixels * (0.72 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8c61 + rock) * 0.72);
+              const rockCenterForward = Math.cos(ringAngle) * ringDistance * 1.24;
+              const rockCenterSide = Math.sin(ringAngle) * ringDistance * 0.86;
+              const radiusForward = 10 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8db1 + rock) * 22;
+              const radiusSide = radiusForward * (0.58 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8ef1 + rock) * 0.42);
+              const cornerCount = 5 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9031 + rock) * 3);
+              const rotation = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9131 + rock) * Math.PI * 2;
+              const vertices: TerrainPoint[] = [];
+              for (let corner = 0; corner < cornerCount; corner += 1) {
+                const angle = rotation + corner / cornerCount * Math.PI * 2;
+                const irregularity = 0.78 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9251 + rock * 11 + corner) * 0.42;
+                vertices.push(toWorldPoint(
+                  rockCenterForward + Math.cos(angle) * radiusForward * irregularity,
+                  rockCenterSide + Math.sin(angle) * radiusSide * irregularity,
+                ));
+              }
+              const center = toWorldPoint(rockCenterForward, rockCenterSide);
+              const lightSide = Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x94a1 + rock) * cornerCount);
+              const shadowSide = (lightSide + Math.floor(cornerCount / 2) + 1) % cornerCount;
+              const tone = -7 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x95d1 + rock) * 15);
+              rockFacets.push({
+                vertices,
+                red: rockRed + tone,
+                green: rockGreen + tone,
+                blue: rockBlue + tone,
+              });
+              rockFacets.push({
+                vertices: [center, vertices[lightSide], vertices[(lightSide + 1) % cornerCount]],
+                red: rockRed + tone + 25,
+                green: rockGreen + tone + 24,
+                blue: rockBlue + tone + 22,
+              });
+              rockFacets.push({
+                vertices: [center, vertices[shadowSide], vertices[(shadowSide + 1) % cornerCount]],
+                red: rockRed + tone - 23,
+                green: rockGreen + tone - 23,
+                blue: rockBlue + tone - 22,
               });
             }
+            // Long fracture plates cover the exposed face between loose stones. Their sizes,
+            // offsets, and directions come from the cave coordinate stream, giving every
+            // entrance an individual geological pattern instead of a reusable ring graphic.
+            const plateCount = 13 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9601) * 8);
+            for (let plate = 0; plate < plateCount; plate += 1) {
+              const plateAngle = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9611 + plate) * Math.PI * 2;
+              const plateDistance = radiusPixels * (0.24 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9651 + plate) * 0.74);
+              const plateCenterForward = Math.cos(plateAngle) * plateDistance * 1.16;
+              const plateCenterSide = Math.sin(plateAngle) * plateDistance * 0.74;
+              const plateLength = 21 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9691 + plate) * 42;
+              const plateWidth = 7 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x96d1 + plate) * 15;
+              const rotation = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9711 + plate) * Math.PI * 2;
+              const plateTone = -15 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9751 + plate) * 31);
+              const axisForward = Math.cos(rotation);
+              const axisSide = Math.sin(rotation);
+              const perpendicularForward = -axisSide;
+              const perpendicularSide = axisForward;
+              const first = toWorldPoint(
+                plateCenterForward + axisForward * plateLength + perpendicularForward * plateWidth,
+                plateCenterSide + axisSide * plateLength + perpendicularSide * plateWidth,
+              );
+              const second = toWorldPoint(
+                plateCenterForward + axisForward * plateLength - perpendicularForward * plateWidth * 0.6,
+                plateCenterSide + axisSide * plateLength - perpendicularSide * plateWidth * 0.6,
+              );
+              const third = toWorldPoint(
+                plateCenterForward - axisForward * plateLength * 0.78 - perpendicularForward * plateWidth,
+                plateCenterSide - axisSide * plateLength * 0.78 - perpendicularSide * plateWidth,
+              );
+              const fourth = toWorldPoint(
+                plateCenterForward - axisForward * plateLength * 0.78 + perpendicularForward * plateWidth,
+                plateCenterSide - axisSide * plateLength * 0.78 + perpendicularSide * plateWidth,
+              );
+              rockFacets.push({
+                vertices: [first, third, second, fourth],
+                red: rockRed + plateTone,
+                green: rockGreen + plateTone,
+                blue: rockBlue + plateTone,
+              });
+              rockFacets.push({
+                vertices: [first, third, toWorldPoint(plateCenterForward, plateCenterSide)],
+                red: rockRed + plateTone + 20,
+                green: rockGreen + plateTone + 19,
+                blue: rockBlue + plateTone + 18,
+              });
+            }
+            const mouthLocalPoints: Array<{ forward: number; side: number }> = [];
+            const mouthPointCount = 11 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x96e1) * 5);
+            const mouthOffset = radiusPixels * (0.15 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9781) * 0.16);
+            for (let point = 0; point < mouthPointCount; point += 1) {
+              const angle = point / mouthPointCount * Math.PI * 2;
+              const irregularity = 0.78 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9721 + point) * 0.4;
+              mouthLocalPoints.push({
+                forward: mouthOffset + Math.cos(angle) * radiusPixels * 0.7 * irregularity,
+                side: Math.sin(angle) * radiusPixels * 0.45 * irregularity,
+              });
+            }
+            const mouthLipFacets: CaveTerrainFacet[] = mouthLocalPoints.flatMap((point, index) => {
+              const next = mouthLocalPoints[(index + 1) % mouthLocalPoints.length];
+              const outerScale = 1.17 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9841 + index) * 0.12;
+              const lipTone = -16 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9951 + index) * 34);
+              const outerPoint = toWorldPoint(
+                mouthOffset + (point.forward - mouthOffset) * outerScale,
+                point.side * outerScale,
+              );
+              const outerNext = toWorldPoint(
+                mouthOffset + (next.forward - mouthOffset) * outerScale,
+                next.side * outerScale,
+              );
+              const innerPoint = toWorldPoint(point.forward, point.side);
+              const innerNext = toWorldPoint(next.forward, next.side);
+              const center = toWorldPoint(
+                mouthOffset + (point.forward + next.forward - mouthOffset * 2) * 0.34,
+                (point.side + next.side) * 0.34,
+              );
+              return [
+                {
+                  vertices: [outerPoint, outerNext, innerNext, innerPoint],
+                  red: rockRed + lipTone,
+                  green: rockGreen + lipTone,
+                  blue: rockBlue + lipTone,
+                },
+                {
+                  vertices: [outerPoint, innerPoint, center],
+                  red: rockRed + lipTone - 19,
+                  green: rockGreen + lipTone - 19,
+                  blue: rockBlue + lipTone - 18,
+                },
+              ];
+            });
             influences.push({
               centerWorldX,
               centerWorldY,
               radiusPixels,
               forwardX,
               forwardY,
-              rimRocks,
+              rockRed,
+              rockGreen,
+              rockBlue,
+              mouthVertices: mouthLocalPoints.map((point) => toWorldPoint(point.forward, point.side)),
+              mouthRecessVertices: mouthLocalPoints.map((point, index) => {
+                const inset = 0.57 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9a51 + index) * 0.11;
+                return toWorldPoint(
+                  mouthOffset + (point.forward - mouthOffset) * inset + radiusPixels * 0.12,
+                  point.side * inset,
+                );
+              }),
+              mouthLipFacets,
+              rockFacets,
             });
           }
         });
       }
     }
     return influences;
+  }
+
+  private isCaveTerrainTile(worldTileX: number, worldTileY: number): boolean {
+    const worldPixelX = (worldTileX + 0.5) * WORLD_TILE_SIZE;
+    const worldPixelY = (worldTileY + 0.5) * WORLD_TILE_SIZE;
+    return this.caveTerrainInfluences.some((cave) => {
+      const deltaX = worldPixelX - cave.centerWorldX;
+      const deltaY = worldPixelY - cave.centerWorldY;
+      const forward = deltaX * cave.forwardX + deltaY * cave.forwardY;
+      const side = -deltaX * cave.forwardY + deltaY * cave.forwardX;
+      const outer = Math.sqrt(
+        (forward / (cave.radiusPixels * 1.48)) ** 2
+        + (side / (cave.radiusPixels * 0.92)) ** 2
+      );
+      const outlineNoise = (coherentNoise(this.seed, worldPixelX, worldPixelY, 43, 0x3c719a) - 0.5) * 0.24
+        + (coherentNoise(this.seed, worldPixelX, worldPixelY, 13, 0x8f21d4) - 0.5) * 0.1;
+      // Leave a small stone-free buffer so animated grass never appears to grow out of the
+      // exposed cave face or across the black mouth.
+      return outer < 1.05 + outlineNoise;
+    });
   }
 
   private oceanShoreNormal(tileX: number, tileY: number): { x: number; y: number } {
@@ -996,9 +1179,9 @@ export class WorldChunk {
               blue += (materialBlue - blue) * materialBlend;
             }
 
-            // Cave formations modify the same per-pixel climate/material result. Rotating the
-            // local coordinates gives each entrance an angled, sinking ravine and a tapered
-            // dark passage rather than a vertical or stamped shape.
+            // A cave turns the terrain into a crisp, seed-unique exposed rock field. The
+            // boundary is deliberately hard and irregular: the former soft colour interpolation
+            // read as a blurry grey/green halo instead of exposed geological material.
             caveInfluences.forEach((cave) => {
               const deltaX = worldPixelX - cave.centerWorldX;
               const deltaY = worldPixelY - cave.centerWorldY;
@@ -1008,62 +1191,17 @@ export class WorldChunk {
                 (forward / (cave.radiusPixels * 1.48)) ** 2
                 + (side / (cave.radiusPixels * 0.92)) ** 2
               );
-              // The entrance's talus field reaches beyond the hollow itself. It is still
-              // sampled directly into this texture, so these are terrain boulders rather
-              // than placed props or a single entrance stamp.
-              if (outer < 1.7) {
-                cave.rimRocks.forEach((rock) => {
-                  const rockX = (worldPixelX - rock.centerWorldX) / rock.radiusX;
-                  const rockY = (worldPixelY - rock.centerWorldY) / rock.radiusY;
-                  const rockDistance = Math.sqrt(rockX * rockX + rockY * rockY);
-                  if (rockDistance >= 1) {
-                    return;
-                  }
-                  const edgeVariation = (coherentNoise(this.seed, worldPixelX, worldPixelY, 11, 0x6a8f19) - 0.5) * 0.16;
-                  const footprint = 1 - smoothStep(Math.min(1, Math.max(0, rockDistance + edgeVariation)));
-                  if (footprint <= 0) {
-                    return;
-                  }
-                  const light = Math.max(0, rockX * rock.lightX + rockY * rock.lightY) * footprint;
-                  const stoneRed = 54 + light * 35;
-                  const stoneGreen = 61 + light * 38;
-                  const stoneBlue = 60 + light * 39;
-                  red += (stoneRed - red) * footprint;
-                  green += (stoneGreen - green) * footprint;
-                  blue += (stoneBlue - blue) * footprint;
-                });
-              }
-              if (outer >= 1) {
+              const outlineNoise = (coherentNoise(this.seed, worldPixelX, worldPixelY, 43, 0x3c719a) - 0.5) * 0.24
+                + (coherentNoise(this.seed, worldPixelX, worldPixelY, 13, 0x8f21d4) - 0.5) * 0.1;
+              if (outer >= 0.94 + outlineNoise) {
                 return;
               }
-              const depression = 1 - smoothStep(outer);
-              const rim = smoothStep((outer - 0.42) / 0.42) * (1 - smoothStep((outer - 0.88) / 0.12));
-              // The void is shifted down the local forward axis, forming a sloped entrance
-              // that visually cuts through the surrounding rock rather than drilling straight down.
-              const shiftedForward = forward + cave.radiusPixels * 0.18;
-              const passage = 1 - (
-                (shiftedForward / (cave.radiusPixels * 0.88)) ** 2
-                + (side / (cave.radiusPixels * 0.48)) ** 2
-              );
-              // Two continuous noise fields fracture the lip of the opening. This breaks
-              // the mathematically smooth oval into a natural, uneven rock mouth while
-              // retaining the same result for a world coordinate every time it is baked.
-              const mouthEdge = (coherentNoise(this.seed, worldPixelX, worldPixelY, 19, 0x3d61a8) - 0.5) * 0.24
-                + (coherentNoise(this.seed, worldPixelX, worldPixelY, 7, 0x91c42e) - 0.5) * 0.1;
-              const jaggedPassage = passage + mouthEdge;
-              const voidAmount = smoothStep(jaggedPassage) * smoothStep((forward + cave.radiusPixels * 0.58) / (cave.radiusPixels * 0.72));
-              const rockExposure = Math.min(1, rim * 0.86 + depression * 0.29);
-              const rockGrain = coherentNoise(this.seed, worldPixelX, worldPixelY, 28, 0x74b20f) - 0.5;
-              red += (70 + rockGrain * 20 - red) * rockExposure;
-              green += (77 + rockGrain * 20 - green) * rockExposure;
-              blue += (76 + rockGrain * 19 - blue) * rockExposure;
-              const wallShade = depression * (0.14 + (materialNoise - 0.5) * 0.08 + rockGrain * 0.05);
-              red *= 1 - wallShade;
-              green *= 1 - wallShade;
-              blue *= 1 - wallShade;
-              red += (7 - red) * voidAmount;
-              green += (9 - green) * voidAmount;
-              blue += (10 - blue) * voidAmount;
+              const stratum = Math.floor(coherentNoise(this.seed, worldPixelX, worldPixelY, 18, 0x74b20f) * 5) - 2;
+              const fracture = Math.abs(coherentNoise(this.seed, worldPixelX + 147, worldPixelY - 89, 9, 0x1a2e7b) - 0.5);
+              const fractureShade = fracture < 0.018 ? -19 : 0;
+              red = cave.rockRed + stratum * 5 + fractureShade;
+              green = cave.rockGreen + stratum * 5 + fractureShade;
+              blue = cave.rockBlue + stratum * 5 + fractureShade;
             });
 
             pixels[pixel] = clampChannel(red);
@@ -1076,7 +1214,59 @@ export class WorldChunk {
       }
     }
 
+    this.paintCaveTerrainDetails(pixels, caveInfluences);
     context.putImageData(imageData, 0, 0);
+  }
+
+  private paintCaveTerrainDetails(pixels: Uint8ClampedArray, caveInfluences: readonly CaveTerrainInfluence[]): void {
+    const chunkWorldX = this.x * CHUNK_SIZE_PIXELS;
+    const chunkWorldY = this.y * CHUNK_SIZE_PIXELS;
+    const isInsidePolygon = (worldX: number, worldY: number, vertices: readonly TerrainPoint[]): boolean => {
+      let inside = false;
+      for (let index = 0, previous = vertices.length - 1; index < vertices.length; previous = index, index += 1) {
+        const point = vertices[index];
+        const priorPoint = vertices[previous];
+        if ((point.y > worldY) !== (priorPoint.y > worldY)
+          && worldX < (priorPoint.x - point.x) * (worldY - point.y) / (priorPoint.y - point.y) + point.x) {
+          inside = !inside;
+        }
+      }
+      return inside;
+    };
+    const paintFacet = (facet: CaveTerrainFacet): void => {
+      const minWorldX = Math.min(...facet.vertices.map((point) => point.x));
+      const maxWorldX = Math.max(...facet.vertices.map((point) => point.x));
+      const minWorldY = Math.min(...facet.vertices.map((point) => point.y));
+      const maxWorldY = Math.max(...facet.vertices.map((point) => point.y));
+      const startX = Math.max(0, Math.floor(minWorldX - chunkWorldX));
+      const endX = Math.min(CHUNK_SIZE_PIXELS - 1, Math.ceil(maxWorldX - chunkWorldX));
+      const startY = Math.max(0, Math.floor(minWorldY - chunkWorldY));
+      const endY = Math.min(CHUNK_SIZE_PIXELS - 1, Math.ceil(maxWorldY - chunkWorldY));
+      if (startX > endX || startY > endY) {
+        return;
+      }
+      for (let pixelY = startY; pixelY <= endY; pixelY += 1) {
+        const worldY = chunkWorldY + pixelY + 0.5;
+        for (let pixelX = startX; pixelX <= endX; pixelX += 1) {
+          if (!isInsidePolygon(chunkWorldX + pixelX + 0.5, worldY, facet.vertices)) {
+            continue;
+          }
+          const pixelIndex = (pixelY * CHUNK_SIZE_PIXELS + pixelX) * 4;
+          pixels[pixelIndex] = facet.red;
+          pixels[pixelIndex + 1] = facet.green;
+          pixels[pixelIndex + 2] = facet.blue;
+        }
+      }
+    };
+
+    caveInfluences.forEach((cave) => {
+      cave.rockFacets.forEach(paintFacet);
+      // The opening is an exact, jagged polygon. Its hard edge and the individual stone lip
+      // facets deliberately avoid a feathered dark halo around the cave mouth.
+      paintFacet({ vertices: cave.mouthVertices, red: 28, green: 33, blue: 35 });
+      cave.mouthLipFacets.forEach(paintFacet);
+      paintFacet({ vertices: cave.mouthRecessVertices, red: 6, green: 8, blue: 10 });
+    });
   }
 
 
@@ -1203,6 +1393,9 @@ export class WorldChunk {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
         const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
         const worldTileY = this.y * CHUNK_SIZE_TILES + localY;
+        if (this.isCaveTerrainTile(worldTileX, worldTileY)) {
+          continue;
+        }
         const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
         const density = this.groundGrassDensity(surface);
         const edgeFade = this.groundGrassEdgeFade(surface);
@@ -1247,7 +1440,8 @@ export class WorldChunk {
       const worldTileX = this.x * CHUNK_SIZE_TILES + feature.localTileX;
       const worldTileY = this.y * CHUNK_SIZE_TILES + feature.localTileY;
       const key = this.tileKey(worldTileX, worldTileY);
-      if (this.sessionState.isFeatureHarvested(worldTileX, worldTileY)) {
+      if (this.sessionState.isFeatureHarvested(worldTileX, worldTileY)
+        || this.isCaveTerrainTile(worldTileX, worldTileY)) {
         return;
       }
 
