@@ -1268,9 +1268,9 @@ export class AdventureScene extends Phaser.Scene {
     const outerX = origin.x - WORLD_TILE_SIZE;
     const outerY = origin.y - WORLD_TILE_SIZE;
     graphics.clear().setVisible(true);
-    // Keep the solid rock behind the passage visibly distinct from both the floor and the
-    // shadowed wall lip. This remains dark, but no longer reads as an empty black void.
-    graphics.fillStyle(0x17201f, 1);
+    // The cave keeps a near-black backdrop; depth comes from the rock-face layers rather than
+    // a bright background fill.
+    graphics.fillStyle(0x070a0b, 1);
     graphics.fillRect(outerX, outerY, (layout.width + 2) * WORLD_TILE_SIZE, (layout.height + 2) * WORLD_TILE_SIZE);
 
     // The rendered floor is a deterministic continuous field of irregular chambers and curved
@@ -1281,16 +1281,16 @@ export class AdventureScene extends Phaser.Scene {
       y: origin.y + point.y * WORLD_TILE_SIZE
     })));
     contours.forEach((contour) => {
-      this.fillCavePolygon(contour, 0x424d47, 1);
+      this.fillCavePolygon(contour, 0x1b2728, 1);
     });
     contours.forEach((contour) => {
-      graphics.lineStyle(42 * CAVE_WALL_PUFFINESS, 0x16201f, 1);
+      graphics.lineStyle(48 * CAVE_WALL_PUFFINESS, 0x0b1214, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(32 * CAVE_WALL_PUFFINESS, 0x2a3935, 1);
+      graphics.lineStyle(36 * CAVE_WALL_PUFFINESS, 0x173033, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(21 * CAVE_WALL_PUFFINESS, 0x51655d, 0.98);
+      graphics.lineStyle(23 * CAVE_WALL_PUFFINESS, 0x31534f, 0.98);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(Math.max(2, 6 * CAVE_WALL_PUFFINESS), 0x94aa9b, 0.9);
+      graphics.lineStyle(Math.max(1.8, 4.5 * CAVE_WALL_PUFFINESS), 0x83ad91, 0.82);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
     });
     contours.forEach((contour, index) => {
@@ -1429,8 +1429,8 @@ export class AdventureScene extends Phaser.Scene {
       const centerX = point.x + outwardX * (14 + CAVE_WALL_PUFFINESS * (13 + this.caveVisualRandom(contourIndex, index, 0x7223) * 11));
       const centerY = point.y + outwardY * (14 + CAVE_WALL_PUFFINESS * (13 + this.caveVisualRandom(contourIndex, index, 0x7223) * 11));
       const angle = Math.atan2(deltaY, deltaX);
-      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length + 9, width + 3, contourIndex, index, 0x7224), 0x20302c, 0.82);
-      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length, width, contourIndex, index, 0x7234), 0x85a095, 0.58);
+      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length + 9, width + 3, contourIndex, index, 0x7224), 0x14282a, 0.9);
+      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length, width, contourIndex, index, 0x7234), 0x4f806f, 0.68);
     }
   }
 
