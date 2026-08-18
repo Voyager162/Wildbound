@@ -1424,12 +1424,53 @@ export class AdventureScene extends Phaser.Scene {
   private drawCaveStalagmites(stalagmites: readonly CaveStalagmite[], origin: CaveWorldOrigin): void {
     stalagmites.forEach((stalagmite) => {
       const position = caveWorldTilePosition(origin, stalagmite.tileX, stalagmite.tileY);
-      const size = 7 * stalagmite.scale;
-      this.drawCaveRockPatch(position.x, position.y + 3, size * 1.15, size * 0.48, stalagmite.tileX, stalagmite.tileY, 0x6d31, 0x182d2e, 0.9);
-      this.caveGraphics.fillStyle(0x52736c, 0.9);
-      this.caveGraphics.fillTriangle(position.x - size * 0.58, position.y + size * 0.5, position.x + size * 0.65, position.y + size * 0.52, position.x + size * 0.1, position.y - size * 1.35);
-      this.caveGraphics.fillStyle(0x8cae99, 0.48);
-      this.caveGraphics.fillTriangle(position.x - size * 0.15, position.y + size * 0.35, position.x + size * 0.18, position.y + size * 0.34, position.x + size * 0.08, position.y - size * 1.05);
+      const rootSize = 11.2 * stalagmite.scale;
+      const spireCount = 1 + Math.floor(this.caveVisualRandom(stalagmite.tileX, stalagmite.tileY, 0x6d31) * 3);
+      // A mottled, low rock apron anchors the crystal growth into the cave floor.
+      this.drawCaveRockPatch(position.x, position.y + 4, rootSize * 1.85, rootSize * 0.74, stalagmite.tileX, stalagmite.tileY, 0x6d32, 0x182725, 0.92);
+      this.fillCavePolygon(
+        this.createCaveVeinPoints(position.x, position.y + 4, 0.08, rootSize * 3.1, rootSize * 0.8, stalagmite.tileX, stalagmite.tileY, 0x6d33),
+        0x334842,
+        0.74
+      );
+      for (let spireIndex = 0; spireIndex < spireCount; spireIndex += 1) {
+        const spread = spireCount === 1 ? 0 : (spireIndex / (spireCount - 1) - 0.5) * rootSize * 1.45;
+        const baseWidth = rootSize * (0.42 + this.caveVisualRandom(stalagmite.tileX, stalagmite.tileY, 0x6d34 + spireIndex) * 0.29);
+        const height = rootSize * (1.55 + this.caveVisualRandom(stalagmite.tileX, stalagmite.tileY, 0x6d37 + spireIndex) * 1.95);
+        const lean = (this.caveVisualRandom(stalagmite.tileX, stalagmite.tileY, 0x6d3a + spireIndex) - 0.5) * baseWidth * 1.25;
+        const baseX = position.x + spread;
+        const baseY = position.y + rootSize * 0.48;
+        const tipX = baseX + lean;
+        const tipY = baseY - height;
+        const silhouette: CaveRenderPoint[] = [
+          { x: baseX - baseWidth * 1.08, y: baseY + baseWidth * 0.28 },
+          { x: baseX - baseWidth * 0.72, y: baseY - baseWidth * 0.34 },
+          { x: baseX - baseWidth * 0.28 + lean * 0.16, y: baseY - height * 0.46 },
+          { x: tipX, y: tipY },
+          { x: baseX + baseWidth * 0.34 + lean * 0.5, y: baseY - height * 0.49 },
+          { x: baseX + baseWidth * 0.96, y: baseY - baseWidth * 0.17 },
+          { x: baseX + baseWidth * 1.13, y: baseY + baseWidth * 0.25 }
+        ];
+        this.fillCavePolygon(silhouette, spireIndex % 2 ? 0x3d5a52 : 0x46645a, 0.95);
+        this.caveGraphics.fillStyle(0x1e3330, 0.66);
+        this.caveGraphics.fillTriangle(baseX - baseWidth * 0.72, baseY - baseWidth * 0.26, baseX + baseWidth * 0.96, baseY - baseWidth * 0.17, tipX, tipY);
+        this.caveGraphics.fillStyle(0x9fc29f, 0.42);
+        this.caveGraphics.fillTriangle(baseX - baseWidth * 0.2, baseY - baseWidth * 0.28, baseX + baseWidth * 0.18 + lean * 0.25, baseY - height * 0.42, tipX, tipY);
+        this.caveGraphics.lineStyle(1.05, 0xb6d4ad, 0.34);
+        this.caveGraphics.strokePoints([
+          { x: baseX - baseWidth * 0.05, y: baseY - baseWidth * 0.14 },
+          { x: baseX + lean * 0.38, y: baseY - height * 0.53 },
+          { x: tipX, y: tipY }
+        ], false);
+      }
+      for (let chip = 0; chip < 3; chip += 1) {
+        const angle = this.caveVisualRandom(stalagmite.tileX, stalagmite.tileY, 0x6d51 + chip) * Math.PI * 2;
+        const distance = rootSize * (0.7 + this.caveVisualRandom(stalagmite.tileX, stalagmite.tileY, 0x6d55 + chip) * 0.75);
+        const x = position.x + Math.cos(angle) * distance;
+        const y = position.y + 3 + Math.sin(angle) * distance * 0.42;
+        this.caveGraphics.fillStyle(chip === 0 ? 0x91b496 : 0x47655b, 0.7);
+        this.caveGraphics.fillTriangle(x - 1.8, y + 1.2, x + 2, y + 0.8, x + 0.3, y - 2.3);
+      }
     });
   }
 

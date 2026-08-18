@@ -381,7 +381,9 @@ export const caveTerrainFieldAt = (terrain: CaveTerrain, x: number, y: number): 
   terrain.tunnels.forEach((tunnel) => {
     strongest = Math.max(strongest, tunnelFieldAt(tunnel, x, y));
   });
-  return strongest;
+  // Keep the sampled field finite. A negative infinity outside every primitive is useful for
+  // early-outs, but it would make marching-square interpolation produce NaN at thin passages.
+  return strongest === Number.NEGATIVE_INFINITY ? -8 : strongest;
 };
 
 const createChamber = (seed: string, cave: CaveEntrance, index: number, x: number, y: number, radiusX: number, radiusY: number): CaveTerrainChamber => ({
@@ -407,13 +409,11 @@ const connectChambers = (seed: string, cave: CaveEntrance, from: CaveTerrainCham
     controlY: (from.y + to.y) * 0.5 + perpendicularY * bend,
     toX: to.x,
     toY: to.y,
-    startRadius: 1.5 + graphRandom(seed, cave, index, 42) * 0.72,
-    endRadius: 1.5 + graphRandom(seed, cave, index, 43) * 0.72,
-    radiusProfile: Array.from({ length: 6 }, (_, profileIndex) => 0.88 + graphRandom(seed, cave, index, 45 + profileIndex) * 0.24)
+    startRadius: 1.12 + graphRandom(seed, cave, index, 42) * 0.5,
+    endRadius: 1.12 + graphRandom(seed, cave, index, 43) * 0.5,
+    radiusProfile: Array.from({ length: 6 }, (_, profileIndex) => 0.86 + graphRandom(seed, cave, index, 45 + profileIndex) * 0.25)
   };
 };
-
-const contourKey = (point: CaveContourPoint): string => `${Math.round(point.x * 100_000)}:${Math.round(point.y * 100_000)}`;
 
 const smoothTerrainContour = (points: readonly CaveContourPoint[]): CaveContourPoint[] => {
   let smoothed = [...points];
@@ -430,7 +430,8 @@ const smoothTerrainContour = (points: readonly CaveContourPoint[]): CaveContourP
   return smoothed;
 };
 
-interface CaveContourSegment { readonly from: CaveContourPoint; readonly to: CaveContourPoint; }
+interface CaveContourEdge { readonly point: CaveContourPoint; readonly key: string; }
+interface CaveContourSegment { readonly from: CaveContourEdge; readonly to: CaveContourEdge; }
 
 /** Extracts a smooth isocontour from the continuous cave field; no collision-tile edges are rendered. */
 const createTerrainContours = (terrain: CaveTerrain, width: number, height: number): readonly (readonly CaveContourPoint[])[] => {
@@ -443,7 +444,7 @@ const createTerrainContours = (terrain: CaveTerrain, width: number, height: numb
     Math.min(height, row * contourStepTiles)
   )));
   const segments: CaveContourSegment[] = [];
-  const addSegment = (from: CaveContourPoint, to: CaveContourPoint): void => {
+  const addSegment = (from: CaveContourEdge, to: CaveContourEdge): void => {
     segments.push({ from, to });
   };
 
@@ -463,12 +464,19 @@ const createTerrainContours = (terrain: CaveTerrain, width: number, height: numb
       if (mask === 0 || mask === 15) {
         continue;
       }
-      const edgePoint = (edge: number): CaveContourPoint => {
+      const edgePoint = (edge: number): CaveContourEdge => {
         const from = corners[edge];
         const to = corners[(edge + 1) % 4];
         const denominator = from.value - to.value;
         const progress = Math.max(0, Math.min(1, Math.abs(denominator) < 0.00001 ? 0.5 : from.value / denominator));
-        return { x: from.x + (to.x - from.x) * progress, y: from.y + (to.y - from.y) * progress };
+        const key = edge === 0
+          ? `h:${row}:${column}`
+          : edge === 1
+            ? `v:${row}:${column + 1}`
+            : edge === 2
+              ? `h:${row + 1}:${column}`
+              : `v:${row}:${column}`;
+        return { point: { x: from.x + (to.x - from.x) * progress, y: from.y + (to.y - from.y) * progress }, key };
       };
       const edgePairsByMask: Readonly<Record<number, readonly (readonly [number, number])[]>> = {
         1: [[3, 0]], 2: [[0, 1]], 3: [[3, 1]], 4: [[1, 2]],
@@ -483,11 +491,10 @@ const createTerrainContours = (terrain: CaveTerrain, width: number, height: numb
 
   const segmentsByPoint = new Map<string, number[]>();
   segments.forEach((segment, index) => {
-    [segment.from, segment.to].forEach((point) => {
-      const key = contourKey(point);
-      const linked = segmentsByPoint.get(key) ?? [];
+    [segment.from, segment.to].forEach((edge) => {
+      const linked = segmentsByPoint.get(edge.key) ?? [];
       linked.push(index);
-      segmentsByPoint.set(key, linked);
+      segmentsByPoint.set(edge.key, linked);
     });
   });
   const used = new Set<number>();
@@ -497,24 +504,24 @@ const createTerrainContours = (terrain: CaveTerrain, width: number, height: numb
       return;
     }
     used.add(startingIndex);
-    const points = [segment.from];
-    const startingKey = contourKey(segment.from);
+    const points = [segment.from.point];
+    const startingKey = segment.from.key;
     let current = segment.to;
     let closed = false;
     for (let guard = 0; guard <= segments.length; guard += 1) {
-      const currentKey = contourKey(current);
+      const currentKey = current.key;
       if (currentKey === startingKey) {
         closed = true;
         break;
       }
-      points.push(current);
+      points.push(current.point);
       const nextIndex = (segmentsByPoint.get(currentKey) ?? []).find((index) => !used.has(index));
       if (nextIndex === undefined) {
         break;
       }
       used.add(nextIndex);
       const next = segments[nextIndex];
-      current = contourKey(next.from) === currentKey ? next.to : next.from;
+      current = next.from.key === currentKey ? next.to : next.from;
     }
     if (closed && points.length >= 8) {
       contours.push(smoothTerrainContour(points));
@@ -567,47 +574,70 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
   const entranceTileY = height - 7;
   const clampX = (x: number): number => Math.max(12, Math.min(width - 13, x));
   const clampY = (y: number): number => Math.max(11, Math.min(height - 12, y));
-  const chambers: CaveTerrainChamber[] = [createChamber(seed, systemEntrance, 0, entranceTileX, entranceTileY, 4.5, 3.4)];
+  // Passage nodes only keep curving tunnels connected; they are deliberately much smaller
+  // than a room. The rare larger replacements below are the cave's true chambers.
+  const chambers: CaveTerrainChamber[] = [createChamber(seed, systemEntrance, 0, entranceTileX, entranceTileY, 2.4, 2.05)];
   const tunnels: CaveTerrainTunnel[] = [];
+  const nodeHeadings: number[] = [-Math.PI / 2];
   const spineIndices = [0];
+  const createPassageNode = (index: number, x: number, y: number): CaveTerrainChamber => createChamber(
+    seed,
+    systemEntrance,
+    index,
+    x,
+    y,
+    1.18 + graphRandom(seed, systemEntrance, index, 31) * 0.55,
+    1.06 + graphRandom(seed, systemEntrance, index, 32) * 0.42
+  );
+  const hasClearanceFromOtherNodes = (x: number, y: number, parentIndex: number): boolean => chambers.every((node, index) => (
+    index === parentIndex || Math.hypot(node.x - x, node.y - y) >= 3.8
+  ));
 
-  for (let index = 1; index < profile.spineChambers; index += 1) {
-    const progress = index / (profile.spineChambers - 1);
+  for (let index = 1; index < profile.spineSegments; index += 1) {
+    const progress = index / (profile.spineSegments - 1);
     const prior = chambers[spineIndices[index - 1]];
-    const meander = Math.sin(progress * Math.PI * 2.5 + graphRandom(seed, systemEntrance, index, 1) * Math.PI * 2) * width * 0.16;
-    const chamber = createChamber(
-      seed,
-      systemEntrance,
-      index,
-      clampX(entranceTileX + meander + (graphRandom(seed, systemEntrance, index, 2) - 0.5) * width * 0.2),
-      clampY(height - 7 - progress * (height - 20) + (graphRandom(seed, systemEntrance, index, 3) - 0.5) * 9),
-      4.8 + graphRandom(seed, systemEntrance, index, 4) * 5.8,
-      3.8 + graphRandom(seed, systemEntrance, index, 5) * 4.8
-    );
-    const chamberIndex = chambers.length;
-    chambers.push(chamber);
-    spineIndices.push(chamberIndex);
-    tunnels.push(connectChambers(seed, systemEntrance, prior, chamber, index));
+    const heading = -Math.PI / 2
+      + Math.sin(progress * Math.PI * 3 + graphRandom(seed, systemEntrance, index, 1) * Math.PI * 2) * 0.18
+      + (graphRandom(seed, systemEntrance, index, 2) - 0.5) * 0.46;
+    const stride = (height - 20) / (profile.spineSegments - 1) * (0.84 + graphRandom(seed, systemEntrance, index, 3) * 0.28);
+    const node = createPassageNode(index, clampX(prior.x + Math.cos(heading) * stride), clampY(prior.y + Math.sin(heading) * stride));
+    const nodeIndex = chambers.length;
+    chambers.push(node);
+    nodeHeadings.push(heading);
+    spineIndices.push(nodeIndex);
+    tunnels.push(connectChambers(seed, systemEntrance, prior, node, index));
   }
 
-  for (let branchIndex = 0; branchIndex < profile.branchChambers; branchIndex += 1) {
-    // Existing branch chambers become parents too, creating genuinely nested side routes rather
-    // than a row of detached cul-de-sacs off the main spine.
-    const parentIndex = Math.min(chambers.length - 1, Math.floor(graphRandom(seed, systemEntrance, branchIndex, 70) * chambers.length));
+  for (let branchIndex = 0; branchIndex < profile.branchSegments; branchIndex += 1) {
+    // New passage nodes can become parents themselves. Biasing selection toward recent nodes
+    // produces several generations of thin, twisting offshoots rather than a hub-and-spoke room.
+    const parentIndex = Math.min(chambers.length - 1, Math.floor(Math.pow(graphRandom(seed, systemEntrance, branchIndex, 70), 0.55) * chambers.length));
     const parent = chambers[parentIndex];
-    const angle = graphRandom(seed, systemEntrance, branchIndex, 71) * Math.PI * 2;
-    const distance = 9 + graphRandom(seed, systemEntrance, branchIndex, 72) * 18;
-    const chamber = createChamber(
-      seed,
-      systemEntrance,
-      profile.spineChambers + branchIndex,
-      clampX(parent.x + Math.cos(angle) * distance),
-      clampY(parent.y + Math.sin(angle) * distance * 0.82),
-      3.8 + graphRandom(seed, systemEntrance, branchIndex, 73) * 4.8,
-      3.1 + graphRandom(seed, systemEntrance, branchIndex, 74) * 4
-    );
-    chambers.push(chamber);
-    tunnels.push(connectChambers(seed, systemEntrance, parent, chamber, profile.spineChambers + branchIndex));
+    const parentHeading = nodeHeadings[parentIndex];
+    const continuesForward = graphRandom(seed, systemEntrance, branchIndex, 71) < 0.22;
+    const turn = continuesForward
+      ? (graphRandom(seed, systemEntrance, branchIndex, 72) - 0.5) * 0.72
+      : (graphRandom(seed, systemEntrance, branchIndex, 72) < 0.5 ? -1 : 1) * (0.6 + graphRandom(seed, systemEntrance, branchIndex, 73) * 1.15);
+    const stride = 6.2 + graphRandom(seed, systemEntrance, branchIndex, 74) * 9.4;
+    let nextNode: CaveTerrainChamber | null = null;
+    let nextHeading = parentHeading + turn;
+    for (let attempt = 0; attempt < 4 && !nextNode; attempt += 1) {
+      const heading = parentHeading + turn + (attempt === 0 ? 0 : (attempt % 2 ? 1 : -1) * (0.42 + attempt * 0.21));
+      const candidateX = clampX(parent.x + Math.cos(heading) * stride);
+      const candidateY = clampY(parent.y + Math.sin(heading) * stride);
+      if (Math.hypot(candidateX - parent.x, candidateY - parent.y) < 4.2 || !hasClearanceFromOtherNodes(candidateX, candidateY, parentIndex)) {
+        continue;
+      }
+      const nodeIndex = profile.spineSegments + branchIndex;
+      nextNode = createPassageNode(nodeIndex, candidateX, candidateY);
+      nextHeading = heading;
+    }
+    if (!nextNode) {
+      continue;
+    }
+    chambers.push(nextNode);
+    nodeHeadings.push(nextHeading);
+    tunnels.push(connectChambers(seed, systemEntrance, parent, nextNode, profile.spineSegments + branchIndex));
   }
 
   for (let loopIndex = 0; loopIndex < profile.loopConnections; loopIndex += 1) {
@@ -616,9 +646,33 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
     const first = chambers[firstIndex];
     const second = chambers[secondIndex];
     const distance = Math.hypot(first.x - second.x, first.y - second.y);
-    if (firstIndex !== secondIndex && distance > 10 && distance < 42) {
+    if (firstIndex !== secondIndex && distance > 7 && distance < 25) {
       tunnels.push(connectChambers(seed, systemEntrance, first, second, 10_000 + loopIndex));
     }
+  }
+
+  // Promote only a small, spread-out selection of passage nodes into landmark-sized rooms.
+  // Their locations remain tied to the cave's seed while the surrounding system stays tunnel-led.
+  const usedLargeChamberIndices = new Set<number>();
+  for (let chamberIndex = 0; chamberIndex < profile.largeChambers; chamberIndex += 1) {
+    const spacing = (chambers.length - 2) / (profile.largeChambers + 1);
+    const baseIndex = 1 + Math.round((chamberIndex + 1) * spacing);
+    const jitter = Math.round((graphRandom(seed, systemEntrance, chamberIndex, 90) - 0.5) * Math.max(2, spacing * 0.58));
+    let nodeIndex = Math.max(1, Math.min(chambers.length - 1, baseIndex + jitter));
+    while (usedLargeChamberIndices.has(nodeIndex) && nodeIndex < chambers.length - 1) {
+      nodeIndex += 1;
+    }
+    usedLargeChamberIndices.add(nodeIndex);
+    const node = chambers[nodeIndex];
+    chambers[nodeIndex] = createChamber(
+      seed,
+      systemEntrance,
+      20_000 + chamberIndex,
+      node.x,
+      node.y,
+      4.3 + graphRandom(seed, systemEntrance, chamberIndex, 91) * 2.25,
+      3.15 + graphRandom(seed, systemEntrance, chamberIndex, 92) * 1.75
+    );
   }
 
   const terrain: CaveTerrain = { chambers, tunnels };
@@ -673,7 +727,7 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
     if (!floorTiles[y][x] || depth < CAVE_STALAGMITE_MINIMUM_NORMALIZED_DEPTH || randomAtTile(seed, systemEntrance.tileX * 131 + x, systemEntrance.tileY * 131 + y, CAVE_GRAPH_SALT + 101) >= CAVE_STALAGMITE_CHANCE) continue;
     if (lavaPools.some((pool) => Math.hypot(pool.tileX - x, pool.tileY - y) < pool.radiusX + 3)) continue;
     if (stalagmites.every((feature) => Math.hypot(feature.tileX - x, feature.tileY - y) >= 3)) {
-      stalagmites.push({ id: `${systemEntrance.id}:stalagmite:${x}:${y}`, tileX: x, tileY: y, scale: 0.72 + randomAtTile(seed, x, y, CAVE_GRAPH_SALT + 102) * 0.82 });
+      stalagmites.push({ id: `${systemEntrance.id}:stalagmite:${x}:${y}`, tileX: x, tileY: y, scale: 0.84 + randomAtTile(seed, x, y, CAVE_GRAPH_SALT + 102) * 0.95 });
     }
   }
 
