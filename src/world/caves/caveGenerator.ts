@@ -10,11 +10,23 @@ import {
   type CaveOreType,
   type CaveOreVeinStyle
 } from './caveOreGenerationConfig';
+import {
+  CAVE_LAVA_MAX_POOLS,
+  CAVE_LAVA_MINIMUM_NORMALIZED_DEPTH,
+  CAVE_LINKED_SYSTEM_CHANCE,
+  CAVE_LINKED_SYSTEM_DISTANCE_TILES,
+  CAVE_STALAGMITE_CHANCE,
+  CAVE_STALAGMITE_MINIMUM_NORMALIZED_DEPTH,
+  CAVE_SYSTEM_DEPTHS,
+  CAVE_SYSTEM_DEPTH_WEIGHTS,
+  CAVE_SYSTEM_PROFILES,
+  CAVE_VISUAL_CONTOUR_TARGET_CELLS,
+  type CaveSystemDepth
+} from './caveInteriorGenerationConfig';
 import { CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from '../worldConfig';
 import {
   CAVE_FORMATION_RADIUS_MAX_TILES,
   CAVE_FORMATION_RADIUS_MIN_TILES,
-  CAVE_INTERIOR_DIMENSIONS,
   CAVE_MIN_SEPARATION_TILES,
   CAVE_MOUTH_FORWARD_OFFSET_MAX_SCALE,
   CAVE_MOUTH_FORWARD_OFFSET_MIN_SCALE,
@@ -28,7 +40,7 @@ import {
   CAVE_WORLD_ORIGIN_STRIDE,
 } from './caveGenerationConfig';
 
-export type CaveDepth = 'shallow' | 'medium' | 'deep';
+export type CaveDepth = CaveSystemDepth;
 export type CaveOrePlacement = 'floor';
 export type { CaveOreType, CaveOreVeinStyle } from './caveOreGenerationConfig';
 
@@ -37,6 +49,11 @@ export interface CaveEntrance {
   readonly formationRadiusTiles: number; readonly mouthAngle: number;
   readonly mouthCenterForwardTiles: number; readonly mouthCenterSideTiles: number;
   readonly mouthForwardRadiusTiles: number; readonly mouthSideRadiusTiles: number;
+  // Linked systems share one interior while retaining distinct, deterministic surface mouths.
+  readonly systemRootTileX: number;
+  readonly systemRootTileY: number;
+  readonly linkedEntranceTileX: number | null;
+  readonly linkedEntranceTileY: number | null;
 }
 export interface CaveOre {
   readonly id: string;
@@ -46,13 +63,39 @@ export interface CaveOre {
   readonly placement: CaveOrePlacement;
   readonly veinStyle: CaveOreVeinStyle;
 }
+export interface CaveLavaPool {
+  readonly id: string;
+  readonly tileX: number;
+  readonly tileY: number;
+  readonly radiusX: number;
+  readonly radiusY: number;
+}
+export interface CaveStalagmite {
+  readonly id: string;
+  readonly tileX: number;
+  readonly tileY: number;
+  readonly scale: number;
+}
+export interface CaveSurfaceExit {
+  readonly id: string;
+  readonly tileX: number;
+  readonly tileY: number;
+  readonly surfaceTileX: number;
+  readonly surfaceTileY: number;
+  readonly label: string;
+}
 export interface CaveLayout {
   readonly entrance: CaveEntrance; readonly width: number; readonly height: number; readonly entranceTileX: number; readonly entranceTileY: number;
+  readonly spawnTileX: number; readonly spawnTileY: number;
   // The terrain field is the source of truth for the cave's visual shape. floorTiles are a
   // compact collision/readability grid sampled from the same continuous field.
   readonly terrain: CaveTerrain;
   readonly terrainContours: readonly (readonly CaveContourPoint[])[];
-  readonly floorTiles: readonly (readonly boolean[])[]; readonly depthByTile: readonly (readonly number[])[]; readonly ores: readonly CaveOre[];
+  readonly floorTiles: readonly (readonly boolean[])[]; readonly depthByTile: readonly (readonly number[])[];
+  readonly ores: readonly CaveOre[];
+  readonly lavaPools: readonly CaveLavaPool[];
+  readonly stalagmites: readonly CaveStalagmite[];
+  readonly surfaceExits: readonly CaveSurfaceExit[];
 }
 export interface CaveWorldOrigin { readonly x: number; readonly y: number; }
 export interface CaveContourPoint { readonly x: number; readonly y: number; }
@@ -78,7 +121,9 @@ const CAVE_ORE_SALT = 71_227;
 const CAVE_ORE_STYLE_SALT = 71_229;
 const CAVE_WORLD_OFFSET = 4_000_000;
 const CAVE_CHUNK_CACHE_LIMIT = 512;
+const CAVE_ENTRANCE_CACHE_LIMIT = 8_192;
 const caveChunkCache = new Map<string, readonly CaveEntrance[]>();
+const caveEntranceCache = new Map<string, CaveEntrance | null>();
 const CARDINAL_DIRECTIONS: readonly (readonly [number, number])[] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
 export interface CaveMouthCenter {
@@ -92,7 +137,14 @@ const isRawCaveCandidate = (seed: string, x: number, y: number): boolean => rand
 const depthForEntrance = (seed: string, x: number, y: number): CaveDepth => {
   // This stream deliberately differs from the sparse candidate stream, avoiding conditioned rolls.
   const roll = randomAtTile(seed, x * 31 + 17, y * 17 - 29, CAVE_DEPTH_SALT);
-  return roll < 0.1 ? 'deep' : roll < 0.34 ? 'medium' : 'shallow';
+  let threshold = 0;
+  for (const depth of CAVE_SYSTEM_DEPTHS) {
+    threshold += CAVE_SYSTEM_DEPTH_WEIGHTS[depth];
+    if (roll < threshold) {
+      return depth;
+    }
+  }
+  return 'abyssal';
 };
 
 const hasNearestCandidatePriority = (seed: string, tileX: number, tileY: number): boolean => {
@@ -105,11 +157,22 @@ const hasNearestCandidatePriority = (seed: string, tileX: number, tileY: number)
   return true;
 };
 
-/** A cave entrance is a sparse terrain landmark; water, beach, ocean, and normal features are excluded. */
-export const caveEntranceAtTile = (seed: string, tileX: number, tileY: number): CaveEntrance | null => {
-  if (!isRawCaveCandidate(seed, tileX, tileY) || !hasNearestCandidatePriority(seed, tileX, tileY)) return null;
+const surfaceCanHostCave = (seed: string, tileX: number, tileY: number): boolean => {
   const surface = surfaceAtTile(seed, tileX, tileY);
-  if (surface.isWater || featureAtTile(seed, tileX, tileY)) return null;
+  const biome = biomeAtTile(seed, tileX, tileY);
+  return !surface.isWater && !featureAtTile(seed, tileX, tileY) && biome !== Biome.Ocean && biome !== Biome.Beach;
+};
+
+const createSurfaceEntrance = (
+  seed: string,
+  tileX: number,
+  tileY: number,
+  depth: CaveDepth,
+  systemRootTileX: number,
+  systemRootTileY: number,
+  linkedEntranceTileX: number | null,
+  linkedEntranceTileY: number | null
+): CaveEntrance => {
   const formation = randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT);
   const formationRadiusTiles = CAVE_FORMATION_RADIUS_MIN_TILES + formation * (CAVE_FORMATION_RADIUS_MAX_TILES - CAVE_FORMATION_RADIUS_MIN_TILES);
   const mouthForwardOffsetScale = CAVE_MOUTH_FORWARD_OFFSET_MIN_SCALE
@@ -119,7 +182,7 @@ export const caveEntranceAtTile = (seed: string, tileX: number, tileY: number): 
   const mouthSideRadiusScale = CAVE_MOUTH_SIDE_RADIUS_MIN_SCALE
     + randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT + 4) * (CAVE_MOUTH_SIDE_RADIUS_MAX_SCALE - CAVE_MOUTH_SIDE_RADIUS_MIN_SCALE);
   return {
-    id: `${tileX}:${tileY}`, tileX, tileY, biome: biomeAtTile(seed, tileX, tileY), depth: depthForEntrance(seed, tileX, tileY),
+    id: `${tileX}:${tileY}`, tileX, tileY, biome: biomeAtTile(seed, tileX, tileY), depth,
     formationRadiusTiles,
     // Surface entrances read best as a broad, face-on rock mouth from the top-down camera.
     // A seed-derived sway keeps each one unique without turning the opening into a diagonal slit.
@@ -128,7 +191,86 @@ export const caveEntranceAtTile = (seed: string, tileX: number, tileY: number): 
     mouthCenterSideTiles: formationRadiusTiles * (randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT + 5) - 0.5) * CAVE_MOUTH_SIDE_OFFSET_MAX_SCALE * 2,
     mouthForwardRadiusTiles: formationRadiusTiles * mouthForwardRadiusScale,
     mouthSideRadiusTiles: formationRadiusTiles * mouthSideRadiusScale,
+    systemRootTileX,
+    systemRootTileY,
+    linkedEntranceTileX,
+    linkedEntranceTileY
   };
+};
+
+/** A raw entrance does not resolve companion mouths, which keeps the inverse link lookup bounded. */
+const baseCaveEntranceAtTile = (seed: string, tileX: number, tileY: number): CaveEntrance | null => {
+  if (!isRawCaveCandidate(seed, tileX, tileY) || !hasNearestCandidatePriority(seed, tileX, tileY) || !surfaceCanHostCave(seed, tileX, tileY)) {
+    return null;
+  }
+  return createSurfaceEntrance(seed, tileX, tileY, depthForEntrance(seed, tileX, tileY), tileX, tileY, null, null);
+};
+
+const linkedTargetForRoot = (seed: string, root: CaveEntrance): { readonly x: number; readonly y: number } | null => {
+  if (root.depth === 'shallow' || randomAtTile(seed, root.tileX, root.tileY, CAVE_GRAPH_SALT + 61) >= CAVE_LINKED_SYSTEM_CHANCE) {
+    return null;
+  }
+  const directionIndex = Math.floor(randomAtTile(seed, root.tileX, root.tileY, CAVE_GRAPH_SALT + 62) * 8);
+  const angle = directionIndex / 8 * Math.PI * 2;
+  const distanceIndex = Math.floor(randomAtTile(seed, root.tileX, root.tileY, CAVE_GRAPH_SALT + 63) * CAVE_LINKED_SYSTEM_DISTANCE_TILES.length);
+  const distance = CAVE_LINKED_SYSTEM_DISTANCE_TILES[Math.min(CAVE_LINKED_SYSTEM_DISTANCE_TILES.length - 1, distanceIndex)];
+  const x = root.tileX + Math.round(Math.cos(angle) * distance);
+  const y = root.tileY + Math.round(Math.sin(angle) * distance);
+  return surfaceCanHostCave(seed, x, y) ? { x, y } : null;
+};
+
+const linkedRootAtTile = (seed: string, tileX: number, tileY: number): CaveEntrance | null => {
+  for (let directionIndex = 0; directionIndex < 8; directionIndex += 1) {
+    const angle = directionIndex / 8 * Math.PI * 2;
+    for (const distance of CAVE_LINKED_SYSTEM_DISTANCE_TILES) {
+      const rootX = tileX - Math.round(Math.cos(angle) * distance);
+      const rootY = tileY - Math.round(Math.sin(angle) * distance);
+      const root = baseCaveEntranceAtTile(seed, rootX, rootY);
+      const target = root ? linkedTargetForRoot(seed, root) : null;
+      if (target?.x === tileX && target.y === tileY) {
+        return root;
+      }
+    }
+  }
+  return null;
+};
+
+/** A cave entrance is a sparse terrain landmark. Large systems can deterministically expose a second surface mouth. */
+export const caveEntranceAtTile = (seed: string, tileX: number, tileY: number): CaveEntrance | null => {
+  const cacheKey = `${seed}:${tileX}:${tileY}`;
+  if (caveEntranceCache.has(cacheKey)) {
+    return caveEntranceCache.get(cacheKey) ?? null;
+  }
+
+  let entrance: CaveEntrance | null;
+  const root = baseCaveEntranceAtTile(seed, tileX, tileY);
+  if (root) {
+    const target = linkedTargetForRoot(seed, root);
+    entrance = target
+      ? { ...root, linkedEntranceTileX: target.x, linkedEntranceTileY: target.y }
+      : root;
+  } else {
+    const linkedRoot = linkedRootAtTile(seed, tileX, tileY);
+    entrance = linkedRoot
+      ? createSurfaceEntrance(
+        seed,
+        tileX,
+        tileY,
+        linkedRoot.depth,
+        linkedRoot.tileX,
+        linkedRoot.tileY,
+        linkedRoot.tileX,
+        linkedRoot.tileY
+      )
+      : null;
+  }
+
+  if (caveEntranceCache.size >= CAVE_ENTRANCE_CACHE_LIMIT) {
+    const oldestKey = caveEntranceCache.keys().next().value;
+    if (oldestKey) caveEntranceCache.delete(oldestKey);
+  }
+  caveEntranceCache.set(cacheKey, entrance);
+  return entrance;
 };
 
 export const caveMouthCenter = (entrance: CaveEntrance): CaveMouthCenter => {
@@ -167,11 +309,10 @@ export const generateChunkCaveEntrances = (seed: string, chunkX: number, chunkY:
   return found;
 };
 
-const caveDimensions = (depth: CaveDepth): { width: number; height: number; chambers: number } => CAVE_INTERIOR_DIMENSIONS[depth];
+const caveDimensions = (depth: CaveDepth) => CAVE_SYSTEM_PROFILES[depth];
 const graphRandom = (seed: string, cave: CaveEntrance, index: number, salt: number): number => randomAtTile(seed, cave.tileX * 97 + index * 23, cave.tileY * 97 - index * 29, CAVE_GRAPH_SALT + salt);
 const CAVE_TERRAIN_PROFILE_SAMPLES = 14;
 const CAVE_TUNNEL_DISTANCE_SAMPLES = 10;
-const CAVE_VISUAL_CONTOUR_STEP_TILES = 0.5;
 
 const profileValueAt = (profile: readonly number[], unitAngle: number): number => {
   const position = ((unitAngle % 1 + 1) % 1) * profile.length;
@@ -293,12 +434,13 @@ interface CaveContourSegment { readonly from: CaveContourPoint; readonly to: Cav
 
 /** Extracts a smooth isocontour from the continuous cave field; no collision-tile edges are rendered. */
 const createTerrainContours = (terrain: CaveTerrain, width: number, height: number): readonly (readonly CaveContourPoint[])[] => {
-  const columns = Math.ceil(width / CAVE_VISUAL_CONTOUR_STEP_TILES);
-  const rows = Math.ceil(height / CAVE_VISUAL_CONTOUR_STEP_TILES);
+  const contourStepTiles = Math.max(0.5, Math.sqrt(width * height / CAVE_VISUAL_CONTOUR_TARGET_CELLS));
+  const columns = Math.ceil(width / contourStepTiles);
+  const rows = Math.ceil(height / contourStepTiles);
   const values = Array.from({ length: rows + 1 }, (_, row) => Array.from({ length: columns + 1 }, (_, column) => caveTerrainFieldAt(
     terrain,
-    Math.min(width, column * CAVE_VISUAL_CONTOUR_STEP_TILES),
-    Math.min(height, row * CAVE_VISUAL_CONTOUR_STEP_TILES)
+    Math.min(width, column * contourStepTiles),
+    Math.min(height, row * contourStepTiles)
   )));
   const segments: CaveContourSegment[] = [];
   const addSegment = (from: CaveContourPoint, to: CaveContourPoint): void => {
@@ -306,11 +448,11 @@ const createTerrainContours = (terrain: CaveTerrain, width: number, height: numb
   };
 
   for (let row = 0; row < rows; row += 1) {
-    const topY = Math.min(height, row * CAVE_VISUAL_CONTOUR_STEP_TILES);
-    const bottomY = Math.min(height, (row + 1) * CAVE_VISUAL_CONTOUR_STEP_TILES);
+    const topY = Math.min(height, row * contourStepTiles);
+    const bottomY = Math.min(height, (row + 1) * contourStepTiles);
     for (let column = 0; column < columns; column += 1) {
-      const leftX = Math.min(width, column * CAVE_VISUAL_CONTOUR_STEP_TILES);
-      const rightX = Math.min(width, (column + 1) * CAVE_VISUAL_CONTOUR_STEP_TILES);
+      const leftX = Math.min(width, column * contourStepTiles);
+      const rightX = Math.min(width, (column + 1) * contourStepTiles);
       const corners = [
         { x: leftX, y: topY, value: values[row][column] },
         { x: rightX, y: topY, value: values[row][column + 1] },
@@ -397,10 +539,10 @@ const buildDepthMap = (tiles: boolean[][], startX: number, startY: number): numb
   return distances.map((row) => row.map((distance) => distance < 0 ? -1 : distance / maximum));
 };
 
-const oreForDepth = (seed: string, cave: CaveEntrance, x: number, y: number, depth: number): CaveOreType | null => {
+const oreForDepth = (seed: string, cave: CaveEntrance, x: number, y: number, depth: number, hasLavaReach: boolean): CaveOreType | null => {
   const roll = randomAtTile(seed, cave.tileX * 131 + x, cave.tileY * 131 + y, CAVE_ORE_SALT);
   const rules = CAVE_ORE_SPAWN_RULES;
-  if ((!rules.diamond.requiresDeepCave || cave.depth === 'deep') && depth > rules.diamond.minimumNormalizedDepth && roll < rules.diamond.chance) return 'diamond';
+  if ((!rules.diamond.requiresDeepCave || hasLavaReach) && depth > Math.max(rules.diamond.minimumNormalizedDepth, CAVE_LAVA_MINIMUM_NORMALIZED_DEPTH) && roll < rules.diamond.chance) return 'diamond';
   if (depth > rules.gold.minimumNormalizedDepth && roll < rules.gold.chance) return 'gold';
   if (depth > rules.iron.minimumNormalizedDepth && roll < rules.iron.chance) return 'iron';
   return depth > rules.coal.minimumNormalizedDepth && roll < rules.coal.chance ? 'coal' : null;
@@ -412,89 +554,179 @@ const oreVeinStyleFor = (seed: string, cave: CaveEntrance, x: number, y: number,
   return styles[Math.min(styles.length - 1, Math.floor(roll * styles.length))];
 };
 
-/** Connected irregular chambers form a readable spine, with deterministic dead-end side tunnels. */
+/** Connected irregular chambers form long, branching cave systems with occasional loops and outlets. */
 export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLayout => {
-  const { width, height, chambers: count } = caveDimensions(entrance.depth);
-  // Leave a full rock margin around the first chamber so the continuous visual contour always
-  // closes inside the cave world rather than leaking through its generation boundary.
-  const entranceTileX = Math.floor(width / 2), entranceTileY = height - 6;
-  const chambers: CaveTerrainChamber[] = [createChamber(seed, entrance, 0, entranceTileX, entranceTileY, 4.3, 3.2)];
+  const root = baseCaveEntranceAtTile(seed, entrance.systemRootTileX, entrance.systemRootTileY) ?? entrance;
+  const linkedTarget = linkedTargetForRoot(seed, root);
+  const systemEntrance = linkedTarget
+    ? { ...root, linkedEntranceTileX: linkedTarget.x, linkedEntranceTileY: linkedTarget.y }
+    : root;
+  const profile = caveDimensions(systemEntrance.depth);
+  const { width, height } = profile;
+  const entranceTileX = Math.floor(width / 2);
+  const entranceTileY = height - 7;
+  const clampX = (x: number): number => Math.max(12, Math.min(width - 13, x));
+  const clampY = (y: number): number => Math.max(11, Math.min(height - 12, y));
+  const chambers: CaveTerrainChamber[] = [createChamber(seed, systemEntrance, 0, entranceTileX, entranceTileY, 4.5, 3.4)];
   const tunnels: CaveTerrainTunnel[] = [];
-  for (let index = 1; index < count; index += 1) {
-    const progress = index / (count - 1), prior = chambers[index - 1];
-    const curve = Math.sin(progress * Math.PI * 2 + graphRandom(seed, entrance, index, 1) * 1.8) * width * 0.12;
+  const spineIndices = [0];
+
+  for (let index = 1; index < profile.spineChambers; index += 1) {
+    const progress = index / (profile.spineChambers - 1);
+    const prior = chambers[spineIndices[index - 1]];
+    const meander = Math.sin(progress * Math.PI * 2.5 + graphRandom(seed, systemEntrance, index, 1) * Math.PI * 2) * width * 0.16;
     const chamber = createChamber(
       seed,
-      entrance,
+      systemEntrance,
       index,
-      Math.max(11, Math.min(width - 12, entranceTileX + curve + (graphRandom(seed, entrance, index, 2) - 0.5) * width * 0.16)),
-      Math.max(9, Math.min(height - 10, height - 4 - progress * (height - 13) + (graphRandom(seed, entrance, index, 3) - 0.5) * 5)),
-      4.8 + graphRandom(seed, entrance, index, 4) * 5.2,
-      3.8 + graphRandom(seed, entrance, index, 5) * 4.2
+      clampX(entranceTileX + meander + (graphRandom(seed, systemEntrance, index, 2) - 0.5) * width * 0.2),
+      clampY(height - 7 - progress * (height - 20) + (graphRandom(seed, systemEntrance, index, 3) - 0.5) * 9),
+      4.8 + graphRandom(seed, systemEntrance, index, 4) * 5.8,
+      3.8 + graphRandom(seed, systemEntrance, index, 5) * 4.8
+    );
+    const chamberIndex = chambers.length;
+    chambers.push(chamber);
+    spineIndices.push(chamberIndex);
+    tunnels.push(connectChambers(seed, systemEntrance, prior, chamber, index));
+  }
+
+  for (let branchIndex = 0; branchIndex < profile.branchChambers; branchIndex += 1) {
+    // Existing branch chambers become parents too, creating genuinely nested side routes rather
+    // than a row of detached cul-de-sacs off the main spine.
+    const parentIndex = Math.min(chambers.length - 1, Math.floor(graphRandom(seed, systemEntrance, branchIndex, 70) * chambers.length));
+    const parent = chambers[parentIndex];
+    const angle = graphRandom(seed, systemEntrance, branchIndex, 71) * Math.PI * 2;
+    const distance = 9 + graphRandom(seed, systemEntrance, branchIndex, 72) * 18;
+    const chamber = createChamber(
+      seed,
+      systemEntrance,
+      profile.spineChambers + branchIndex,
+      clampX(parent.x + Math.cos(angle) * distance),
+      clampY(parent.y + Math.sin(angle) * distance * 0.82),
+      3.8 + graphRandom(seed, systemEntrance, branchIndex, 73) * 4.8,
+      3.1 + graphRandom(seed, systemEntrance, branchIndex, 74) * 4
     );
     chambers.push(chamber);
-    tunnels.push(connectChambers(seed, entrance, prior, chamber, index));
+    tunnels.push(connectChambers(seed, systemEntrance, parent, chamber, profile.spineChambers + branchIndex));
   }
-  chambers.slice(1, -1).forEach((source, index) => {
-    if (index % 2 || graphRandom(seed, entrance, index, 7) < 0.32) return;
-    const branchIndex = count + index;
-    const branch = createChamber(
-      seed,
-      entrance,
-      branchIndex,
-      Math.max(9, Math.min(width - 10, source.x + (graphRandom(seed, entrance, index, 8) > 0.5 ? 1 : -1) * (8 + graphRandom(seed, entrance, index, 9) * 10))),
-      Math.max(8, Math.min(height - 9, source.y + (graphRandom(seed, entrance, index, 10) - 0.5) * 10)),
-      4.1 + graphRandom(seed, entrance, index, 11) * 3.8,
-      3.2 + graphRandom(seed, entrance, index, 12) * 3.3
-    );
-    chambers.push(branch);
-    tunnels.push(connectChambers(seed, entrance, source, branch, branchIndex));
-  });
+
+  for (let loopIndex = 0; loopIndex < profile.loopConnections; loopIndex += 1) {
+    const firstIndex = Math.min(chambers.length - 1, Math.floor(graphRandom(seed, systemEntrance, loopIndex, 80) * chambers.length));
+    const secondIndex = Math.min(chambers.length - 1, Math.floor(graphRandom(seed, systemEntrance, loopIndex, 81) * chambers.length));
+    const first = chambers[firstIndex];
+    const second = chambers[secondIndex];
+    const distance = Math.hypot(first.x - second.x, first.y - second.y);
+    if (firstIndex !== secondIndex && distance > 10 && distance < 42) {
+      tunnels.push(connectChambers(seed, systemEntrance, first, second, 10_000 + loopIndex));
+    }
+  }
+
   const terrain: CaveTerrain = { chambers, tunnels };
   const floorTiles = Array.from({ length: height }, (_, y) => Array.from({ length: width }, (_, x) => {
     if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
       return false;
     }
-    // Collision stays fractionally inside the continuous visual edge, avoiding invisible
-    // walkable slivers while retaining a stable compact lookup during movement.
     return caveTerrainFieldAt(terrain, x + 0.5, y + 0.5) >= 0.12;
   }));
   floorTiles[entranceTileY][entranceTileX] = true;
   const depthByTile = buildDepthMap(floorTiles, entranceTileX, entranceTileY);
+  const findFloorNear = (centerX: number, centerY: number): { readonly x: number; readonly y: number } => {
+    for (let radius = 0; radius < 20; radius += 1) {
+      for (let y = Math.max(1, Math.floor(centerY) - radius); y <= Math.min(height - 2, Math.floor(centerY) + radius); y += 1) {
+        for (let x = Math.max(1, Math.floor(centerX) - radius); x <= Math.min(width - 2, Math.floor(centerX) + radius); x += 1) {
+          if (floorTiles[y][x]) return { x, y };
+        }
+      }
+    }
+    return { x: entranceTileX, y: entranceTileY };
+  };
+  const farSpineChamber = chambers[spineIndices[spineIndices.length - 1]];
+  const linkedOutlet = findFloorNear(farSpineChamber.x, farSpineChamber.y);
+  const isLinkedEntrance = entrance.tileX !== systemEntrance.tileX || entrance.tileY !== systemEntrance.tileY;
+  const spawn = isLinkedEntrance && linkedTarget ? linkedOutlet : { x: entranceTileX, y: entranceTileY };
+
+  const lavaPools: CaveLavaPool[] = [];
+  if (profile.lavaPoolChance > 0 && randomAtTile(seed, systemEntrance.tileX, systemEntrance.tileY, CAVE_GRAPH_SALT + 91) < profile.lavaPoolChance) {
+    for (let attempt = 0; attempt < 280 && lavaPools.length < CAVE_LAVA_MAX_POOLS; attempt += 1) {
+      const x = 2 + Math.floor(randomAtTile(seed, systemEntrance.tileX * 37 + attempt, systemEntrance.tileY, CAVE_GRAPH_SALT + 92) * (width - 4));
+      const y = 2 + Math.floor(randomAtTile(seed, systemEntrance.tileX, systemEntrance.tileY * 37 + attempt, CAVE_GRAPH_SALT + 93) * (height - 4));
+      const depth = depthByTile[y][x];
+      if (!floorTiles[y][x] || depth < CAVE_LAVA_MINIMUM_NORMALIZED_DEPTH || Math.hypot(x - spawn.x, y - spawn.y) < 18) continue;
+      const radiusX = 2.5 + randomAtTile(seed, x, y, CAVE_GRAPH_SALT + 94) * 3.2;
+      const radiusY = 1.8 + randomAtTile(seed, x, y, CAVE_GRAPH_SALT + 95) * 2.4;
+      if (lavaPools.some((pool) => Math.hypot(pool.tileX - x, pool.tileY - y) < pool.radiusX + radiusX + 5)) continue;
+      lavaPools.push({ id: `${systemEntrance.id}:lava:${x}:${y}`, tileX: x, tileY: y, radiusX, radiusY });
+    }
+  }
+  lavaPools.forEach((pool) => {
+    for (let y = Math.max(1, Math.floor(pool.tileY - pool.radiusY - 1)); y <= Math.min(height - 2, Math.ceil(pool.tileY + pool.radiusY + 1)); y += 1) {
+      for (let x = Math.max(1, Math.floor(pool.tileX - pool.radiusX - 1)); x <= Math.min(width - 2, Math.ceil(pool.tileX + pool.radiusX + 1)); x += 1) {
+        const normalized = (x + 0.5 - pool.tileX) ** 2 / (pool.radiusX * pool.radiusX) + (y + 0.5 - pool.tileY) ** 2 / (pool.radiusY * pool.radiusY);
+        if (normalized < 0.86) floorTiles[y][x] = false;
+      }
+    }
+  });
+
+  const stalagmites: CaveStalagmite[] = [];
+  for (let y = 2; y < height - 2; y += 1) for (let x = 2; x < width - 2; x += 1) {
+    const depth = depthByTile[y][x];
+    if (!floorTiles[y][x] || depth < CAVE_STALAGMITE_MINIMUM_NORMALIZED_DEPTH || randomAtTile(seed, systemEntrance.tileX * 131 + x, systemEntrance.tileY * 131 + y, CAVE_GRAPH_SALT + 101) >= CAVE_STALAGMITE_CHANCE) continue;
+    if (lavaPools.some((pool) => Math.hypot(pool.tileX - x, pool.tileY - y) < pool.radiusX + 3)) continue;
+    if (stalagmites.every((feature) => Math.hypot(feature.tileX - x, feature.tileY - y) >= 3)) {
+      stalagmites.push({ id: `${systemEntrance.id}:stalagmite:${x}:${y}`, tileX: x, tileY: y, scale: 0.72 + randomAtTile(seed, x, y, CAVE_GRAPH_SALT + 102) * 0.82 });
+    }
+  }
+
   const ores: CaveOre[] = [];
   for (let y = 1; y < height - 1; y += 1) for (let x = 1; x < width - 1; x += 1) {
     if (!floorTiles[y][x]) continue;
     const adjacentFloorDirections = CARDINAL_DIRECTIONS.filter(([dx, dy]) => floorTiles[y + dy][x + dx]);
-    // A clear tile on every side keeps the deposit fully within terrain rather than against a wall.
     if (adjacentFloorDirections.length !== CARDINAL_DIRECTIONS.length) continue;
     const depth = depthByTile[y][x];
     if (depth < 0.05 || x === entranceTileX && y >= entranceTileY - 3) continue;
-    const ore = oreForDepth(seed, entrance, x, y, depth);
+    const ore = oreForDepth(seed, systemEntrance, x, y, depth, lavaPools.length > 0);
     const hasClearanceFromOtherOre = ores.every((existing) => Math.hypot(existing.tileX - x, existing.tileY - y) >= CAVE_ORE_MIN_SEPARATION_TILES);
-    if (ore && hasClearanceFromOtherOre && randomAtTile(seed, x + entrance.tileX * 41, y + entrance.tileY * 41, CAVE_ORE_SALT + 3) < CAVE_ORE_FLOOR_PLACEMENT_CHANCE) {
-      ores.push({
-        id: `${entrance.id}:${x}:${y}`,
-        tileX: x,
-        tileY: y,
-        type: ore,
-        placement: 'floor',
-        veinStyle: oreVeinStyleFor(seed, entrance, x, y, ore)
-      });
+    if (ore && hasClearanceFromOtherOre && randomAtTile(seed, x + systemEntrance.tileX * 41, y + systemEntrance.tileY * 41, CAVE_ORE_SALT + 3) < CAVE_ORE_FLOOR_PLACEMENT_CHANCE) {
+      ores.push({ id: `${systemEntrance.id}:${x}:${y}`, tileX: x, tileY: y, type: ore, placement: 'floor', veinStyle: oreVeinStyleFor(seed, systemEntrance, x, y, ore) });
     }
   }
+
+  const surfaceExits: CaveSurfaceExit[] = [{
+    id: systemEntrance.id,
+    tileX: entranceTileX,
+    tileY: entranceTileY,
+    surfaceTileX: systemEntrance.tileX,
+    surfaceTileY: systemEntrance.tileY,
+    label: 'Press E to return to the surface'
+  }];
+  if (linkedTarget) {
+    surfaceExits.push({
+      id: `${systemEntrance.id}:linked`,
+      tileX: linkedOutlet.x,
+      tileY: linkedOutlet.y,
+      surfaceTileX: linkedTarget.x,
+      surfaceTileY: linkedTarget.y,
+      label: 'Press E to emerge at the other cave mouth'
+    });
+  }
   return {
-    entrance,
+    entrance: systemEntrance,
     width,
     height,
     entranceTileX,
     entranceTileY,
+    spawnTileX: spawn.x,
+    spawnTileY: spawn.y,
     terrain,
     terrainContours: createTerrainContours(terrain, width, height),
     floorTiles,
     depthByTile,
-    ores
+    ores,
+    lavaPools,
+    stalagmites,
+    surfaceExits
   };
 };
 
-export const caveWorldOrigin = (entrance: CaveEntrance): CaveWorldOrigin => ({ x: CAVE_WORLD_OFFSET + entrance.tileX * CAVE_WORLD_ORIGIN_STRIDE, y: CAVE_WORLD_OFFSET + entrance.tileY * CAVE_WORLD_ORIGIN_STRIDE });
+export const caveWorldOrigin = (entrance: CaveEntrance): CaveWorldOrigin => ({ x: CAVE_WORLD_OFFSET + entrance.systemRootTileX * CAVE_WORLD_ORIGIN_STRIDE, y: CAVE_WORLD_OFFSET + entrance.systemRootTileY * CAVE_WORLD_ORIGIN_STRIDE });
 export const caveWorldTilePosition = (origin: CaveWorldOrigin, tileX: number, tileY: number): CaveWorldOrigin => ({ x: origin.x + tileX * WORLD_TILE_SIZE + WORLD_TILE_SIZE / 2, y: origin.y + tileY * WORLD_TILE_SIZE + WORLD_TILE_SIZE / 2 });
