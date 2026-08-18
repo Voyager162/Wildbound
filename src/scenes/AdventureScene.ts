@@ -75,8 +75,6 @@ const CAVE_ENTRANCE_SEARCH_RADIUS_TILES = 6;
 // Kept visual-only: designers can reshape the cave wall art without changing layouts or
 // collision. The clamp also protects the renderer from accidental extreme configuration.
 const CAVE_WALL_PUFFINESS = Math.max(0.25, Math.min(2, CAVE_WALL_PUFFINESS_SCALE));
-const CAVE_CONTOUR_BLEND = 0.08 + CAVE_WALL_PUFFINESS * 0.1;
-const CAVE_CONTOUR_JAGGEDNESS = 5 - CAVE_WALL_PUFFINESS * 1.4;
 
 type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
 
@@ -91,11 +89,6 @@ interface ActiveCave {
 interface CaveRenderPoint {
   readonly x: number;
   readonly y: number;
-}
-
-interface CaveBoundaryEdge {
-  readonly from: CaveRenderPoint;
-  readonly to: CaveRenderPoint;
 }
 
 export class AdventureScene extends Phaser.Scene {
@@ -1278,31 +1271,16 @@ export class AdventureScene extends Phaser.Scene {
     graphics.fillStyle(0x07090b, 1);
     graphics.fillRect(outerX, outerY, (layout.width + 2) * WORLD_TILE_SIZE, (layout.height + 2) * WORLD_TILE_SIZE);
 
-    // The floor base follows the collision data exactly. Curved wall contours are then layered
-    // on top, so a blocked rock cell can never be painted as walkable ground.
-    for (let y = 0; y < layout.height; y += 1) {
-      let runStart = -1;
-      for (let x = 0; x <= layout.width; x += 1) {
-        if (x < layout.width && layout.floorTiles[y][x]) {
-          if (runStart < 0) {
-            runStart = x;
-          }
-        } else if (runStart >= 0) {
-          graphics.fillStyle(0x353c39, 1);
-          graphics.fillRect(
-            origin.x + runStart * WORLD_TILE_SIZE,
-            origin.y + y * WORLD_TILE_SIZE,
-            (x - runStart) * WORLD_TILE_SIZE,
-            WORLD_TILE_SIZE
-          );
-          runStart = -1;
-        }
-      }
-    }
-
-    // The collision grid remains private to movement. Its boundary is traced into broad,
-    // uneven rock slopes, which keeps the visible cave curved without hiding solid rock.
-    const contours = this.createCaveContours(layout, origin);
+    // The rendered floor is a deterministic continuous field of irregular chambers and curved
+    // tunnels. The compact tile grid is retained only for fast collision lookup and is never
+    // used as visible geometry.
+    const contours = layout.terrainContours.map((contour) => contour.map((point) => ({
+      x: origin.x + point.x * WORLD_TILE_SIZE,
+      y: origin.y + point.y * WORLD_TILE_SIZE
+    })));
+    contours.forEach((contour) => {
+      this.fillCavePolygon(contour, 0x353c39, 1);
+    });
     contours.forEach((contour) => {
       graphics.lineStyle(30 * CAVE_WALL_PUFFINESS, 0x101516, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
@@ -1316,30 +1294,7 @@ export class AdventureScene extends Phaser.Scene {
     contours.forEach((contour, index) => {
       this.drawCaveWallStrata(contour, index);
     });
-
-    for (let y = 0; y < layout.height; y += 1) {
-      for (let x = 0; x < layout.width; x += 1) {
-        if (!layout.floorTiles[y][x]) {
-          continue;
-        }
-        const worldX = origin.x + x * WORLD_TILE_SIZE;
-        const worldY = origin.y + y * WORLD_TILE_SIZE;
-        const detail = randomAtTile(this.worldSeed, cave.entrance.tileX * 211 + x, cave.entrance.tileY * 211 + y, 0x6c7e);
-        if ((x + y) % 2 === 0 && detail > 0.46) {
-          this.drawCaveRockPatch(
-            worldX + 6 + this.caveVisualRandom(x, y, 0x6c81) * 20,
-            worldY + 6 + this.caveVisualRandom(x, y, 0x6c82) * 20,
-            7 + detail * 9,
-            3 + detail * 5,
-            x,
-            y,
-            0x6c83,
-            detail > 0.8 ? 0x68716a : 0x4a524e,
-            detail > 0.8 ? 0.2 : 0.16
-          );
-        }
-      }
-    }
+    this.drawCaveFloorTexture(layout, origin);
 
     // The exit is a worn opening in the floor, not a separate marker sprite.
     const exit = caveWorldTilePosition(origin, layout.entranceTileX, layout.entranceTileY);
@@ -1404,86 +1359,38 @@ export class AdventureScene extends Phaser.Scene {
     this.fillCavePolygon(points, color, alpha);
   }
 
-  private createCaveContours(layout: CaveLayout, origin: CaveWorldOrigin): CaveRenderPoint[][] {
-    const edges: CaveBoundaryEdge[] = [];
-    const edgesByStart = new Map<string, CaveBoundaryEdge[]>();
-    const addEdge = (fromX: number, fromY: number, toX: number, toY: number): void => {
-      const edge: CaveBoundaryEdge = {
-        from: { x: origin.x + fromX * WORLD_TILE_SIZE, y: origin.y + fromY * WORLD_TILE_SIZE },
-        to: { x: origin.x + toX * WORLD_TILE_SIZE, y: origin.y + toY * WORLD_TILE_SIZE }
-      };
-      edges.push(edge);
-      const key = `${edge.from.x}:${edge.from.y}`;
-      const linked = edgesByStart.get(key) ?? [];
-      linked.push(edge);
-      edgesByStart.set(key, linked);
-    };
-
-    for (let y = 0; y < layout.height; y += 1) {
-      for (let x = 0; x < layout.width; x += 1) {
-        if (!layout.floorTiles[y][x]) {
-          continue;
-        }
-        if (y === 0 || !layout.floorTiles[y - 1][x]) addEdge(x, y, x + 1, y);
-        if (x === layout.width - 1 || !layout.floorTiles[y][x + 1]) addEdge(x + 1, y, x + 1, y + 1);
-        if (y === layout.height - 1 || !layout.floorTiles[y + 1][x]) addEdge(x + 1, y + 1, x, y + 1);
-        if (x === 0 || !layout.floorTiles[y][x - 1]) addEdge(x, y + 1, x, y);
+  private drawCaveFloorTexture(layout: CaveLayout, origin: CaveWorldOrigin): void {
+    // Floor texture follows the organic components rather than a tile scan, avoiding repeated
+    // cell patterns while keeping each cave's geology tied to its seed and location.
+    layout.terrain.chambers.forEach((chamber, chamberIndex) => {
+      const patchCount = 3 + Math.floor(this.caveVisualRandom(chamberIndex, 0, 0x6c91) * 4);
+      for (let patchIndex = 0; patchIndex < patchCount; patchIndex += 1) {
+        const angle = this.caveVisualRandom(chamberIndex, patchIndex, 0x6c92) * Math.PI * 2;
+        const distance = 0.16 + this.caveVisualRandom(chamberIndex, patchIndex, 0x6c93) * 0.4;
+        const centerX = origin.x + (chamber.x + Math.cos(angle) * chamber.radiusX * distance) * WORLD_TILE_SIZE;
+        const centerY = origin.y + (chamber.y + Math.sin(angle) * chamber.radiusY * distance) * WORLD_TILE_SIZE;
+        const detail = this.caveVisualRandom(chamberIndex, patchIndex, 0x6c94);
+        this.drawCaveRockPatch(
+          centerX,
+          centerY,
+          7 + detail * 11,
+          3 + detail * 5,
+          chamberIndex * 37 + patchIndex,
+          patchIndex,
+          0x6c95,
+          detail > 0.76 ? 0x68716a : 0x4a524e,
+          detail > 0.76 ? 0.2 : 0.13
+        );
       }
-    }
-
-    const used = new Set<CaveBoundaryEdge>();
-    const contours: CaveRenderPoint[][] = [];
-    for (const initialEdge of edges) {
-      if (used.has(initialEdge)) {
-        continue;
+    });
+    layout.terrain.tunnels.forEach((tunnel, tunnelIndex) => {
+      for (let patchIndex = 0; patchIndex < 2; patchIndex += 1) {
+        const progress = 0.29 + patchIndex * 0.4 + this.caveVisualRandom(tunnelIndex, patchIndex, 0x6ca1) * 0.08;
+        const inverse = 1 - progress;
+        const centerX = origin.x + (inverse * inverse * tunnel.fromX + 2 * inverse * progress * tunnel.controlX + progress * progress * tunnel.toX) * WORLD_TILE_SIZE;
+        const centerY = origin.y + (inverse * inverse * tunnel.fromY + 2 * inverse * progress * tunnel.controlY + progress * progress * tunnel.toY) * WORLD_TILE_SIZE;
+        this.drawCaveRockPatch(centerX, centerY, 6, 2.8, tunnelIndex, patchIndex, 0x6ca2, 0x252f2c, 0.18);
       }
-      const points: CaveRenderPoint[] = [];
-      const startKey = `${initialEdge.from.x}:${initialEdge.from.y}`;
-      let edge: CaveBoundaryEdge | undefined = initialEdge;
-      let closed = false;
-      while (edge && !used.has(edge)) {
-        used.add(edge);
-        points.push(edge.from);
-        const endKey: string = `${edge.to.x}:${edge.to.y}`;
-        if (endKey === startKey) {
-          closed = true;
-          break;
-        }
-        edge = (edgesByStart.get(endKey) ?? []).find((candidate) => !used.has(candidate));
-      }
-      if (closed && points.length >= 3) {
-        contours.push(this.smoothCaveContour(points, contours.length));
-      }
-    }
-    return contours;
-  }
-
-  private smoothCaveContour(points: readonly CaveRenderPoint[], contourIndex: number): CaveRenderPoint[] {
-    let smoothed = [...points];
-    for (let pass = 0; pass < 2; pass += 1) {
-      const next: CaveRenderPoint[] = [];
-      for (let index = 0; index < smoothed.length; index += 1) {
-        const current = smoothed[index];
-        const following = smoothed[(index + 1) % smoothed.length];
-        next.push({
-          x: current.x * (1 - CAVE_CONTOUR_BLEND) + following.x * CAVE_CONTOUR_BLEND,
-          y: current.y * (1 - CAVE_CONTOUR_BLEND) + following.y * CAVE_CONTOUR_BLEND
-        });
-        next.push({
-          x: current.x * CAVE_CONTOUR_BLEND + following.x * (1 - CAVE_CONTOUR_BLEND),
-          y: current.y * CAVE_CONTOUR_BLEND + following.y * (1 - CAVE_CONTOUR_BLEND)
-        });
-      }
-      smoothed = next;
-    }
-    return smoothed.map((point, index) => {
-      const prior = smoothed[(index + smoothed.length - 1) % smoothed.length];
-      const following = smoothed[(index + 1) % smoothed.length];
-      const distance = Math.hypot(following.x - prior.x, following.y - prior.y) || 1;
-      const outwardX = (following.y - prior.y) / distance;
-      const outwardY = -(following.x - prior.x) / distance;
-      const jag = (this.caveVisualRandom(contourIndex * 193 + index, contourIndex * 31 + index, 0x7201 + index) - 0.5) * CAVE_CONTOUR_JAGGEDNESS;
-      return { x: point.x + outwardX * jag, y: point.y + outwardY * jag };
     });
   }
 
