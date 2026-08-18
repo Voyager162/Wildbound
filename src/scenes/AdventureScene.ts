@@ -43,6 +43,7 @@ import { craftRecipe as applyCraftingRecipe } from '../crafting/craftingService'
 import { harvestSpeedForFeature } from '../crafting/harvestSpeedConfig';
 import {
   caveEntranceAtTile,
+  caveMouthCenter,
   caveWorldOrigin,
   caveWorldTilePosition,
   generateCaveLayout,
@@ -68,6 +69,8 @@ const SAVE_INTERVAL_MS = 900;
 const MINIMAP_UPDATE_INTERVAL_MS = 80;
 const NIGHT_AMBIENT_LIGHT_UPDATE_INTERVAL_MS = 33;
 const MINIMAP_TILES_PER_CELL = Math.max(1, Math.round(16 * (MINIMAP_AREA_SCALE / 50)));
+const CAVE_ENTRANCE_INTERACTION_RADIUS_PIXELS = 84;
+const CAVE_ENTRANCE_SEARCH_RADIUS_TILES = 6;
 
 type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
 
@@ -483,7 +486,11 @@ export class AdventureScene extends Phaser.Scene {
     }
   }
 
-  private handlePrimaryAction(): void {
+  private handlePrimaryAction(event: KeyboardEvent): void {
+    if (event.repeat) {
+      return;
+    }
+    event.preventDefault();
     if (!this.worldReady || this.worldMapOpen) {
       return;
     }
@@ -506,6 +513,8 @@ export class AdventureScene extends Phaser.Scene {
     if (this.activeCave) {
       if (this.caveExitNearby) {
         this.exitCave();
+      } else {
+        this.toggleInventory();
       }
       return;
     }
@@ -1143,16 +1152,15 @@ export class AdventureScene extends Phaser.Scene {
     this.lastCaveEntranceTileX = tileX;
     this.lastCaveEntranceTileY = tileY;
     let nearest: CaveEntrance | null = null;
-    let nearestDistanceSquared = 78 * 78;
-    for (let candidateY = tileY - 3; candidateY <= tileY + 3; candidateY += 1) {
-      for (let candidateX = tileX - 3; candidateX <= tileX + 3; candidateX += 1) {
+    let nearestDistanceSquared = CAVE_ENTRANCE_INTERACTION_RADIUS_PIXELS ** 2;
+    for (let candidateY = tileY - CAVE_ENTRANCE_SEARCH_RADIUS_TILES; candidateY <= tileY + CAVE_ENTRANCE_SEARCH_RADIUS_TILES; candidateY += 1) {
+      for (let candidateX = tileX - CAVE_ENTRANCE_SEARCH_RADIUS_TILES; candidateX <= tileX + CAVE_ENTRANCE_SEARCH_RADIUS_TILES; candidateX += 1) {
         const entrance = caveEntranceAtTile(this.worldSeed, candidateX, candidateY);
         if (!entrance) {
           continue;
         }
-        const centerX = (candidateX + 0.5) * WORLD_TILE_SIZE;
-        const centerY = (candidateY + 0.5) * WORLD_TILE_SIZE;
-        const distanceSquared = Phaser.Math.Distance.Squared(this.player.x, this.player.y, centerX, centerY);
+        const mouth = caveMouthCenter(entrance);
+        const distanceSquared = Phaser.Math.Distance.Squared(this.player.x, this.player.y, mouth.x, mouth.y);
         if (distanceSquared < nearestDistanceSquared) {
           nearest = entrance;
           nearestDistanceSquared = distanceSquared;
@@ -1167,12 +1175,14 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
+    const mouth = caveMouthCenter(nearest);
     this.interactionHighlight
-      .setPosition((nearest.tileX + 0.5) * WORLD_TILE_SIZE, (nearest.tileY + 0.5) * WORLD_TILE_SIZE)
+      .setRadius(Math.max(42, nearest.mouthForwardRadiusTiles * WORLD_TILE_SIZE * 0.72))
+      .setPosition(mouth.x, mouth.y)
       .setVisible(true);
     this.drawCaveHint(
-      (nearest.tileX + 0.5) * WORLD_TILE_SIZE,
-      (nearest.tileY + 0.5) * WORLD_TILE_SIZE - 40,
+      mouth.x,
+      mouth.y - Math.max(40, nearest.mouthForwardRadiusTiles * WORLD_TILE_SIZE * 0.8),
       'Press E to enter'
     );
   }
@@ -1401,12 +1411,12 @@ export class AdventureScene extends Phaser.Scene {
     this.caveOreTarget = nearest;
 
     if (this.caveExitNearby) {
-      this.interactionHighlight.setPosition(exit.x, exit.y).setVisible(true);
+      this.interactionHighlight.setRadius(48).setPosition(exit.x, exit.y).setVisible(true);
       this.drawCaveHint(exit.x, exit.y - 33, 'Press E to exit');
     } else if (nearest) {
       const ore = nearest as CaveOre;
       const position = caveWorldTilePosition(cave.origin, ore.tileX, ore.tileY);
-      this.interactionHighlight.setPosition(position.x, position.y).setVisible(true);
+      this.interactionHighlight.setRadius(36).setPosition(position.x, position.y).setVisible(true);
       this.caveHintPanel.clear().setVisible(false);
       this.caveHint.setVisible(false);
     } else {
@@ -1496,6 +1506,7 @@ export class AdventureScene extends Phaser.Scene {
 
     if (this.interactionTarget) {
       this.interactionHighlight
+        .setRadius(62)
         .setPosition(
           (this.interactionTarget.tileX + 0.5) * WORLD_TILE_SIZE,
           (this.interactionTarget.tileY + 0.5) * WORLD_TILE_SIZE

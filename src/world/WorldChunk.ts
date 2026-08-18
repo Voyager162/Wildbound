@@ -51,6 +51,11 @@ import {
 } from './worldVisualConfig';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 import { generateChunkCaveEntrances, type CaveEntrance } from './caves/caveGenerator';
+import {
+  CAVE_MOUTH_STALACTITE_COUNT_MAX,
+  CAVE_MOUTH_STALACTITE_COUNT_MIN,
+  CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE,
+} from './caves/caveGenerationConfig';
 
 // Terrain is sampled in compact 8px cells, then bilinearly painted into one continuous canvas.
 // This keeps chunk generation bounded while avoiding a visible grid in the world itself.
@@ -109,6 +114,7 @@ interface CaveTerrainInfluence {
   mouthVertices: readonly TerrainPoint[];
   mouthRecessVertices: readonly TerrainPoint[];
   mouthLipFacets: readonly CaveTerrainFacet[];
+  mouthStalactiteFacets: readonly CaveTerrainFacet[];
   rockFacets: readonly CaveTerrainFacet[];
 }
 
@@ -693,13 +699,16 @@ export class WorldChunk {
             }
             const mouthLocalPoints: Array<{ forward: number; side: number }> = [];
             const mouthPointCount = 11 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x96e1) * 5);
-            const mouthOffset = radiusPixels * (0.15 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9781) * 0.16);
+            const mouthCenterForward = entrance.mouthCenterForwardTiles * WORLD_TILE_SIZE;
+            const mouthCenterSide = entrance.mouthCenterSideTiles * WORLD_TILE_SIZE;
+            const mouthForwardRadius = entrance.mouthForwardRadiusTiles * WORLD_TILE_SIZE;
+            const mouthSideRadius = entrance.mouthSideRadiusTiles * WORLD_TILE_SIZE;
             for (let point = 0; point < mouthPointCount; point += 1) {
               const angle = point / mouthPointCount * Math.PI * 2;
               const irregularity = 0.78 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9721 + point) * 0.4;
               mouthLocalPoints.push({
-                forward: mouthOffset + Math.cos(angle) * radiusPixels * 0.7 * irregularity,
-                side: Math.sin(angle) * radiusPixels * 0.45 * irregularity,
+                forward: mouthCenterForward + Math.cos(angle) * mouthForwardRadius * irregularity,
+                side: mouthCenterSide + Math.sin(angle) * mouthSideRadius * irregularity,
               });
             }
             const mouthLipFacets: CaveTerrainFacet[] = mouthLocalPoints.flatMap((point, index) => {
@@ -707,18 +716,18 @@ export class WorldChunk {
               const outerScale = 1.17 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9841 + index) * 0.12;
               const lipTone = -16 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9951 + index) * 34);
               const outerPoint = toWorldPoint(
-                mouthOffset + (point.forward - mouthOffset) * outerScale,
-                point.side * outerScale,
+                mouthCenterForward + (point.forward - mouthCenterForward) * outerScale,
+                mouthCenterSide + (point.side - mouthCenterSide) * outerScale,
               );
               const outerNext = toWorldPoint(
-                mouthOffset + (next.forward - mouthOffset) * outerScale,
-                next.side * outerScale,
+                mouthCenterForward + (next.forward - mouthCenterForward) * outerScale,
+                mouthCenterSide + (next.side - mouthCenterSide) * outerScale,
               );
               const innerPoint = toWorldPoint(point.forward, point.side);
               const innerNext = toWorldPoint(next.forward, next.side);
               const center = toWorldPoint(
-                mouthOffset + (point.forward + next.forward - mouthOffset * 2) * 0.34,
-                (point.side + next.side) * 0.34,
+                mouthCenterForward + (point.forward + next.forward - mouthCenterForward * 2) * 0.34,
+                mouthCenterSide + (point.side + next.side - mouthCenterSide * 2) * 0.34,
               );
               return [
                 {
@@ -735,6 +744,36 @@ export class WorldChunk {
                 },
               ];
             });
+            const mouthStalactiteFacets: CaveTerrainFacet[] = [];
+            const stalactiteCount = CAVE_MOUTH_STALACTITE_COUNT_MIN + Math.floor(
+              randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9a31)
+              * (CAVE_MOUTH_STALACTITE_COUNT_MAX - CAVE_MOUTH_STALACTITE_COUNT_MIN + 1)
+            );
+            for (let stalactite = 0; stalactite < stalactiteCount; stalactite += 1) {
+              const spacing = (stalactite + 0.5 + (randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9a71 + stalactite) - 0.5) * 0.38)
+                / stalactiteCount - 0.5;
+              const baseForward = mouthCenterForward - mouthForwardRadius * (0.78 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9ab1 + stalactite) * 0.12);
+              const baseSide = mouthCenterSide + spacing * mouthSideRadius * 1.48;
+              const halfWidth = 5 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9af1 + stalactite) * 8;
+              const tipForward = baseForward + mouthForwardRadius * (0.38 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9b31 + stalactite) * 0.36);
+              const tipSide = baseSide + (randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9b71 + stalactite) - 0.5) * halfWidth * 0.8;
+              const tone = -30 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9bb1 + stalactite) * 16);
+              const left = toWorldPoint(baseForward, baseSide - halfWidth);
+              const right = toWorldPoint(baseForward, baseSide + halfWidth);
+              const tip = toWorldPoint(tipForward, tipSide);
+              mouthStalactiteFacets.push({
+                vertices: [left, right, tip],
+                red: rockRed + tone,
+                green: rockGreen + tone,
+                blue: rockBlue + tone,
+              });
+              mouthStalactiteFacets.push({
+                vertices: [left, tip, toWorldPoint(baseForward + mouthForwardRadius * 0.12, baseSide)],
+                red: rockRed + tone + 20,
+                green: rockGreen + tone + 19,
+                blue: rockBlue + tone + 17,
+              });
+            }
             influences.push({
               centerWorldX,
               centerWorldY,
@@ -748,11 +787,13 @@ export class WorldChunk {
               mouthRecessVertices: mouthLocalPoints.map((point, index) => {
                 const inset = 0.57 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9a51 + index) * 0.11;
                 return toWorldPoint(
-                  mouthOffset + (point.forward - mouthOffset) * inset + radiusPixels * 0.12,
-                  point.side * inset,
+                  mouthCenterForward + (point.forward - mouthCenterForward) * inset
+                    + mouthForwardRadius * CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE,
+                  mouthCenterSide + (point.side - mouthCenterSide) * inset,
                 );
               }),
               mouthLipFacets,
+              mouthStalactiteFacets,
               rockFacets,
             });
           }
@@ -1266,6 +1307,7 @@ export class WorldChunk {
       paintFacet({ vertices: cave.mouthVertices, red: 28, green: 33, blue: 35 });
       cave.mouthLipFacets.forEach(paintFacet);
       paintFacet({ vertices: cave.mouthRecessVertices, red: 6, green: 8, blue: 10 });
+      cave.mouthStalactiteFacets.forEach(paintFacet);
     });
   }
 

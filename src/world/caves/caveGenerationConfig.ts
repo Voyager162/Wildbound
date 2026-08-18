@@ -17,9 +17,27 @@ export const CAVE_SPAWN_CHANCE_BY_BIOME: Readonly<Record<Biome, number>> = {
 // Prevents cave formations from clustering. This is in world tiles.
 export const CAVE_MIN_SEPARATION_TILES = 18;
 
-// Surface formation controls: the sinkhole/ravine is generated directly into the terrain canvas.
-export const CAVE_FORMATION_RADIUS_MIN_TILES = 4.5;
-export const CAVE_FORMATION_RADIUS_MAX_TILES = 7;
+// Surface formation controls: the mouth and exposed rock face are generated directly into the
+// terrain canvas. Larger values make each entrance read as a substantial formation rather than
+// a small hole in the terrain.
+export const CAVE_FORMATION_RADIUS_MIN_TILES = 6.5;
+export const CAVE_FORMATION_RADIUS_MAX_TILES = 9.5;
+
+// The local forward axis points into a cave mouth, while its side axis spans the rock face.
+// The side radius is deliberately broader to produce an angled horizontal entrance, not a
+// circular vertical shaft. These values are multiplied by the entrance's formation radius.
+export const CAVE_MOUTH_FORWARD_RADIUS_MIN_SCALE = 0.36;
+export const CAVE_MOUTH_FORWARD_RADIUS_MAX_SCALE = 0.46;
+export const CAVE_MOUTH_SIDE_RADIUS_MIN_SCALE = 0.72;
+export const CAVE_MOUTH_SIDE_RADIUS_MAX_SCALE = 0.9;
+export const CAVE_MOUTH_FORWARD_OFFSET_MIN_SCALE = 0.17;
+export const CAVE_MOUTH_FORWARD_OFFSET_MAX_SCALE = 0.31;
+export const CAVE_MOUTH_SIDE_OFFSET_MAX_SCALE = 0.14;
+// The dark interior sits slightly behind the outer rock lip. Interaction and rendering share
+// this same value so the prompt ring always sits on the actual black recess.
+export const CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE = 0.34;
+export const CAVE_MOUTH_STALACTITE_COUNT_MIN = 4;
+export const CAVE_MOUTH_STALACTITE_COUNT_MAX = 7;
 
 export const CAVE_INTERIOR_DIMENSIONS = {
   shallow: { width: 70, height: 56, chambers: 10 },

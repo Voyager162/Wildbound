@@ -8,6 +8,14 @@ import {
   CAVE_FORMATION_RADIUS_MIN_TILES,
   CAVE_INTERIOR_DIMENSIONS,
   CAVE_MIN_SEPARATION_TILES,
+  CAVE_MOUTH_FORWARD_OFFSET_MAX_SCALE,
+  CAVE_MOUTH_FORWARD_OFFSET_MIN_SCALE,
+  CAVE_MOUTH_FORWARD_RADIUS_MAX_SCALE,
+  CAVE_MOUTH_FORWARD_RADIUS_MIN_SCALE,
+  CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE,
+  CAVE_MOUTH_SIDE_OFFSET_MAX_SCALE,
+  CAVE_MOUTH_SIDE_RADIUS_MAX_SCALE,
+  CAVE_MOUTH_SIDE_RADIUS_MIN_SCALE,
   CAVE_SPAWN_CHANCE_BY_BIOME,
   CAVE_WORLD_ORIGIN_STRIDE,
 } from './caveGenerationConfig';
@@ -19,6 +27,8 @@ export type CaveOrePlacement = 'floor' | 'wall';
 export interface CaveEntrance {
   readonly id: string; readonly tileX: number; readonly tileY: number; readonly biome: Biome; readonly depth: CaveDepth;
   readonly formationRadiusTiles: number; readonly mouthAngle: number;
+  readonly mouthCenterForwardTiles: number; readonly mouthCenterSideTiles: number;
+  readonly mouthForwardRadiusTiles: number; readonly mouthSideRadiusTiles: number;
 }
 export interface CaveOre { readonly id: string; readonly tileX: number; readonly tileY: number; readonly type: CaveOreType; readonly placement: CaveOrePlacement; }
 export interface CaveLayout {
@@ -36,6 +46,11 @@ const CAVE_ORE_SALT = 71_227;
 const CAVE_WORLD_OFFSET = 4_000_000;
 const CAVE_CHUNK_CACHE_LIMIT = 512;
 const caveChunkCache = new Map<string, readonly CaveEntrance[]>();
+
+export interface CaveMouthCenter {
+  readonly x: number;
+  readonly y: number;
+}
 
 const caveChanceAt = (seed: string, x: number, y: number): number => CAVE_SPAWN_CHANCE_BY_BIOME[biomeAtTile(seed, x, y)];
 const isRawCaveCandidate = (seed: string, x: number, y: number): boolean => randomAtTile(seed, x, y, CAVE_ROLL_SALT) < caveChanceAt(seed, x, y);
@@ -62,10 +77,40 @@ export const caveEntranceAtTile = (seed: string, tileX: number, tileY: number): 
   const surface = surfaceAtTile(seed, tileX, tileY);
   if (surface.isWater || featureAtTile(seed, tileX, tileY)) return null;
   const formation = randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT);
+  const formationRadiusTiles = CAVE_FORMATION_RADIUS_MIN_TILES + formation * (CAVE_FORMATION_RADIUS_MAX_TILES - CAVE_FORMATION_RADIUS_MIN_TILES);
+  const mouthForwardOffsetScale = CAVE_MOUTH_FORWARD_OFFSET_MIN_SCALE
+    + randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT + 2) * (CAVE_MOUTH_FORWARD_OFFSET_MAX_SCALE - CAVE_MOUTH_FORWARD_OFFSET_MIN_SCALE);
+  const mouthForwardRadiusScale = CAVE_MOUTH_FORWARD_RADIUS_MIN_SCALE
+    + randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT + 3) * (CAVE_MOUTH_FORWARD_RADIUS_MAX_SCALE - CAVE_MOUTH_FORWARD_RADIUS_MIN_SCALE);
+  const mouthSideRadiusScale = CAVE_MOUTH_SIDE_RADIUS_MIN_SCALE
+    + randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT + 4) * (CAVE_MOUTH_SIDE_RADIUS_MAX_SCALE - CAVE_MOUTH_SIDE_RADIUS_MIN_SCALE);
   return {
     id: `${tileX}:${tileY}`, tileX, tileY, biome: biomeAtTile(seed, tileX, tileY), depth: depthForEntrance(seed, tileX, tileY),
-    formationRadiusTiles: CAVE_FORMATION_RADIUS_MIN_TILES + formation * (CAVE_FORMATION_RADIUS_MAX_TILES - CAVE_FORMATION_RADIUS_MIN_TILES),
+    formationRadiusTiles,
     mouthAngle: randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT + 1) * Math.PI * 2,
+    mouthCenterForwardTiles: formationRadiusTiles * mouthForwardOffsetScale,
+    mouthCenterSideTiles: formationRadiusTiles * (randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT + 5) - 0.5) * CAVE_MOUTH_SIDE_OFFSET_MAX_SCALE * 2,
+    mouthForwardRadiusTiles: formationRadiusTiles * mouthForwardRadiusScale,
+    mouthSideRadiusTiles: formationRadiusTiles * mouthSideRadiusScale,
+  };
+};
+
+export const caveMouthCenter = (entrance: CaveEntrance): CaveMouthCenter => {
+  const centerX = (entrance.tileX + 0.5) * WORLD_TILE_SIZE;
+  const centerY = (entrance.tileY + 0.5) * WORLD_TILE_SIZE;
+  const forwardX = Math.cos(entrance.mouthAngle);
+  const forwardY = Math.sin(entrance.mouthAngle);
+  const sideX = -forwardY;
+  const sideY = forwardX;
+  return {
+    x: centerX + (
+      forwardX * (entrance.mouthCenterForwardTiles + entrance.mouthForwardRadiusTiles * CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE)
+      + sideX * entrance.mouthCenterSideTiles
+    ) * WORLD_TILE_SIZE,
+    y: centerY + (
+      forwardY * (entrance.mouthCenterForwardTiles + entrance.mouthForwardRadiusTiles * CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE)
+      + sideY * entrance.mouthCenterSideTiles
+    ) * WORLD_TILE_SIZE,
   };
 };
 
