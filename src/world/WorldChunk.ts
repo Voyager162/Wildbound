@@ -657,7 +657,7 @@ export class WorldChunk {
               const centerForward = Math.cos(stratumAngle) * stratumDistance * 1.15;
               const centerSide = Math.sin(stratumAngle) * stratumDistance * 0.76;
               addRockMesh(
-                centerForward,
+                centerForward - radiusPixels * 0.23,
                 centerSide,
                 28 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9691 + stratum) * 36,
                 16 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x96d1 + stratum) * 24,
@@ -680,7 +680,7 @@ export class WorldChunk {
                 : 12 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8db1 + rock) * 16;
               const radiusSide = radiusForward * (0.56 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8ef1 + rock) * 0.46);
               addRockMesh(
-                centerForward,
+                centerForward - radiusPixels * 0.23,
                 centerSide,
                 radiusForward,
                 radiusSide,
@@ -691,33 +691,109 @@ export class WorldChunk {
                 true,
               );
             }
+            // The entrance is carved as a broad, jagged overhang in the face of the cliff.
+            // It deliberately has a separate ceiling and lower lip rather than a radial outline,
+            // so it cannot read as a circular hole or a repeated cave icon.
             const mouthLocalPoints: Array<{ forward: number; side: number }> = [];
-            const mouthPointCount = 27 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x96e1) * 7);
+            const mouthRecessLocalPoints: Array<{ forward: number; side: number }> = [];
+            const mouthRimLocalPoints: Array<{ forward: number; side: number }> = [];
+            const mouthSegmentCount = 12 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x96e1) * 4);
             const mouthCenterForward = entrance.mouthCenterForwardTiles * WORLD_TILE_SIZE;
             const mouthCenterSide = entrance.mouthCenterSideTiles * WORLD_TILE_SIZE;
             const mouthForwardRadius = entrance.mouthForwardRadiusTiles * WORLD_TILE_SIZE;
             const mouthSideRadius = entrance.mouthSideRadiusTiles * WORLD_TILE_SIZE;
-            for (let point = 0; point < mouthPointCount; point += 1) {
-              const angle = point / mouthPointCount * Math.PI * 2;
-              // Average adjacent seed samples so the mouth has a naturally chipped contour
-              // without the oversized spikes that made it look like an assembled icon.
-              const prior = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9721 + (point + mouthPointCount - 1) % mouthPointCount);
-              const current = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9721 + point);
-              const next = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9721 + (point + 1) % mouthPointCount);
-              const irregularity = 0.86 + (prior + current + next) / 3 * 0.2;
-              mouthLocalPoints.push({
-                forward: mouthCenterForward + Math.cos(angle) * mouthForwardRadius * irregularity,
-                side: mouthCenterSide + Math.sin(angle) * mouthSideRadius * irregularity,
+            // A few large, seed-unique crags establish a real overhang and side supports.
+            // They use the same textured, high-vertex rock treatment as the terrain instead of
+            // separate icon sprites or repeated geometric wedges.
+            const roofCragCount = 4 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x96a1) * 3);
+            for (let crag = 0; crag < roofCragCount; crag += 1) {
+              const normalizedSide = -0.82 + (crag / (roofCragCount - 1)) * 1.64;
+              const centerForward = mouthCenterForward - mouthForwardRadius * (
+                0.66 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x96c1 + crag) * 0.2
+              );
+              const centerSide = mouthCenterSide + normalizedSide * mouthSideRadius
+                + (randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x96e1 + crag) - 0.5) * mouthSideRadius * 0.14;
+              const radiusForward = 24 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9701 + crag) * 25;
+              const radiusSide = 28 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9721 + crag) * 35;
+              addRockMesh(
+                centerForward,
+                centerSide,
+                radiusForward,
+                radiusSide,
+                randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9741 + crag) * Math.PI * 2,
+                15 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9761 + crag) * 5),
+                0x9781 + crag * 29,
+                2 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x97a1 + crag) * 14),
+                true,
+              );
+            }
+            const recessCenterForward = mouthCenterForward
+              + mouthForwardRadius * CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE;
+            const edgeFade = (normalizedSide: number): number => 1 - Math.abs(normalizedSide) ** 1.35;
+            const ceilingForwardAt = (normalizedSide: number, salt: number): number => {
+              const jag = randomAtTile(this.seed, entrance.tileX, entrance.tileY, salt);
+              return mouthCenterForward - mouthForwardRadius * (
+                0.21 + (0.36 + jag * 0.48) * edgeFade(normalizedSide)
+              );
+            };
+            const lowerLipForwardAt = (normalizedSide: number, salt: number): number => {
+              const jag = randomAtTile(this.seed, entrance.tileX, entrance.tileY, salt);
+              return mouthCenterForward + mouthForwardRadius * (
+                0.17 + (0.1 + jag * 0.42) * edgeFade(normalizedSide)
+              );
+            };
+            const recessCeilingForwardAt = (normalizedSide: number, salt: number): number => {
+              const jag = (
+                randomAtTile(this.seed, entrance.tileX, entrance.tileY, salt - 1)
+                + randomAtTile(this.seed, entrance.tileX, entrance.tileY, salt)
+                + randomAtTile(this.seed, entrance.tileX, entrance.tileY, salt + 1)
+              ) / 3;
+              return recessCenterForward - mouthForwardRadius * (
+                0.12 + (0.18 + jag * 0.25) * edgeFade(normalizedSide)
+              );
+            };
+            const recessLowerForwardAt = (normalizedSide: number, salt: number): number => {
+              const jag = (
+                randomAtTile(this.seed, entrance.tileX, entrance.tileY, salt - 1)
+                + randomAtTile(this.seed, entrance.tileX, entrance.tileY, salt)
+                + randomAtTile(this.seed, entrance.tileX, entrance.tileY, salt + 1)
+              ) / 3;
+              return recessCenterForward + mouthForwardRadius * (
+                0.11 + (0.15 + jag * 0.22) * edgeFade(normalizedSide)
+              );
+            };
+            for (let segment = 0; segment < mouthSegmentCount; segment += 1) {
+              const normalizedSide = -1 + (segment / (mouthSegmentCount - 1)) * 2;
+              const sideJitter = (randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9721 + segment) - 0.5) * mouthSideRadius * 0.1;
+              const side = mouthCenterSide + normalizedSide * mouthSideRadius + sideJitter;
+              mouthLocalPoints.push({ forward: ceilingForwardAt(normalizedSide, 0x9761 + segment), side });
+              mouthRecessLocalPoints.push({
+                forward: recessCeilingForwardAt(normalizedSide, 0x97a1 + segment),
+                side: mouthCenterSide + normalizedSide * mouthSideRadius * (0.5 + edgeFade(normalizedSide) * 0.1) + sideJitter * 0.45,
+              });
+              mouthRimLocalPoints.push({
+                forward: ceilingForwardAt(normalizedSide, 0x9761 + segment)
+                  - mouthForwardRadius * (0.2 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x97e1 + segment) * 0.1),
+                side: mouthCenterSide + normalizedSide * mouthSideRadius * 1.13 + sideJitter,
+              });
+            }
+            for (let segment = mouthSegmentCount - 1; segment >= 0; segment -= 1) {
+              const normalizedSide = -1 + (segment / (mouthSegmentCount - 1)) * 2;
+              const sideJitter = (randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9721 + segment) - 0.5) * mouthSideRadius * 0.1;
+              const side = mouthCenterSide + normalizedSide * mouthSideRadius + sideJitter;
+              mouthLocalPoints.push({ forward: lowerLipForwardAt(normalizedSide, 0x9821 + segment), side });
+              mouthRecessLocalPoints.push({
+                forward: recessLowerForwardAt(normalizedSide, 0x9861 + segment),
+                side: mouthCenterSide + normalizedSide * mouthSideRadius * (0.5 + edgeFade(normalizedSide) * 0.1) + sideJitter * 0.45,
+              });
+              mouthRimLocalPoints.push({
+                forward: lowerLipForwardAt(normalizedSide, 0x9821 + segment)
+                  + mouthForwardRadius * (0.18 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x98a1 + segment) * 0.08),
+                side: mouthCenterSide + normalizedSide * mouthSideRadius * 1.13 + sideJitter,
               });
             }
             const mouthLipFacets: CaveTerrainFacet[] = [{
-              vertices: mouthLocalPoints.map((point, index) => {
-                const outerScale = 1.2 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9841 + index) * 0.06;
-                return toWorldPoint(
-                  mouthCenterForward + (point.forward - mouthCenterForward) * outerScale,
-                  mouthCenterSide + (point.side - mouthCenterSide) * outerScale,
-                );
-              }),
+              vertices: mouthRimLocalPoints.map((point) => toWorldPoint(point.forward, point.side)),
               red: rockRed + 3,
               green: rockGreen + 3,
               blue: rockBlue + 4,
@@ -733,19 +809,20 @@ export class WorldChunk {
             for (let stalactite = 0; stalactite < stalactiteCount; stalactite += 1) {
               const spacing = (stalactite + 0.5 + (randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9a71 + stalactite) - 0.5) * 0.38)
                 / stalactiteCount - 0.5;
-              const baseForward = mouthCenterForward - mouthForwardRadius * (0.78 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9ab1 + stalactite) * 0.12);
-              const baseSide = mouthCenterSide + spacing * mouthSideRadius * 1.48;
+              const normalizedSide = spacing * 2;
+              const baseForward = ceilingForwardAt(normalizedSide, 0x9ab1 + stalactite)
+                + mouthForwardRadius * (0.04 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9ae1 + stalactite) * 0.08);
+              const baseSide = mouthCenterSide + spacing * mouthSideRadius * 1.5;
               const halfWidth = 4 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9af1 + stalactite) * 6;
-              const tipForward = baseForward + mouthForwardRadius * (0.22 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9b31 + stalactite) * 0.2);
+              const tipForward = baseForward + mouthForwardRadius * (0.13 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9b31 + stalactite) * 0.12);
               const tipSide = baseSide + (randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9b71 + stalactite) - 0.5) * halfWidth * 0.8;
               const tone = -12 + Math.floor(randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9bb1 + stalactite) * 12);
               const left = toWorldPoint(baseForward, baseSide - halfWidth);
               const right = toWorldPoint(baseForward, baseSide + halfWidth);
-              const shoulderLeft = toWorldPoint(baseForward + (tipForward - baseForward) * 0.18, baseSide - halfWidth * 0.64);
-              const shoulderRight = toWorldPoint(baseForward + (tipForward - baseForward) * 0.18, baseSide + halfWidth * 0.64);
-              const tip = toWorldPoint(tipForward, tipSide);
+              const lowerLeft = toWorldPoint(tipForward, tipSide - halfWidth * 0.58);
+              const lowerRight = toWorldPoint(tipForward, tipSide + halfWidth * 0.58);
               mouthStalactiteFacets.push({
-                vertices: [left, right, shoulderRight, tip, shoulderLeft],
+                vertices: [left, right, lowerRight, lowerLeft],
                 red: rockRed + tone,
                 green: rockGreen + tone,
                 blue: rockBlue + tone,
@@ -763,14 +840,7 @@ export class WorldChunk {
               rockGreen,
               rockBlue,
               mouthVertices: mouthLocalPoints.map((point) => toWorldPoint(point.forward, point.side)),
-              mouthRecessVertices: mouthLocalPoints.map((point, index) => {
-                const inset = 0.42 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9a51 + index) * 0.07;
-                return toWorldPoint(
-                  mouthCenterForward + (point.forward - mouthCenterForward) * inset
-                    + mouthForwardRadius * CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE,
-                  mouthCenterSide + (point.side - mouthCenterSide) * inset,
-                );
-              }),
+              mouthRecessVertices: mouthRecessLocalPoints.map((point) => toWorldPoint(point.forward, point.side)),
               mouthLipFacets,
               mouthStalactiteFacets,
               rockFacets,
@@ -790,15 +860,18 @@ export class WorldChunk {
       const deltaY = worldPixelY - cave.centerWorldY;
       const forward = deltaX * cave.forwardX + deltaY * cave.forwardY;
       const side = -deltaX * cave.forwardY + deltaY * cave.forwardX;
-      const outer = Math.sqrt(
-        (forward / (cave.radiusPixels * 1.48)) ** 2
-        + (side / (cave.radiusPixels * 0.92)) ** 2
-      );
-      const outlineNoise = (coherentNoise(this.seed, worldPixelX, worldPixelY, 43, 0x3c719a) - 0.5) * 0.24
-        + (coherentNoise(this.seed, worldPixelX, worldPixelY, 13, 0x8f21d4) - 0.5) * 0.1;
+      const sideRadius = cave.radiusPixels * 1.28;
+      const sideAmount = Math.abs(side) / sideRadius;
+      const ridgeProfile = (coherentNoise(this.seed, worldPixelX, worldPixelY, 74, 0x3c719a) - 0.5) * 0.28
+        + (coherentNoise(this.seed, worldPixelX, worldPixelY, 21, 0x8f21d4) - 0.5) * 0.17
+        + (coherentNoise(this.seed, worldPixelX, worldPixelY, 6, 0x6e24a1) - 0.5) * 0.08;
+      const sideNoise = (coherentNoise(this.seed, worldPixelX, worldPixelY, 31, 0x3b1169) - 0.5) * 0.16;
+      const shoulder = Math.max(0, 1 - sideAmount ** 1.75);
+      const backEdge = -cave.radiusPixels * (0.42 + shoulder * 0.48 + ridgeProfile);
+      const frontEdge = cave.radiusPixels * (0.1 + shoulder * 0.2 + ridgeProfile * 0.34);
       // Leave a small stone-free buffer so animated grass never appears to grow out of the
       // exposed cave face or across the black mouth.
-      return outer < 1.05 + outlineNoise;
+      return sideAmount < 1 + sideNoise && forward > backEdge - cave.radiusPixels * 0.06 && forward < frontEdge + cave.radiusPixels * 0.06;
     });
   }
 
@@ -1028,6 +1101,44 @@ export class WorldChunk {
       const clamped = Math.max(0, Math.min(1, value));
       return clamped * clamped * (3 - 2 * clamped);
     };
+    const caveRockHeightAt = (sampleX: number, sampleY: number): number => (
+      coherentNoise(this.seed, sampleX, sampleY, 76, 0x74b20f) * 0.42
+      + coherentNoise(this.seed, sampleX + 149, sampleY - 91, 27, 0x1a2e7b) * 0.34
+      + coherentNoise(this.seed, sampleX - 67, sampleY + 211, 9, 0x6145df) * 0.18
+      + coherentNoise(this.seed, sampleX + 23, sampleY + 41, 3.5, 0x2f3ca1) * 0.06
+    );
+    const caveRockCellToneAt = (sampleX: number, sampleY: number): number => {
+      const cellSize = 22;
+      const cellX = Math.floor(sampleX / cellSize);
+      const cellY = Math.floor(sampleY / cellSize);
+      let closestDistanceSquared = Number.POSITIVE_INFINITY;
+      let nextDistanceSquared = Number.POSITIVE_INFINITY;
+      let closestCellX = cellX;
+      let closestCellY = cellY;
+      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+          const candidateX = cellX + offsetX;
+          const candidateY = cellY + offsetY;
+          const centerX = (candidateX + 0.16 + randomAtTile(this.seed, candidateX, candidateY, 0x42d1) * 0.68) * cellSize;
+          const centerY = (candidateY + 0.16 + randomAtTile(this.seed, candidateX, candidateY, 0x42f1) * 0.68) * cellSize;
+          const distanceSquared = (sampleX - centerX) ** 2 + (sampleY - centerY) ** 2;
+          if (distanceSquared < closestDistanceSquared) {
+            nextDistanceSquared = closestDistanceSquared;
+            closestDistanceSquared = distanceSquared;
+            closestCellX = candidateX;
+            closestCellY = candidateY;
+          } else if (distanceSquared < nextDistanceSquared) {
+            nextDistanceSquared = distanceSquared;
+          }
+        }
+      }
+      const closestDistance = Math.sqrt(closestDistanceSquared);
+      const edgeDistance = Math.sqrt(nextDistanceSquared) - closestDistance;
+      const faceTone = (randomAtTile(this.seed, closestCellX, closestCellY, 0x4311) - 0.5) * 11;
+      const faceCenterLift = Math.max(-3, Math.min(4, (0.56 - closestDistance / cellSize) * 12));
+      const seamShadow = Math.max(0, Math.min(4, (1.35 - edgeDistance) * 3));
+      return faceTone + faceCenterLift - seamShadow;
+    };
     let pixel = 0;
 
     for (let cellY = 0; cellY < cellsPerChunk; cellY += 1) {
@@ -1207,24 +1318,29 @@ export class WorldChunk {
               const deltaY = worldPixelY - cave.centerWorldY;
               const forward = deltaX * cave.forwardX + deltaY * cave.forwardY;
               const side = -deltaX * cave.forwardY + deltaY * cave.forwardX;
-              const outer = Math.sqrt(
-                (forward / (cave.radiusPixels * 1.48)) ** 2
-                + (side / (cave.radiusPixels * 0.92)) ** 2
-              );
-              const outlineNoise = (coherentNoise(this.seed, worldPixelX, worldPixelY, 43, 0x3c719a) - 0.5) * 0.24
-                + (coherentNoise(this.seed, worldPixelX, worldPixelY, 13, 0x8f21d4) - 0.5) * 0.1;
-              if (outer >= 0.94 + outlineNoise) {
+              const sideRadius = cave.radiusPixels * 1.28;
+              const sideAmount = Math.abs(side) / sideRadius;
+              const ridgeProfile = (coherentNoise(this.seed, worldPixelX, worldPixelY, 74, 0x3c719a) - 0.5) * 0.28
+                + (coherentNoise(this.seed, worldPixelX, worldPixelY, 21, 0x8f21d4) - 0.5) * 0.17
+                + (coherentNoise(this.seed, worldPixelX, worldPixelY, 6, 0x6e24a1) - 0.5) * 0.08;
+              const sideNoise = (coherentNoise(this.seed, worldPixelX, worldPixelY, 31, 0x3b1169) - 0.5) * 0.16;
+              const shoulder = Math.max(0, 1 - sideAmount ** 1.75);
+              const backEdge = -cave.radiusPixels * (0.42 + shoulder * 0.48 + ridgeProfile);
+              const frontEdge = cave.radiusPixels * (0.1 + shoulder * 0.2 + ridgeProfile * 0.34);
+              if (sideAmount >= 1 + sideNoise || forward <= backEdge || forward >= frontEdge) {
                 return;
               }
-              // Broad, continuous mineral variation gives the exposed face volume without
-              // drawing the former dashed fracture marks or a tiled surface pattern.
-              const bedrock = coherentNoise(this.seed, worldPixelX, worldPixelY, 29, 0x74b20f) - 0.5;
-              const grain = coherentNoise(this.seed, worldPixelX + 147, worldPixelY - 89, 7, 0x1a2e7b) - 0.5;
-              const weathering = coherentNoise(this.seed, worldPixelX - 61, worldPixelY + 193, 61, 0x6145df) - 0.5;
-              const bedrockTone = bedrock * 30 + grain * 9 + weathering * 14;
-              red = cave.rockRed + bedrockTone;
+              // Build a real height field for the exposed face. Its sampled gradient produces
+              // crisp light and shadow across ridges, mounds, and small breaks in the stone;
+              // it is still generated once into the chunk texture, never per animation frame.
+              const rockHeight = caveRockHeightAt(worldPixelX, worldPixelY);
+              const slopeX = caveRockHeightAt(worldPixelX + 3, worldPixelY) - caveRockHeightAt(worldPixelX - 3, worldPixelY);
+              const slopeY = caveRockHeightAt(worldPixelX, worldPixelY + 3) - caveRockHeightAt(worldPixelX, worldPixelY - 3);
+              const bedrockTone = (rockHeight - 0.5) * 34 - slopeX * 28 - slopeY * 19
+                + caveRockCellToneAt(worldPixelX, worldPixelY);
+              red = cave.rockRed + bedrockTone * 1.08;
               green = cave.rockGreen + bedrockTone;
-              blue = cave.rockBlue + bedrockTone;
+              blue = cave.rockBlue + bedrockTone * 0.9;
             });
 
             pixels[pixel] = clampChannel(red);
@@ -1300,13 +1416,21 @@ export class WorldChunk {
       cave.mouthLipFacets.forEach(paintFacet);
       paintFacet({
         vertices: cave.mouthVertices,
-        red: 43,
-        green: 48,
-        blue: 50,
+        red: cave.rockRed - 12,
+        green: cave.rockGreen - 12,
+        blue: cave.rockBlue - 10,
+        opacity: 0.68,
         textureSalt: 0xa211,
-        textureStrength: 8,
+        textureStrength: 14,
       });
-      paintFacet({ vertices: cave.mouthRecessVertices, red: 6, green: 8, blue: 10 });
+      paintFacet({
+        vertices: cave.mouthRecessVertices,
+        red: 13,
+        green: 16,
+        blue: 18,
+        textureSalt: 0xa291,
+        textureStrength: 5,
+      });
       cave.mouthStalactiteFacets.forEach(paintFacet);
     });
   }

@@ -33,9 +33,9 @@ export const CAVE_MOUTH_SIDE_RADIUS_MAX_SCALE = 0.9;
 export const CAVE_MOUTH_FORWARD_OFFSET_MIN_SCALE = 0.17;
 export const CAVE_MOUTH_FORWARD_OFFSET_MAX_SCALE = 0.31;
 export const CAVE_MOUTH_SIDE_OFFSET_MAX_SCALE = 0.14;
-// The dark interior sits slightly behind the outer rock lip. Interaction and rendering share
-// this same value so the prompt ring always sits on the actual black recess.
-export const CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE = 0.34;
+// The dark interior sits behind the broken outer lip. Interaction and rendering share this
+// offset so the prompt ring always sits on the actual jagged recess, not the wider rock rim.
+export const CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE = -0.12;
 export const CAVE_MOUTH_STALACTITE_COUNT_MIN = 4;
 export const CAVE_MOUTH_STALACTITE_COUNT_MAX = 7;
 

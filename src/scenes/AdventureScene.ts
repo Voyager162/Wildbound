@@ -1177,7 +1177,7 @@ export class AdventureScene extends Phaser.Scene {
 
     const mouth = caveMouthCenter(nearest);
     this.interactionHighlight
-      .setRadius(Math.max(42, nearest.mouthForwardRadiusTiles * WORLD_TILE_SIZE * 0.72))
+      .setRadius(Math.max(16, nearest.mouthForwardRadiusTiles * WORLD_TILE_SIZE * 0.15))
       .setPosition(mouth.x, mouth.y)
       .setVisible(true);
     this.drawCaveHint(

@@ -87,7 +87,9 @@ export const caveEntranceAtTile = (seed: string, tileX: number, tileY: number): 
   return {
     id: `${tileX}:${tileY}`, tileX, tileY, biome: biomeAtTile(seed, tileX, tileY), depth: depthForEntrance(seed, tileX, tileY),
     formationRadiusTiles,
-    mouthAngle: randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT + 1) * Math.PI * 2,
+    // Surface entrances read best as a broad, face-on rock mouth from the top-down camera.
+    // A seed-derived sway keeps each one unique without turning the opening into a diagonal slit.
+    mouthAngle: Math.PI / 2 + (randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT + 1) - 0.5) * 0.7,
     mouthCenterForwardTiles: formationRadiusTiles * mouthForwardOffsetScale,
     mouthCenterSideTiles: formationRadiusTiles * (randomAtTile(seed, tileX, tileY, CAVE_FORMATION_SALT + 5) - 0.5) * CAVE_MOUTH_SIDE_OFFSET_MAX_SCALE * 2,
     mouthForwardRadiusTiles: formationRadiusTiles * mouthForwardRadiusScale,
