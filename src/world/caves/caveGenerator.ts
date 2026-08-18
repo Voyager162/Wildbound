@@ -3,7 +3,8 @@ import { featureAtTile } from '../generation/featureGenerator';
 import { randomAtTile } from '../generation/noise';
 import { surfaceAtTile } from '../generation/terrainGenerator';
 import {
-  CAVE_ORE_PLACEMENT_CHANCE,
+  CAVE_ORE_FLOOR_PLACEMENT_CHANCE,
+  CAVE_ORE_MIN_SEPARATION_TILES,
   CAVE_ORE_SPAWN_RULES,
   CAVE_ORE_VEIN_STYLES,
   type CaveOreType,
@@ -28,7 +29,7 @@ import {
 } from './caveGenerationConfig';
 
 export type CaveDepth = 'shallow' | 'medium' | 'deep';
-export type CaveOrePlacement = 'floor' | 'wall';
+export type CaveOrePlacement = 'floor';
 export type { CaveOreType, CaveOreVeinStyle } from './caveOreGenerationConfig';
 
 export interface CaveEntrance {
@@ -44,10 +45,6 @@ export interface CaveOre {
   readonly type: CaveOreType;
   readonly placement: CaveOrePlacement;
   readonly veinStyle: CaveOreVeinStyle;
-  // For a wall deposit, this points from the rock tile toward its adjacent floor tile. The
-  // renderer uses it to keep the mineral tucked into the wall face rather than spilling out.
-  readonly wallFloorDirectionX: number;
-  readonly wallFloorDirectionY: number;
 }
 export interface CaveLayout {
   readonly entrance: CaveEntrance; readonly width: number; readonly height: number; readonly entranceTileX: number; readonly entranceTileY: number;
@@ -232,32 +229,22 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
   const depthByTile = buildDepthMap(floorTiles, entranceTileX, entranceTileY);
   const ores: CaveOre[] = [];
   for (let y = 1; y < height - 1; y += 1) for (let x = 1; x < width - 1; x += 1) {
+    if (!floorTiles[y][x]) continue;
     const adjacentFloorDirections = CARDINAL_DIRECTIONS.filter(([dx, dy]) => floorTiles[y + dy][x + dx]);
-    const placement: CaveOrePlacement = floorTiles[y][x] ? 'floor' : 'wall';
-    // Floor deposits need one clear tile on every side. This prevents a wide seam from ever
-    // crossing a rendered wall. Wall deposits instead use the adjoining floor's depth.
-    if ((placement === 'floor' && adjacentFloorDirections.length !== CARDINAL_DIRECTIONS.length) || (placement === 'wall' && adjacentFloorDirections.length === 0)) continue;
-    const depth = placement === 'floor'
-      ? depthByTile[y][x]
-      : Math.max(...adjacentFloorDirections.map(([dx, dy]) => depthByTile[y + dy][x + dx]));
+    // A clear tile on every side keeps the deposit fully within terrain rather than against a wall.
+    if (adjacentFloorDirections.length !== CARDINAL_DIRECTIONS.length) continue;
+    const depth = depthByTile[y][x];
     if (depth < 0.05 || x === entranceTileX && y >= entranceTileY - 3) continue;
     const ore = oreForDepth(seed, entrance, x, y, depth);
-    if (ore && randomAtTile(seed, x + entrance.tileX * 41, y + entrance.tileY * 41, CAVE_ORE_SALT + 3) < CAVE_ORE_PLACEMENT_CHANCE[placement]) {
-      const wallDirection = placement === 'wall'
-        ? adjacentFloorDirections[Math.min(
-          adjacentFloorDirections.length - 1,
-          Math.floor(randomAtTile(seed, entrance.tileX * 43 + x, entrance.tileY * 43 + y, CAVE_ORE_STYLE_SALT + 2) * adjacentFloorDirections.length)
-        )]
-        : [0, 0] as const;
+    const hasClearanceFromOtherOre = ores.every((existing) => Math.hypot(existing.tileX - x, existing.tileY - y) >= CAVE_ORE_MIN_SEPARATION_TILES);
+    if (ore && hasClearanceFromOtherOre && randomAtTile(seed, x + entrance.tileX * 41, y + entrance.tileY * 41, CAVE_ORE_SALT + 3) < CAVE_ORE_FLOOR_PLACEMENT_CHANCE) {
       ores.push({
         id: `${entrance.id}:${x}:${y}`,
         tileX: x,
         tileY: y,
         type: ore,
-        placement,
-        veinStyle: oreVeinStyleFor(seed, entrance, x, y, ore),
-        wallFloorDirectionX: wallDirection[0],
-        wallFloorDirectionY: wallDirection[1]
+        placement: 'floor',
+        veinStyle: oreVeinStyleFor(seed, entrance, x, y, ore)
       });
     }
   }

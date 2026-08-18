@@ -18,12 +18,13 @@ export const CAVE_ORE_SPAWN_RULES: Readonly<Record<CaveOreType, CaveOreSpawnRule
   diamond: { minimumNormalizedDepth: 0.79, chance: 0.018, requiresDeepCave: true },
 };
 
-// Wall deposits are more exposed than floor deposits. Tune these separately if a cave should
-// show more mineral in its rock faces or underfoot.
-export const CAVE_ORE_PLACEMENT_CHANCE = {
-  floor: 0.42,
-  wall: 0.7,
-} as const;
+// Ores are intentionally limited to clear cave floor so mineral formations never paint over a
+// wall face. Raise this to make deposits more common after the type-specific roll succeeds.
+export const CAVE_ORE_FLOOR_PLACEMENT_CHANCE = 0.42;
+
+// Keeps separately generated formations from crossing into one another. This is measured from
+// their logical floor-tile anchors, preserving deterministic layouts without visual overlap.
+export const CAVE_ORE_MIN_SEPARATION_TILES = 3;
 
 export type CaveOreVeinStyle = 'thread' | 'seam' | 'pocket' | 'fan' | 'ribbon' | 'cluster';
 
