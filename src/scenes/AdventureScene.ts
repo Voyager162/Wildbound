@@ -82,6 +82,16 @@ interface ActiveCave {
   readonly returnWorldY: number;
 }
 
+interface CaveRenderPoint {
+  readonly x: number;
+  readonly y: number;
+}
+
+interface CaveBoundaryEdge {
+  readonly from: CaveRenderPoint;
+  readonly to: CaveRenderPoint;
+}
+
 export class AdventureScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Rectangle;
   private playerAvatar!: Phaser.GameObjects.Graphics;
@@ -1106,20 +1116,7 @@ export class AdventureScene extends Phaser.Scene {
   }
   private updateMinimap(time: number, force = false): void {
     if (this.activeCave) {
-      const localTileX = (this.player.x - this.activeCave.origin.x) / WORLD_TILE_SIZE;
-      const localTileY = (this.player.y - this.activeCave.origin.y) / WORLD_TILE_SIZE;
-      const tileX = Math.floor(localTileX);
-      const tileY = Math.floor(localTileY);
-      if (!force && (
-        time - this.lastMinimapUpdateMs < MINIMAP_UPDATE_INTERVAL_MS
-        || (tileX === this.lastMinimapTileX && tileY === this.lastMinimapTileY)
-      )) {
-        return;
-      }
-      this.lastMinimapUpdateMs = time;
-      this.lastMinimapTileX = tileX;
-      this.lastMinimapTileY = tileY;
-      this.minimapOverlay.drawCave(this.activeCave.layout, localTileX, localTileY);
+      this.minimapOverlay.setVisible(false);
       return;
     }
     const tileX = Math.floor(this.player.x / WORLD_TILE_SIZE);
@@ -1218,11 +1215,12 @@ export class AdventureScene extends Phaser.Scene {
     this.activeCave = { entrance, layout, origin, returnWorldX, returnWorldY };
     const spawn = caveWorldTilePosition(origin, layout.entranceTileX, layout.entranceTileY);
     this.player.setPosition(spawn.x, spawn.y);
+    this.cameras.main.centerOn(this.player.x, this.player.y);
     this.isSwimming = false;
     this.terrainSurface = 'cave floor';
+    this.minimapOverlay.setVisible(false);
     this.drawActiveCave();
     this.updateCaveInteraction(true);
-    this.updateMinimap(0, true);
     this.updatePlayerAvatar(0, false);
     if (markDirty) {
       this.markSaveDirty();
@@ -1243,6 +1241,7 @@ export class AdventureScene extends Phaser.Scene {
     this.caveHintPanel.clear().setVisible(false);
     this.caveHint.setVisible(false);
     this.player.setPosition(cave.returnWorldX, cave.returnWorldY);
+    this.cameras.main.centerOn(this.player.x, this.player.y);
     this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
     this.terrainSurface = this.currentTopography.surface;
     this.updateSwimmingState(true);
@@ -1250,6 +1249,10 @@ export class AdventureScene extends Phaser.Scene {
     this.updateInteractionTarget(true);
     this.updateCaveEntranceInteraction(true);
     this.updateDropInteraction(0, true);
+    this.minimapOverlay.setVisible(true);
+    this.lastMinimapUpdateMs = Number.NEGATIVE_INFINITY;
+    this.lastMinimapTileX = Number.NaN;
+    this.lastMinimapTileY = Number.NaN;
     this.updateMinimap(0, true);
     this.updatePlayerAvatar(0, false);
     this.markSaveDirty();
@@ -1269,83 +1272,301 @@ export class AdventureScene extends Phaser.Scene {
     graphics.fillStyle(0x07090b, 1);
     graphics.fillRect(outerX, outerY, (layout.width + 2) * WORLD_TILE_SIZE, (layout.height + 2) * WORLD_TILE_SIZE);
 
-    // All floor cells use one underlying material, so adjacent passages read as one continuous
-    // rock surface. Detail is layered over it rather than encoded as a visible square grid.
+    // Collision still comes from the compact logical grid, but its exposed edges are traced
+    // into curved contours. The nested strokes make a wide, shaded wall face before the
+    // continuous floor is painted in, eliminating tile-shaped visible wall blocks.
+    const contours = this.createCaveContours(layout, origin);
+    contours.forEach((contour) => {
+      graphics.lineStyle(82, 0x101516, 1);
+      graphics.strokePoints(contour as CaveRenderPoint[], true);
+      graphics.lineStyle(62, 0x1e2927, 1);
+      graphics.strokePoints(contour as CaveRenderPoint[], true);
+      graphics.lineStyle(42, 0x303e39, 0.98);
+      graphics.strokePoints(contour as CaveRenderPoint[], true);
+      graphics.lineStyle(21, 0x526159, 0.86);
+      graphics.strokePoints(contour as CaveRenderPoint[], true);
+    });
+    contours.forEach((contour, index) => {
+      if (this.caveContourArea(contour) > 0) {
+        this.fillCavePolygon(contour, 0x353c39, 1);
+      }
+      this.drawCaveWallStrata(contour, index);
+    });
+
     for (let y = 0; y < layout.height; y += 1) {
       for (let x = 0; x < layout.width; x += 1) {
-        const worldX = origin.x + x * WORLD_TILE_SIZE;
-        const worldY = origin.y + y * WORLD_TILE_SIZE;
-        if (layout.floorTiles[y][x]) {
-          graphics.fillStyle(0x343a37, 1);
-          graphics.fillRect(worldX, worldY, WORLD_TILE_SIZE, WORLD_TILE_SIZE);
+        if (!layout.floorTiles[y][x]) {
+          continue;
         }
-      }
-    }
-
-    for (let y = 1; y < layout.height - 1; y += 1) {
-      for (let x = 1; x < layout.width - 1; x += 1) {
-        if (!layout.floorTiles[y][x]) continue;
         const worldX = origin.x + x * WORLD_TILE_SIZE;
         const worldY = origin.y + y * WORLD_TILE_SIZE;
         const detail = randomAtTile(this.worldSeed, cave.entrance.tileX * 211 + x, cave.entrance.tileY * 211 + y, 0x6c7e);
-        if (detail > 0.57) {
-          graphics.fillStyle(detail > 0.85 ? 0x788077 : 0x596059, detail > 0.85 ? 0.15 : 0.1);
-          graphics.fillEllipse(worldX + 4 + detail * 21, worldY + 5 + (1 - detail) * 19, 8 + detail * 17, 2 + detail * 4);
+        if ((x + y) % 2 === 0 && detail > 0.46) {
+          this.drawCaveRockPatch(
+            worldX + 6 + this.caveVisualRandom(x, y, 0x6c81) * 20,
+            worldY + 6 + this.caveVisualRandom(x, y, 0x6c82) * 20,
+            7 + detail * 9,
+            3 + detail * 5,
+            x,
+            y,
+            0x6c83,
+            detail > 0.8 ? 0x68716a : 0x4a524e,
+            detail > 0.8 ? 0.2 : 0.16
+          );
         }
-        if (detail > 0.93) {
-          graphics.lineStyle(1.2, 0x141918, 0.38);
-          graphics.lineBetween(worldX + 5, worldY + 9, worldX + 19, worldY + 13);
-          graphics.lineBetween(worldX + 19, worldY + 13, worldX + 25, worldY + 23);
-        }
-        [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach(([offsetX, offsetY]) => {
-          if (layout.floorTiles[y + offsetY][x + offsetX]) return;
-          // Broken facets and rubble soften the logical collision grid into a continuous rock wall.
-          const edgeX = worldX + 16 + offsetX * 15;
-          const edgeY = worldY + 16 + offsetY * 15;
-          const sideX = -offsetY * 11;
-          const sideY = offsetX * 11;
-          graphics.fillStyle(0x1a2020, 0.94);
-          graphics.fillTriangle(edgeX + sideX, edgeY + sideY, edgeX - sideX, edgeY - sideY, edgeX + offsetX * 16, edgeY + offsetY * 16);
-          const rubble = 4 + detail * 5;
-          graphics.fillStyle(0x5c635d, 0.84);
-          graphics.fillEllipse(edgeX, edgeY, rubble * 1.9, rubble * 1.25);
-          graphics.fillStyle(0x899087, 0.18);
-          graphics.fillEllipse(edgeX - sideX * 0.3, edgeY - sideY * 0.3, rubble, rubble * 0.45);
-        });
       }
     }
 
-    // A lighter rim at the entrance gives the exit a clear, natural direction in the darkness.
+    // The exit is a worn opening in the floor, not a separate marker sprite.
     const exit = caveWorldTilePosition(origin, layout.entranceTileX, layout.entranceTileY);
-    graphics.fillStyle(0x7a6545, 0.72);
-    graphics.fillEllipse(exit.x, exit.y + 4, 25, 17);
-    graphics.fillStyle(0x101214, 0.96);
-    graphics.fillEllipse(exit.x, exit.y + 2, 17, 11);
-    graphics.lineStyle(2, 0xbda16b, 0.65);
-    graphics.strokeEllipse(exit.x, exit.y + 4, 25, 17);
+    this.drawCaveRockPatch(exit.x, exit.y + 3, 18, 12, layout.entranceTileX, layout.entranceTileY, 0x6d01, 0x746647, 0.7);
+    this.fillCavePolygon(this.createCaveVeinPoints(exit.x, exit.y + 3, 0.08, 23, 7, layout.entranceTileX, layout.entranceTileY, 0x6d02), 0x111416, 0.96);
 
     layout.ores.forEach((ore) => {
-      if (!this.sessionWorldState.isCaveOreHarvested(ore.id)) {
+      if (this.sessionWorldState.isCaveOreHarvested(ore.id)) {
+        this.drawMinedCaveOreGouge(ore, origin);
+      } else {
         this.drawCaveOre(ore, origin);
       }
     });
   }
 
+  private caveVisualRandom(tileX: number, tileY: number, salt: number): number {
+    const cave = this.activeCave;
+    if (!cave) {
+      return 0.5;
+    }
+    return randomAtTile(
+      this.worldSeed,
+      cave.entrance.tileX * 997 + tileX * 37,
+      cave.entrance.tileY * 991 + tileY * 41,
+      salt
+    );
+  }
+
+  private fillCavePolygon(points: readonly CaveRenderPoint[], color: number, alpha = 1): void {
+    if (points.length < 3) {
+      return;
+    }
+    this.caveGraphics.fillStyle(color, alpha);
+    this.caveGraphics.fillPoints(points as CaveRenderPoint[], true);
+  }
+
+  private drawCaveRockPatch(
+    centerX: number,
+    centerY: number,
+    radiusX: number,
+    radiusY: number,
+    tileX: number,
+    tileY: number,
+    salt: number,
+    color: number,
+    alpha: number
+  ): void {
+    const points: CaveRenderPoint[] = [];
+    const count = 7;
+    const phase = this.caveVisualRandom(tileX, tileY, salt) * Math.PI * 2;
+    for (let index = 0; index < count; index += 1) {
+      const angle = phase + index / count * Math.PI * 2;
+      const variation = 0.72 + this.caveVisualRandom(tileX + index, tileY - index, salt + index + 1) * 0.42;
+      points.push({
+        x: centerX + Math.cos(angle) * radiusX * variation,
+        y: centerY + Math.sin(angle) * radiusY * variation
+      });
+    }
+    this.fillCavePolygon(points, color, alpha);
+  }
+
+  private createCaveContours(layout: CaveLayout, origin: CaveWorldOrigin): CaveRenderPoint[][] {
+    const edges: CaveBoundaryEdge[] = [];
+    const edgesByStart = new Map<string, CaveBoundaryEdge[]>();
+    const addEdge = (fromX: number, fromY: number, toX: number, toY: number): void => {
+      const edge: CaveBoundaryEdge = {
+        from: { x: origin.x + fromX * WORLD_TILE_SIZE, y: origin.y + fromY * WORLD_TILE_SIZE },
+        to: { x: origin.x + toX * WORLD_TILE_SIZE, y: origin.y + toY * WORLD_TILE_SIZE }
+      };
+      edges.push(edge);
+      const key = `${edge.from.x}:${edge.from.y}`;
+      const linked = edgesByStart.get(key) ?? [];
+      linked.push(edge);
+      edgesByStart.set(key, linked);
+    };
+
+    for (let y = 0; y < layout.height; y += 1) {
+      for (let x = 0; x < layout.width; x += 1) {
+        if (!layout.floorTiles[y][x]) {
+          continue;
+        }
+        if (y === 0 || !layout.floorTiles[y - 1][x]) addEdge(x, y, x + 1, y);
+        if (x === layout.width - 1 || !layout.floorTiles[y][x + 1]) addEdge(x + 1, y, x + 1, y + 1);
+        if (y === layout.height - 1 || !layout.floorTiles[y + 1][x]) addEdge(x + 1, y + 1, x, y + 1);
+        if (x === 0 || !layout.floorTiles[y][x - 1]) addEdge(x, y + 1, x, y);
+      }
+    }
+
+    const used = new Set<CaveBoundaryEdge>();
+    const contours: CaveRenderPoint[][] = [];
+    for (const initialEdge of edges) {
+      if (used.has(initialEdge)) {
+        continue;
+      }
+      const points: CaveRenderPoint[] = [];
+      const startKey = `${initialEdge.from.x}:${initialEdge.from.y}`;
+      let edge: CaveBoundaryEdge | undefined = initialEdge;
+      let closed = false;
+      while (edge && !used.has(edge)) {
+        used.add(edge);
+        points.push(edge.from);
+        const endKey: string = `${edge.to.x}:${edge.to.y}`;
+        if (endKey === startKey) {
+          closed = true;
+          break;
+        }
+        edge = (edgesByStart.get(endKey) ?? []).find((candidate) => !used.has(candidate));
+      }
+      if (closed && points.length >= 3) {
+        contours.push(this.smoothCaveContour(points, contours.length));
+      }
+    }
+    return contours;
+  }
+
+  private smoothCaveContour(points: readonly CaveRenderPoint[], contourIndex: number): CaveRenderPoint[] {
+    let smoothed = [...points];
+    for (let pass = 0; pass < 2; pass += 1) {
+      const next: CaveRenderPoint[] = [];
+      for (let index = 0; index < smoothed.length; index += 1) {
+        const current = smoothed[index];
+        const following = smoothed[(index + 1) % smoothed.length];
+        next.push({ x: current.x * 0.75 + following.x * 0.25, y: current.y * 0.75 + following.y * 0.25 });
+        next.push({ x: current.x * 0.25 + following.x * 0.75, y: current.y * 0.25 + following.y * 0.75 });
+      }
+      smoothed = next;
+    }
+    return smoothed.map((point, index) => {
+      const prior = smoothed[(index + smoothed.length - 1) % smoothed.length];
+      const following = smoothed[(index + 1) % smoothed.length];
+      const distance = Math.hypot(following.x - prior.x, following.y - prior.y) || 1;
+      const outwardX = (following.y - prior.y) / distance;
+      const outwardY = -(following.x - prior.x) / distance;
+      const jag = (this.caveVisualRandom(contourIndex * 193 + index, contourIndex * 31 + index, 0x7201 + index) - 0.5) * 5.4;
+      return { x: point.x + outwardX * jag, y: point.y + outwardY * jag };
+    });
+  }
+
+  private caveContourArea(points: readonly CaveRenderPoint[]): number {
+    if (points.length < 3) {
+      return 0;
+    }
+    const anchor = points[0];
+    return points.reduce((area, point, index) => {
+      const following = points[(index + 1) % points.length];
+      return area
+        + (point.x - anchor.x) * (following.y - anchor.y)
+        - (following.x - anchor.x) * (point.y - anchor.y);
+    }, 0) / 2;
+  }
+
+  private drawCaveWallStrata(contour: readonly CaveRenderPoint[], contourIndex: number): void {
+    const area = this.caveContourArea(contour);
+    const step = 34;
+    for (let index = contourIndex * 11; index < contour.length; index += step) {
+      const point = contour[index];
+      const following = contour[(index + 5) % contour.length];
+      const deltaX = following.x - point.x;
+      const deltaY = following.y - point.y;
+      const distance = Math.hypot(deltaX, deltaY);
+      if (distance < 8) {
+        continue;
+      }
+      const outwardSign = area > 0 ? 1 : -1;
+      const outwardX = deltaY / distance * outwardSign;
+      const outwardY = -deltaX / distance * outwardSign;
+      const length = 20 + this.caveVisualRandom(contourIndex, index, 0x7221) * 22;
+      const width = 2.8 + this.caveVisualRandom(contourIndex, index, 0x7222) * 3.6;
+      const centerX = point.x + outwardX * (19 + this.caveVisualRandom(contourIndex, index, 0x7223) * 10);
+      const centerY = point.y + outwardY * (19 + this.caveVisualRandom(contourIndex, index, 0x7223) * 10);
+      const angle = Math.atan2(deltaY, deltaX);
+      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length + 8, width + 2.5, contourIndex, index, 0x7224), 0x121917, 0.54);
+      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length, width, contourIndex, index, 0x7234), 0x5b6a60, 0.42);
+    }
+  }
+
+  private createCaveVeinPoints(
+    centerX: number,
+    centerY: number,
+    angle: number,
+    length: number,
+    width: number,
+    tileX: number,
+    tileY: number,
+    salt: number
+  ): CaveRenderPoint[] {
+    const forwardX = Math.cos(angle);
+    const forwardY = Math.sin(angle);
+    const sideX = -forwardY;
+    const sideY = forwardX;
+    const left: CaveRenderPoint[] = [];
+    const right: CaveRenderPoint[] = [];
+    const samples = 6;
+    for (let index = 0; index < samples; index += 1) {
+      const progress = index / (samples - 1);
+      const along = (progress - 0.5) * length;
+      const drift = (this.caveVisualRandom(tileX + index, tileY, salt + index) - 0.5) * width * 1.15;
+      const halfWidth = width * (0.58 + this.caveVisualRandom(tileX, tileY + index, salt + 13 + index) * 0.48);
+      const endTaper = 0.45 + Math.sin(progress * Math.PI) * 0.55;
+      left.push({
+        x: centerX + forwardX * along + sideX * (drift + halfWidth * endTaper),
+        y: centerY + forwardY * along + sideY * (drift + halfWidth * endTaper)
+      });
+      right.push({
+        x: centerX + forwardX * along + sideX * (drift - halfWidth * endTaper),
+        y: centerY + forwardY * along + sideY * (drift - halfWidth * endTaper)
+      });
+    }
+    return [...left, ...right.reverse()];
+  }
+
   private drawCaveOre(ore: CaveOre, origin: CaveWorldOrigin): void {
-    const graphics = this.caveGraphics;
     const position = caveWorldTilePosition(origin, ore.tileX, ore.tileY);
     const color = RESOURCE_COLORS[ore.type === 'coal' ? ResourceType.Coal
       : ore.type === 'iron' ? ResourceType.Iron
         : ore.type === 'gold' ? ResourceType.Gold : ResourceType.Diamond];
-    // Mineral is embedded as a vein in surrounding floor or wall rock, never a loose pickup icon.
-    graphics.fillStyle(ore.placement === 'wall' ? 0x4c5552 : 0x59605a, 0.92);
-    graphics.fillEllipse(position.x, position.y + 3, ore.placement === 'wall' ? 23 : 18, ore.placement === 'wall' ? 15 : 10);
-    [-6, -1, 5, 8].forEach((offset, index) => {
-      graphics.fillStyle(color, 0.72 + index * 0.06);
-      graphics.fillEllipse(position.x + offset, position.y + (index % 2 ? 3 : -2), 5 + index % 2 * 2, 4 + index % 2 * 2);
-    });
-    graphics.lineStyle(1.2, 0xffffff, ore.type === 'diamond' ? 0.48 : 0.2);
-    graphics.lineBetween(position.x - 7, position.y - 3, position.x + 6, position.y + 4);
+    const salt = ore.placement === 'wall' ? 0x7301 : 0x7311;
+    const angle = this.caveVisualRandom(ore.tileX, ore.tileY, salt) * Math.PI;
+    const length = ore.placement === 'wall' ? 50 : 42;
+    const width = ore.placement === 'wall' ? 10.5 : 8.4;
+    // A mineral seam is carved into the parent rock first, then filled with several winding
+    // deposits. It is part of the cave material rather than a separate collectible drawing.
+    this.fillCavePolygon(this.createCaveVeinPoints(position.x, position.y, angle, length + 7, width + 4, ore.tileX, ore.tileY, salt + 1), 0x1b2221, 0.9);
+    this.fillCavePolygon(this.createCaveVeinPoints(position.x, position.y, angle, length, width, ore.tileX, ore.tileY, salt + 19), color, 0.88);
+    const branchAngle = angle + (this.caveVisualRandom(ore.tileX, ore.tileY, salt + 31) - 0.5) * 1.1;
+    const branchOffset = length * (this.caveVisualRandom(ore.tileX, ore.tileY, salt + 32) - 0.5) * 0.34;
+    this.fillCavePolygon(
+      this.createCaveVeinPoints(
+        position.x + Math.cos(angle) * branchOffset,
+        position.y + Math.sin(angle) * branchOffset,
+        branchAngle,
+        length * 0.7,
+        width * 0.58,
+        ore.tileX,
+        ore.tileY,
+        salt + 37
+      ),
+      color,
+      0.66
+    );
+  }
+
+  private drawMinedCaveOreGouge(ore: CaveOre, origin: CaveWorldOrigin): void {
+    const position = caveWorldTilePosition(origin, ore.tileX, ore.tileY);
+    const salt = ore.placement === 'wall' ? 0x7301 : 0x7311;
+    const angle = this.caveVisualRandom(ore.tileX, ore.tileY, salt) * Math.PI;
+    const length = ore.placement === 'wall' ? 50 : 42;
+    const width = ore.placement === 'wall' ? 10.5 : 8.4;
+    this.fillCavePolygon(this.createCaveVeinPoints(position.x, position.y, angle, length + 8, width + 4.5, ore.tileX, ore.tileY, salt + 1), 0x4a534e, 0.62);
+    this.fillCavePolygon(this.createCaveVeinPoints(position.x, position.y, angle, length + 2, width + 1.5, ore.tileX, ore.tileY, salt + 17), 0x111718, 0.94);
+    this.drawCaveRockPatch(position.x - Math.cos(angle) * 5, position.y - Math.sin(angle) * 5 + 5, 4.5, 2.4, ore.tileX, ore.tileY, salt + 31, 0x252e2b, 0.92);
   }
 
   private updateCave(time: number, delta: number): void {
@@ -1367,7 +1588,6 @@ export class AdventureScene extends Phaser.Scene {
     this.updateCaveInteraction();
     this.updateCaveHarvesting(delta);
     this.updatePlayerAvatar(delta, isMoving);
-    this.updateMinimap(time);
   }
 
   private moveCavePlayer(deltaX: number, deltaY: number): void {
