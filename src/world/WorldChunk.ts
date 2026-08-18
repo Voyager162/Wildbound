@@ -103,6 +103,16 @@ interface CaveTerrainInfluence {
   radiusPixels: number;
   forwardX: number;
   forwardY: number;
+  rimRocks: readonly CaveTerrainRock[];
+}
+
+interface CaveTerrainRock {
+  centerWorldX: number;
+  centerWorldY: number;
+  radiusX: number;
+  radiusY: number;
+  lightX: number;
+  lightY: number;
 }
 
 const terrainMaterialPixels = new Map<string, TerrainMaterialPixels>();
@@ -548,14 +558,39 @@ export class WorldChunk {
           const centerWorldY = (entrance.tileY + 0.5) * WORLD_TILE_SIZE;
           const chunkCenterX = this.x * CHUNK_SIZE_PIXELS + CHUNK_SIZE_PIXELS / 2;
           const chunkCenterY = this.y * CHUNK_SIZE_PIXELS + CHUNK_SIZE_PIXELS / 2;
-          if (Math.abs(centerWorldX - chunkCenterX) <= CHUNK_SIZE_PIXELS / 2 + radiusPixels * 1.6
-            && Math.abs(centerWorldY - chunkCenterY) <= CHUNK_SIZE_PIXELS / 2 + radiusPixels * 1.2) {
+          if (Math.abs(centerWorldX - chunkCenterX) <= CHUNK_SIZE_PIXELS / 2 + radiusPixels * 2.25
+            && Math.abs(centerWorldY - chunkCenterY) <= CHUNK_SIZE_PIXELS / 2 + radiusPixels * 1.55) {
+            const forwardX = Math.cos(entrance.mouthAngle);
+            const forwardY = Math.sin(entrance.mouthAngle);
+            const sideX = -forwardY;
+            const sideY = forwardX;
+            const rimRocks: CaveTerrainRock[] = [];
+            // These boulders sit in the collapsed perimeter and are sampled into terrain pixels
+            // below. They are coordinate data, not scene objects or an entrance icon.
+            for (let rock = 0; rock < 30; rock += 1) {
+              const ringAngle = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8b21 + rock) * Math.PI * 2;
+              const ringDistance = radiusPixels * (0.78 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8c61 + rock) * 0.7);
+              const forwardDistance = Math.cos(ringAngle) * ringDistance * 1.38;
+              const sideDistance = Math.sin(ringAngle) * ringDistance * 0.86;
+              const radiusX = 4 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8db1 + rock) * 10;
+              const radiusY = radiusX * (0.58 + randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x8ef1 + rock) * 0.42);
+              const lightAngle = randomAtTile(this.seed, entrance.tileX, entrance.tileY, 0x9031 + rock) * Math.PI * 2;
+              rimRocks.push({
+                centerWorldX: centerWorldX + forwardX * forwardDistance + sideX * sideDistance,
+                centerWorldY: centerWorldY + forwardY * forwardDistance + sideY * sideDistance,
+                radiusX,
+                radiusY,
+                lightX: Math.cos(lightAngle),
+                lightY: Math.sin(lightAngle),
+              });
+            }
             influences.push({
               centerWorldX,
               centerWorldY,
               radiusPixels,
-              forwardX: Math.cos(entrance.mouthAngle),
-              forwardY: Math.sin(entrance.mouthAngle),
+              forwardX,
+              forwardY,
+              rimRocks,
             });
           }
         });
@@ -973,6 +1008,31 @@ export class WorldChunk {
                 (forward / (cave.radiusPixels * 1.48)) ** 2
                 + (side / (cave.radiusPixels * 0.92)) ** 2
               );
+              // The entrance's talus field reaches beyond the hollow itself. It is still
+              // sampled directly into this texture, so these are terrain boulders rather
+              // than placed props or a single entrance stamp.
+              if (outer < 1.7) {
+                cave.rimRocks.forEach((rock) => {
+                  const rockX = (worldPixelX - rock.centerWorldX) / rock.radiusX;
+                  const rockY = (worldPixelY - rock.centerWorldY) / rock.radiusY;
+                  const rockDistance = Math.sqrt(rockX * rockX + rockY * rockY);
+                  if (rockDistance >= 1) {
+                    return;
+                  }
+                  const edgeVariation = (coherentNoise(this.seed, worldPixelX, worldPixelY, 11, 0x6a8f19) - 0.5) * 0.16;
+                  const footprint = 1 - smoothStep(Math.min(1, Math.max(0, rockDistance + edgeVariation)));
+                  if (footprint <= 0) {
+                    return;
+                  }
+                  const light = Math.max(0, rockX * rock.lightX + rockY * rock.lightY) * footprint;
+                  const stoneRed = 54 + light * 35;
+                  const stoneGreen = 61 + light * 38;
+                  const stoneBlue = 60 + light * 39;
+                  red += (stoneRed - red) * footprint;
+                  green += (stoneGreen - green) * footprint;
+                  blue += (stoneBlue - blue) * footprint;
+                });
+              }
               if (outer >= 1) {
                 return;
               }
@@ -985,12 +1045,19 @@ export class WorldChunk {
                 (shiftedForward / (cave.radiusPixels * 0.88)) ** 2
                 + (side / (cave.radiusPixels * 0.48)) ** 2
               );
-              const voidAmount = smoothStep(passage) * smoothStep((forward + cave.radiusPixels * 0.58) / (cave.radiusPixels * 0.72));
+              // Two continuous noise fields fracture the lip of the opening. This breaks
+              // the mathematically smooth oval into a natural, uneven rock mouth while
+              // retaining the same result for a world coordinate every time it is baked.
+              const mouthEdge = (coherentNoise(this.seed, worldPixelX, worldPixelY, 19, 0x3d61a8) - 0.5) * 0.24
+                + (coherentNoise(this.seed, worldPixelX, worldPixelY, 7, 0x91c42e) - 0.5) * 0.1;
+              const jaggedPassage = passage + mouthEdge;
+              const voidAmount = smoothStep(jaggedPassage) * smoothStep((forward + cave.radiusPixels * 0.58) / (cave.radiusPixels * 0.72));
               const rockExposure = Math.min(1, rim * 0.86 + depression * 0.29);
-              red += (75 - red) * rockExposure;
-              green += (83 - green) * rockExposure;
-              blue += (82 - blue) * rockExposure;
-              const wallShade = depression * (0.12 + (materialNoise - 0.5) * 0.08);
+              const rockGrain = coherentNoise(this.seed, worldPixelX, worldPixelY, 28, 0x74b20f) - 0.5;
+              red += (70 + rockGrain * 20 - red) * rockExposure;
+              green += (77 + rockGrain * 20 - green) * rockExposure;
+              blue += (76 + rockGrain * 19 - blue) * rockExposure;
+              const wallShade = depression * (0.14 + (materialNoise - 0.5) * 0.08 + rockGrain * 0.05);
               red *= 1 - wallShade;
               green *= 1 - wallShade;
               blue *= 1 - wallShade;
