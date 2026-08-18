@@ -75,6 +75,9 @@ const CAVE_ENTRANCE_SEARCH_RADIUS_TILES = 6;
 // Kept visual-only: designers can reshape the cave wall art without changing layouts or
 // collision. The clamp also protects the renderer from accidental extreme configuration.
 const CAVE_WALL_PUFFINESS = Math.max(0.25, Math.min(2, CAVE_WALL_PUFFINESS_SCALE));
+// Thin walls still need a legible rock face. Puffiness controls the physical visual weight,
+// while this keeps the layered face broad enough to read at the game's normal camera scale.
+const CAVE_WALL_FACE_SCALE = 0.72 + CAVE_WALL_PUFFINESS * 0.28;
 
 type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
 
@@ -1281,18 +1284,16 @@ export class AdventureScene extends Phaser.Scene {
       y: origin.y + point.y * WORLD_TILE_SIZE
     })));
     contours.forEach((contour) => {
-      this.fillCavePolygon(contour, 0x202a2a, 1);
+      this.fillCavePolygon(contour, 0x243335, 1);
     });
     contours.forEach((contour) => {
-      // Keep a substantial readable rock face even when puffiness is dialled low; only the
-      // outer shadow expands markedly with the setting. Geometry remains fully smooth.
-      graphics.lineStyle(24 + 32 * CAVE_WALL_PUFFINESS, 0x0c1416, 1);
+      graphics.lineStyle(39 * CAVE_WALL_FACE_SCALE, 0x142224, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(16 + 28 * CAVE_WALL_PUFFINESS, 0x294347, 1);
+      graphics.lineStyle(30 * CAVE_WALL_FACE_SCALE, 0x2d4b49, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(9 + 20 * CAVE_WALL_PUFFINESS, 0x5d806f, 0.98);
+      graphics.lineStyle(19 * CAVE_WALL_FACE_SCALE, 0x5c7d70, 0.98);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(Math.max(2.5, 5 * CAVE_WALL_PUFFINESS), 0xb5caa6, 0.9);
+      graphics.lineStyle(Math.max(2.5, 5 * CAVE_WALL_FACE_SCALE), 0xa4c8a6, 0.9);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
     });
     contours.forEach((contour, index) => {
@@ -1431,8 +1432,8 @@ export class AdventureScene extends Phaser.Scene {
       const centerX = point.x + outwardX * (14 + CAVE_WALL_PUFFINESS * (13 + this.caveVisualRandom(contourIndex, index, 0x7223) * 11));
       const centerY = point.y + outwardY * (14 + CAVE_WALL_PUFFINESS * (13 + this.caveVisualRandom(contourIndex, index, 0x7223) * 11));
       const angle = Math.atan2(deltaY, deltaX);
-      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length + 9, width + 3, contourIndex, index, 0x7224), 0x1d3739, 0.94);
-      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length, width, contourIndex, index, 0x7234), 0x83ad91, 0.8);
+      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length + 9, width + 3, contourIndex, index, 0x7224), 0x1c3533, 0.92);
+      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length, width, contourIndex, index, 0x7234), 0x76a890, 0.76);
     }
   }
 
