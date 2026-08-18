@@ -1,21 +1,26 @@
-// Public cave-ore controls. Raise or lower a `chance` value to change how frequently that ore
-// attempts to generate once the player has reached the ore's minimum normalized cave depth.
+// Public cave-ore controls. Set each start depth on the same 1–1000 scale as the interior
+// generation settings, then adjust `chance` to tune frequency after that depth is reached.
 // Values are evaluated deterministically from the world seed, so changing them affects newly
 // generated layouts without adding run-to-run randomness.
 export const CAVE_ORE_TYPES = ['coal', 'iron', 'gold', 'diamond'] as const;
 export type CaveOreType = (typeof CAVE_ORE_TYPES)[number];
 
 export interface CaveOreSpawnRule {
-  readonly minimumNormalizedDepth: number;
+  readonly startDepth: number;
   readonly chance: number;
   readonly requiresDeepCave?: boolean;
 }
 
+export const CAVE_COAL_START_DEPTH = 80;
+export const CAVE_IRON_START_DEPTH = 340;
+export const CAVE_GOLD_START_DEPTH = 610;
+export const CAVE_DIAMOND_START_DEPTH = 900;
+
 export const CAVE_ORE_SPAWN_RULES: Readonly<Record<CaveOreType, CaveOreSpawnRule>> = {
-  coal: { minimumNormalizedDepth: 0.08, chance: 0.1 },
-  iron: { minimumNormalizedDepth: 0.34, chance: 0.065 },
-  gold: { minimumNormalizedDepth: 0.61, chance: 0.036 },
-  diamond: { minimumNormalizedDepth: 0.79, chance: 0.018, requiresDeepCave: true },
+  coal: { startDepth: CAVE_COAL_START_DEPTH, chance: 0.1 },
+  iron: { startDepth: CAVE_IRON_START_DEPTH, chance: 0.065 },
+  gold: { startDepth: CAVE_GOLD_START_DEPTH, chance: 0.036 },
+  diamond: { startDepth: CAVE_DIAMOND_START_DEPTH, chance: 0.018, requiresDeepCave: true },
 };
 
 // Ores are intentionally limited to clear cave floor so mineral formations never paint over a

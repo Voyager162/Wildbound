@@ -11,12 +11,14 @@ import {
   type CaveOreVeinStyle
 } from './caveOreGenerationConfig';
 import {
+  CAVE_DEPTH_SCALE_MAX,
   CAVE_LAVA_MAX_POOLS,
-  CAVE_LAVA_MINIMUM_NORMALIZED_DEPTH,
+  CAVE_LAVA_START_DEPTH,
   CAVE_LINKED_SYSTEM_CHANCE,
   CAVE_LINKED_SYSTEM_DISTANCE_TILES,
+  CAVE_STALAGMITE_START_DEPTH,
   CAVE_STALAGMITE_CHANCE,
-  CAVE_STALAGMITE_MINIMUM_NORMALIZED_DEPTH,
+  CAVE_SYSTEM_SIZE_SCALE,
   CAVE_SYSTEM_DEPTHS,
   CAVE_SYSTEM_DEPTH_WEIGHTS,
   CAVE_SYSTEM_PROFILES,
@@ -309,7 +311,21 @@ export const generateChunkCaveEntrances = (seed: string, chunkX: number, chunkY:
   return found;
 };
 
-const caveDimensions = (depth: CaveDepth) => CAVE_SYSTEM_PROFILES[depth];
+const caveDimensions = (depth: CaveDepth) => {
+  const profile = CAVE_SYSTEM_PROFILES[depth];
+  // There is deliberately no upper clamp: the public size control is allowed to make truly
+  // enormous systems. The small lower guard only prevents invalid zero/negative dimensions.
+  const scale = Math.max(0.1, CAVE_SYSTEM_SIZE_SCALE);
+  return {
+    ...profile,
+    width: Math.max(24, Math.round(profile.width * scale)),
+    height: Math.max(24, Math.round(profile.height * scale)),
+    spineSegments: Math.max(3, Math.round(profile.spineSegments * scale)),
+    branchSegments: Math.max(1, Math.round(profile.branchSegments * scale)),
+    largeChambers: Math.max(1, Math.round(profile.largeChambers * scale)),
+    loopConnections: Math.max(0, Math.round(profile.loopConnections * scale))
+  };
+};
 const graphRandom = (seed: string, cave: CaveEntrance, index: number, salt: number): number => randomAtTile(seed, cave.tileX * 97 + index * 23, cave.tileY * 97 - index * 29, CAVE_GRAPH_SALT + salt);
 const CAVE_TERRAIN_PROFILE_SAMPLES = 14;
 const CAVE_TUNNEL_DISTANCE_SAMPLES = 10;
@@ -409,8 +425,8 @@ const connectChambers = (seed: string, cave: CaveEntrance, from: CaveTerrainCham
     controlY: (from.y + to.y) * 0.5 + perpendicularY * bend,
     toX: to.x,
     toY: to.y,
-    startRadius: 1.12 + graphRandom(seed, cave, index, 42) * 0.5,
-    endRadius: 1.12 + graphRandom(seed, cave, index, 43) * 0.5,
+    startRadius: 1.42 + graphRandom(seed, cave, index, 42) * 0.68,
+    endRadius: 1.42 + graphRandom(seed, cave, index, 43) * 0.68,
     radiusProfile: Array.from({ length: 6 }, (_, profileIndex) => 0.86 + graphRandom(seed, cave, index, 45 + profileIndex) * 0.25)
   };
 };
@@ -546,13 +562,18 @@ const buildDepthMap = (tiles: boolean[][], startX: number, startY: number): numb
   return distances.map((row) => row.map((distance) => distance < 0 ? -1 : distance / maximum));
 };
 
+// Designers work with an intuitive 1–1000 progression, while generation uses a normalized
+// route distance. Clamp only these geological thresholds so an accidental out-of-range value
+// cannot make a formation unreachable or appear at the entrance.
+const normalizedCaveStartDepth = (startDepth: number): number => Math.max(1, Math.min(CAVE_DEPTH_SCALE_MAX, startDepth)) / CAVE_DEPTH_SCALE_MAX;
+
 const oreForDepth = (seed: string, cave: CaveEntrance, x: number, y: number, depth: number, hasLavaReach: boolean): CaveOreType | null => {
   const roll = randomAtTile(seed, cave.tileX * 131 + x, cave.tileY * 131 + y, CAVE_ORE_SALT);
   const rules = CAVE_ORE_SPAWN_RULES;
-  if ((!rules.diamond.requiresDeepCave || hasLavaReach) && depth > Math.max(rules.diamond.minimumNormalizedDepth, CAVE_LAVA_MINIMUM_NORMALIZED_DEPTH) && roll < rules.diamond.chance) return 'diamond';
-  if (depth > rules.gold.minimumNormalizedDepth && roll < rules.gold.chance) return 'gold';
-  if (depth > rules.iron.minimumNormalizedDepth && roll < rules.iron.chance) return 'iron';
-  return depth > rules.coal.minimumNormalizedDepth && roll < rules.coal.chance ? 'coal' : null;
+  if ((!rules.diamond.requiresDeepCave || hasLavaReach) && depth > Math.max(normalizedCaveStartDepth(rules.diamond.startDepth), normalizedCaveStartDepth(CAVE_LAVA_START_DEPTH)) && roll < rules.diamond.chance) return 'diamond';
+  if (depth > normalizedCaveStartDepth(rules.gold.startDepth) && roll < rules.gold.chance) return 'gold';
+  if (depth > normalizedCaveStartDepth(rules.iron.startDepth) && roll < rules.iron.chance) return 'iron';
+  return depth > normalizedCaveStartDepth(rules.coal.startDepth) && roll < rules.coal.chance ? 'coal' : null;
 };
 
 const oreVeinStyleFor = (seed: string, cave: CaveEntrance, x: number, y: number, type: CaveOreType): CaveOreVeinStyle => {
@@ -571,12 +592,14 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
   const profile = caveDimensions(systemEntrance.depth);
   const { width, height } = profile;
   const entranceTileX = Math.floor(width / 2);
-  const entranceTileY = height - 7;
+  // Entrances sit within the system instead of on its lower edge. This leaves a shorter
+  // rear route behind the player as well as the long forward descent into the cave.
+  const entranceTileY = Math.round(height * (0.48 + graphRandom(seed, systemEntrance, 0, 1) * 0.14));
   const clampX = (x: number): number => Math.max(12, Math.min(width - 13, x));
   const clampY = (y: number): number => Math.max(11, Math.min(height - 12, y));
   // Passage nodes only keep curving tunnels connected; they are deliberately much smaller
   // than a room. The rare larger replacements below are the cave's true chambers.
-  const chambers: CaveTerrainChamber[] = [createChamber(seed, systemEntrance, 0, entranceTileX, entranceTileY, 2.4, 2.05)];
+  const chambers: CaveTerrainChamber[] = [createChamber(seed, systemEntrance, 0, entranceTileX, entranceTileY, 3.2, 2.65)];
   const tunnels: CaveTerrainTunnel[] = [];
   const nodeHeadings: number[] = [-Math.PI / 2];
   const spineIndices = [0];
@@ -586,11 +609,11 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
     index,
     x,
     y,
-    1.18 + graphRandom(seed, systemEntrance, index, 31) * 0.55,
-    1.06 + graphRandom(seed, systemEntrance, index, 32) * 0.42
+    1.6 + graphRandom(seed, systemEntrance, index, 31) * 0.65,
+    1.42 + graphRandom(seed, systemEntrance, index, 32) * 0.56
   );
   const hasClearanceFromOtherNodes = (x: number, y: number, parentIndex: number): boolean => chambers.every((node, index) => (
-    index === parentIndex || Math.hypot(node.x - x, node.y - y) >= 3.8
+    index === parentIndex || Math.hypot(node.x - x, node.y - y) >= 5.1
   ));
 
   for (let index = 1; index < profile.spineSegments; index += 1) {
@@ -599,13 +622,32 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
     const heading = -Math.PI / 2
       + Math.sin(progress * Math.PI * 3 + graphRandom(seed, systemEntrance, index, 1) * Math.PI * 2) * 0.18
       + (graphRandom(seed, systemEntrance, index, 2) - 0.5) * 0.46;
-    const stride = (height - 20) / (profile.spineSegments - 1) * (0.84 + graphRandom(seed, systemEntrance, index, 3) * 0.28);
+    const stride = (entranceTileY - 13) / (profile.spineSegments - 1) * (0.84 + graphRandom(seed, systemEntrance, index, 3) * 0.28);
     const node = createPassageNode(index, clampX(prior.x + Math.cos(heading) * stride), clampY(prior.y + Math.sin(heading) * stride));
     const nodeIndex = chambers.length;
     chambers.push(node);
     nodeHeadings.push(heading);
     spineIndices.push(nodeIndex);
     tunnels.push(connectChambers(seed, systemEntrance, prior, node, index));
+  }
+
+  // A deliberately shorter arm runs behind the entrance. It prevents every cave from reading
+  // as a single upward march and gives the first decision point some immediate exploration.
+  const rearSegments = Math.max(3, Math.round(profile.spineSegments * 0.32));
+  const rearIndices = [0];
+  for (let index = 1; index <= rearSegments; index += 1) {
+    const prior = chambers[rearIndices[index - 1]];
+    const progress = index / rearSegments;
+    const heading = Math.PI / 2
+      + Math.sin(progress * Math.PI * 2.4 + graphRandom(seed, systemEntrance, index, 51) * Math.PI) * 0.2
+      + (graphRandom(seed, systemEntrance, index, 52) - 0.5) * 0.52;
+    const stride = (height - 13 - entranceTileY) / rearSegments * (0.82 + graphRandom(seed, systemEntrance, index, 53) * 0.3);
+    const node = createPassageNode(4_000 + index, clampX(prior.x + Math.cos(heading) * stride), clampY(prior.y + Math.sin(heading) * stride));
+    const nodeIndex = chambers.length;
+    chambers.push(node);
+    nodeHeadings.push(heading);
+    rearIndices.push(nodeIndex);
+    tunnels.push(connectChambers(seed, systemEntrance, prior, node, 4_000 + index));
   }
 
   for (let branchIndex = 0; branchIndex < profile.branchSegments; branchIndex += 1) {
@@ -628,7 +670,7 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
       if (Math.hypot(candidateX - parent.x, candidateY - parent.y) < 4.2 || !hasClearanceFromOtherNodes(candidateX, candidateY, parentIndex)) {
         continue;
       }
-      const nodeIndex = profile.spineSegments + branchIndex;
+      const nodeIndex = profile.spineSegments + rearSegments + branchIndex;
       nextNode = createPassageNode(nodeIndex, candidateX, candidateY);
       nextHeading = heading;
     }
@@ -637,7 +679,7 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
     }
     chambers.push(nextNode);
     nodeHeadings.push(nextHeading);
-    tunnels.push(connectChambers(seed, systemEntrance, parent, nextNode, profile.spineSegments + branchIndex));
+    tunnels.push(connectChambers(seed, systemEntrance, parent, nextNode, profile.spineSegments + rearSegments + branchIndex));
   }
 
   for (let loopIndex = 0; loopIndex < profile.loopConnections; loopIndex += 1) {
@@ -705,7 +747,7 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
       const x = 2 + Math.floor(randomAtTile(seed, systemEntrance.tileX * 37 + attempt, systemEntrance.tileY, CAVE_GRAPH_SALT + 92) * (width - 4));
       const y = 2 + Math.floor(randomAtTile(seed, systemEntrance.tileX, systemEntrance.tileY * 37 + attempt, CAVE_GRAPH_SALT + 93) * (height - 4));
       const depth = depthByTile[y][x];
-      if (!floorTiles[y][x] || depth < CAVE_LAVA_MINIMUM_NORMALIZED_DEPTH || Math.hypot(x - spawn.x, y - spawn.y) < 18) continue;
+      if (!floorTiles[y][x] || depth < normalizedCaveStartDepth(CAVE_LAVA_START_DEPTH) || Math.hypot(x - spawn.x, y - spawn.y) < 18) continue;
       const radiusX = 2.5 + randomAtTile(seed, x, y, CAVE_GRAPH_SALT + 94) * 3.2;
       const radiusY = 1.8 + randomAtTile(seed, x, y, CAVE_GRAPH_SALT + 95) * 2.4;
       if (lavaPools.some((pool) => Math.hypot(pool.tileX - x, pool.tileY - y) < pool.radiusX + radiusX + 5)) continue;
@@ -724,7 +766,7 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
   const stalagmites: CaveStalagmite[] = [];
   for (let y = 2; y < height - 2; y += 1) for (let x = 2; x < width - 2; x += 1) {
     const depth = depthByTile[y][x];
-    if (!floorTiles[y][x] || depth < CAVE_STALAGMITE_MINIMUM_NORMALIZED_DEPTH || randomAtTile(seed, systemEntrance.tileX * 131 + x, systemEntrance.tileY * 131 + y, CAVE_GRAPH_SALT + 101) >= CAVE_STALAGMITE_CHANCE) continue;
+    if (!floorTiles[y][x] || depth < normalizedCaveStartDepth(CAVE_STALAGMITE_START_DEPTH) || randomAtTile(seed, systemEntrance.tileX * 131 + x, systemEntrance.tileY * 131 + y, CAVE_GRAPH_SALT + 101) >= CAVE_STALAGMITE_CHANCE) continue;
     if (lavaPools.some((pool) => Math.hypot(pool.tileX - x, pool.tileY - y) < pool.radiusX + 3)) continue;
     if (stalagmites.every((feature) => Math.hypot(feature.tileX - x, feature.tileY - y) >= 3)) {
       stalagmites.push({ id: `${systemEntrance.id}:stalagmite:${x}:${y}`, tileX: x, tileY: y, scale: 0.84 + randomAtTile(seed, x, y, CAVE_GRAPH_SALT + 102) * 0.95 });

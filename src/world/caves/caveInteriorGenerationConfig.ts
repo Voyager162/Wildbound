@@ -3,6 +3,15 @@
 export const CAVE_SYSTEM_DEPTHS = ['shallow', 'medium', 'deep', 'abyssal'] as const;
 export type CaveSystemDepth = (typeof CAVE_SYSTEM_DEPTHS)[number];
 
+// Global cave scale. This deliberately has no upper cap: increasing it expands both each
+// system's footprint and the amount of connected tunnel work it generates. Very large values
+// naturally need more generation time and memory when a cave is entered.
+export const CAVE_SYSTEM_SIZE_SCALE = 1.6;
+
+// Geological thresholds below use this designer-facing depth scale rather than fractions.
+// Set any start value from 1 (near an entrance) to 1000 (the deepest reachable passage).
+export const CAVE_DEPTH_SCALE_MAX = 1_000;
+
 export interface CaveSystemProfile {
   readonly width: number;
   readonly height: number;
@@ -37,8 +46,8 @@ export const CAVE_LINKED_SYSTEM_DISTANCE_TILES: readonly number[] = [42, 58, 76]
 
 // Mineral formations begin well below the shallow cave strata; magma is reserved for the
 // final reaches beyond them, so it is an expedition objective rather than an early landmark.
-export const CAVE_STALAGMITE_MINIMUM_NORMALIZED_DEPTH = 0.66;
-export const CAVE_LAVA_MINIMUM_NORMALIZED_DEPTH = 0.9;
+export const CAVE_STALAGMITE_START_DEPTH = 660;
+export const CAVE_LAVA_START_DEPTH = 900;
 export const CAVE_LAVA_MAX_POOLS = 3;
 export const CAVE_STALAGMITE_CHANCE = 0.1;
 
