@@ -1298,13 +1298,29 @@ export class AdventureScene extends Phaser.Scene {
     // uneven rock slopes, which keeps the visible cave curved without hiding solid rock.
     const contours = this.createCaveContours(layout, origin);
     contours.forEach((contour) => {
-      graphics.lineStyle(48, 0x101516, 1);
+      graphics.lineStyle(38, 0x101516, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(35, 0x1e2927, 1);
+      graphics.lineStyle(27, 0x1e2927, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(22, 0x303e39, 0.98);
+    });
+
+    // Deposits sit inside the wall face, between its deep shading and near-floor rim. The final
+    // rim pass clips their inner edge, keeping the mineral visible without crossing boundaries.
+    layout.ores.forEach((ore) => {
+      if (ore.placement !== 'wall') {
+        return;
+      }
+      if (this.sessionWorldState.isCaveOreHarvested(ore.id)) {
+        this.drawMinedCaveOreGouge(ore, origin);
+      } else {
+        this.drawCaveOre(ore, origin);
+      }
+    });
+
+    contours.forEach((contour) => {
+      graphics.lineStyle(17, 0x303e39, 0.98);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(9, 0x526159, 0.86);
+      graphics.lineStyle(6, 0x526159, 0.86);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
     });
     contours.forEach((contour, index) => {
@@ -1341,6 +1357,9 @@ export class AdventureScene extends Phaser.Scene {
     this.fillCavePolygon(this.createCaveVeinPoints(exit.x, exit.y + 3, 0.08, 23, 7, layout.entranceTileX, layout.entranceTileY, 0x6d02), 0x111416, 0.96);
 
     layout.ores.forEach((ore) => {
+      if (ore.placement !== 'floor') {
+        return;
+      }
       if (this.sessionWorldState.isCaveOreHarvested(ore.id)) {
         this.drawMinedCaveOreGouge(ore, origin);
       } else {
@@ -1546,26 +1565,43 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private drawCaveOre(ore: CaveOre, origin: CaveWorldOrigin): void {
-    const color = RESOURCE_COLORS[ore.type === 'coal' ? ResourceType.Coal
-      : ore.type === 'iron' ? ResourceType.Iron
-        : ore.type === 'gold' ? ResourceType.Gold : ResourceType.Diamond];
+    // Coal uses a lifted graphite tone in the cave only, so it stays recognisable against the
+    // dark rock while retaining a natural mineral rather than pickup-like appearance.
+    const color = ore.type === 'coal' ? 0x75858e : RESOURCE_COLORS[
+      ore.type === 'iron' ? ResourceType.Iron : ore.type === 'gold' ? ResourceType.Gold : ResourceType.Diamond
+    ];
     this.drawCaveOreFormation(ore, origin, color, false);
+  }
+
+  private caveOreAnchor(ore: CaveOre, origin: CaveWorldOrigin): { readonly x: number; readonly y: number; readonly angle: number } {
+    const position = caveWorldTilePosition(origin, ore.tileX, ore.tileY);
+    const salt = ore.placement === 'wall' ? 0x7301 : 0x7311;
+    if (ore.placement !== 'wall') {
+      return { x: position.x, y: position.y, angle: this.caveVisualRandom(ore.tileX, ore.tileY, salt) * Math.PI };
+    }
+    // Orient a wall vein along the rock face, then let its later contour layer cleanly mask
+    // the floor-facing edge instead of allowing the deposit to draw over a wall boundary.
+    const faceAngle = Math.atan2(ore.wallFloorDirectionY, ore.wallFloorDirectionX) + Math.PI / 2;
+    return {
+      x: position.x + ore.wallFloorDirectionX * 3,
+      y: position.y + ore.wallFloorDirectionY * 3,
+      angle: faceAngle + (this.caveVisualRandom(ore.tileX, ore.tileY, salt) - 0.5) * 0.28
+    };
   }
 
   private drawMinedCaveOreGouge(ore: CaveOre, origin: CaveWorldOrigin): void {
     this.drawCaveOreFormation(ore, origin, 0x111718, true);
-    const position = caveWorldTilePosition(origin, ore.tileX, ore.tileY);
+    const position = this.caveOreAnchor(ore, origin);
     const salt = ore.placement === 'wall' ? 0x7301 : 0x7311;
-    const angle = this.caveVisualRandom(ore.tileX, ore.tileY, salt) * Math.PI;
-    this.drawCaveRockPatch(position.x - Math.cos(angle) * 8, position.y - Math.sin(angle) * 8 + 6, 7, 3.8, ore.tileX, ore.tileY, salt + 97, 0x25302c, 0.88);
+    this.drawCaveRockPatch(position.x - Math.cos(position.angle) * 6, position.y - Math.sin(position.angle) * 6 + 4, 5.2, 2.8, ore.tileX, ore.tileY, salt + 97, 0x25302c, 0.88);
   }
 
   private drawCaveOreFormation(ore: CaveOre, origin: CaveWorldOrigin, mineralColor: number, mined: boolean): void {
-    const position = caveWorldTilePosition(origin, ore.tileX, ore.tileY);
+    const position = this.caveOreAnchor(ore, origin);
     const salt = ore.placement === 'wall' ? 0x7301 : 0x7311;
-    const angle = this.caveVisualRandom(ore.tileX, ore.tileY, salt) * Math.PI;
-    const baseLength = ore.placement === 'wall' ? 68 : 58;
-    const baseWidth = ore.placement === 'wall' ? 11.5 : 9.4;
+    const angle = position.angle;
+    const baseLength = ore.placement === 'wall' ? 36 : 43;
+    const baseWidth = ore.placement === 'wall' ? 6.3 : 6.8;
     const hostRockColor = mined ? 0x4b5750 : ore.placement === 'wall' ? 0x34413c : 0x46514b;
     const sideX = -Math.sin(angle);
     const sideY = Math.cos(angle);

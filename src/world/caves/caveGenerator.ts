@@ -44,6 +44,10 @@ export interface CaveOre {
   readonly type: CaveOreType;
   readonly placement: CaveOrePlacement;
   readonly veinStyle: CaveOreVeinStyle;
+  // For a wall deposit, this points from the rock tile toward its adjacent floor tile. The
+  // renderer uses it to keep the mineral tucked into the wall face rather than spilling out.
+  readonly wallFloorDirectionX: number;
+  readonly wallFloorDirectionY: number;
 }
 export interface CaveLayout {
   readonly entrance: CaveEntrance; readonly width: number; readonly height: number; readonly entranceTileX: number; readonly entranceTileY: number;
@@ -61,6 +65,7 @@ const CAVE_ORE_STYLE_SALT = 71_229;
 const CAVE_WORLD_OFFSET = 4_000_000;
 const CAVE_CHUNK_CACHE_LIMIT = 512;
 const caveChunkCache = new Map<string, readonly CaveEntrance[]>();
+const CARDINAL_DIRECTIONS: readonly (readonly [number, number])[] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
 export interface CaveMouthCenter {
   readonly x: number;
@@ -176,7 +181,7 @@ const buildDepthMap = (tiles: boolean[][], startX: number, startY: number): numb
   const queue: Array<readonly [number, number]> = [[startX, startY]]; distances[startY][startX] = 0;
   for (let index = 0; index < queue.length; index += 1) {
     const [x, y] = queue[index], distance = distances[y][x] + 1;
-    [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => {
+    CARDINAL_DIRECTIONS.forEach(([dx, dy]) => {
       const nextX = x + dx, nextY = y + dy;
       if (nextY >= 0 && nextY < tiles.length && nextX >= 0 && nextX < tiles[0].length && tiles[nextY][nextX] && distances[nextY][nextX] < 0) {
         distances[nextY][nextX] = distance; queue.push([nextX, nextY]);
@@ -227,18 +232,32 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
   const depthByTile = buildDepthMap(floorTiles, entranceTileX, entranceTileY);
   const ores: CaveOre[] = [];
   for (let y = 1; y < height - 1; y += 1) for (let x = 1; x < width - 1; x += 1) {
-    const depth = depthByTile[y][x]; if (depth < 0.05 || x === entranceTileX && y >= entranceTileY - 3) continue;
+    const adjacentFloorDirections = CARDINAL_DIRECTIONS.filter(([dx, dy]) => floorTiles[y + dy][x + dx]);
     const placement: CaveOrePlacement = floorTiles[y][x] ? 'floor' : 'wall';
-    const touchesFloor = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => floorTiles[y + dy][x + dx]);
-    const ore = placement === 'wall' && !touchesFloor ? null : oreForDepth(seed, entrance, x, y, depth);
+    // Floor deposits need one clear tile on every side. This prevents a wide seam from ever
+    // crossing a rendered wall. Wall deposits instead use the adjoining floor's depth.
+    if ((placement === 'floor' && adjacentFloorDirections.length !== CARDINAL_DIRECTIONS.length) || (placement === 'wall' && adjacentFloorDirections.length === 0)) continue;
+    const depth = placement === 'floor'
+      ? depthByTile[y][x]
+      : Math.max(...adjacentFloorDirections.map(([dx, dy]) => depthByTile[y + dy][x + dx]));
+    if (depth < 0.05 || x === entranceTileX && y >= entranceTileY - 3) continue;
+    const ore = oreForDepth(seed, entrance, x, y, depth);
     if (ore && randomAtTile(seed, x + entrance.tileX * 41, y + entrance.tileY * 41, CAVE_ORE_SALT + 3) < CAVE_ORE_PLACEMENT_CHANCE[placement]) {
+      const wallDirection = placement === 'wall'
+        ? adjacentFloorDirections[Math.min(
+          adjacentFloorDirections.length - 1,
+          Math.floor(randomAtTile(seed, entrance.tileX * 43 + x, entrance.tileY * 43 + y, CAVE_ORE_STYLE_SALT + 2) * adjacentFloorDirections.length)
+        )]
+        : [0, 0] as const;
       ores.push({
         id: `${entrance.id}:${x}:${y}`,
         tileX: x,
         tileY: y,
         type: ore,
         placement,
-        veinStyle: oreVeinStyleFor(seed, entrance, x, y, ore)
+        veinStyle: oreVeinStyleFor(seed, entrance, x, y, ore),
+        wallFloorDirectionX: wallDirection[0],
+        wallFloorDirectionY: wallDirection[1]
       });
     }
   }
