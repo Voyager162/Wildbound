@@ -1272,9 +1272,30 @@ export class AdventureScene extends Phaser.Scene {
     graphics.fillStyle(0x07090b, 1);
     graphics.fillRect(outerX, outerY, (layout.width + 2) * WORLD_TILE_SIZE, (layout.height + 2) * WORLD_TILE_SIZE);
 
-    // Collision still comes from the compact logical grid, but its exposed edges are traced
-    // into curved contours. The nested strokes make a wide, shaded wall face before the
-    // continuous floor is painted in, eliminating tile-shaped visible wall blocks.
+    // The floor base follows the collision data exactly. Curved wall contours are then layered
+    // on top, so a blocked rock cell can never be painted as walkable ground.
+    for (let y = 0; y < layout.height; y += 1) {
+      let runStart = -1;
+      for (let x = 0; x <= layout.width; x += 1) {
+        if (x < layout.width && layout.floorTiles[y][x]) {
+          if (runStart < 0) {
+            runStart = x;
+          }
+        } else if (runStart >= 0) {
+          graphics.fillStyle(0x353c39, 1);
+          graphics.fillRect(
+            origin.x + runStart * WORLD_TILE_SIZE,
+            origin.y + y * WORLD_TILE_SIZE,
+            (x - runStart) * WORLD_TILE_SIZE,
+            WORLD_TILE_SIZE
+          );
+          runStart = -1;
+        }
+      }
+    }
+
+    // The collision grid remains private to movement. Its boundary is traced into broad,
+    // uneven rock slopes, which keeps the visible cave curved without hiding solid rock.
     const contours = this.createCaveContours(layout, origin);
     contours.forEach((contour) => {
       graphics.lineStyle(82, 0x101516, 1);
@@ -1287,9 +1308,6 @@ export class AdventureScene extends Phaser.Scene {
       graphics.strokePoints(contour as CaveRenderPoint[], true);
     });
     contours.forEach((contour, index) => {
-      if (this.caveContourArea(contour) > 0) {
-        this.fillCavePolygon(contour, 0x353c39, 1);
-      }
       this.drawCaveWallStrata(contour, index);
     });
 
@@ -1528,45 +1546,120 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private drawCaveOre(ore: CaveOre, origin: CaveWorldOrigin): void {
-    const position = caveWorldTilePosition(origin, ore.tileX, ore.tileY);
     const color = RESOURCE_COLORS[ore.type === 'coal' ? ResourceType.Coal
       : ore.type === 'iron' ? ResourceType.Iron
         : ore.type === 'gold' ? ResourceType.Gold : ResourceType.Diamond];
-    const salt = ore.placement === 'wall' ? 0x7301 : 0x7311;
-    const angle = this.caveVisualRandom(ore.tileX, ore.tileY, salt) * Math.PI;
-    const length = ore.placement === 'wall' ? 50 : 42;
-    const width = ore.placement === 'wall' ? 10.5 : 8.4;
-    // A mineral seam is carved into the parent rock first, then filled with several winding
-    // deposits. It is part of the cave material rather than a separate collectible drawing.
-    this.fillCavePolygon(this.createCaveVeinPoints(position.x, position.y, angle, length + 7, width + 4, ore.tileX, ore.tileY, salt + 1), 0x1b2221, 0.9);
-    this.fillCavePolygon(this.createCaveVeinPoints(position.x, position.y, angle, length, width, ore.tileX, ore.tileY, salt + 19), color, 0.88);
-    const branchAngle = angle + (this.caveVisualRandom(ore.tileX, ore.tileY, salt + 31) - 0.5) * 1.1;
-    const branchOffset = length * (this.caveVisualRandom(ore.tileX, ore.tileY, salt + 32) - 0.5) * 0.34;
-    this.fillCavePolygon(
-      this.createCaveVeinPoints(
-        position.x + Math.cos(angle) * branchOffset,
-        position.y + Math.sin(angle) * branchOffset,
-        branchAngle,
-        length * 0.7,
-        width * 0.58,
-        ore.tileX,
-        ore.tileY,
-        salt + 37
-      ),
-      color,
-      0.66
-    );
+    this.drawCaveOreFormation(ore, origin, color, false);
   }
 
   private drawMinedCaveOreGouge(ore: CaveOre, origin: CaveWorldOrigin): void {
+    this.drawCaveOreFormation(ore, origin, 0x111718, true);
     const position = caveWorldTilePosition(origin, ore.tileX, ore.tileY);
     const salt = ore.placement === 'wall' ? 0x7301 : 0x7311;
     const angle = this.caveVisualRandom(ore.tileX, ore.tileY, salt) * Math.PI;
-    const length = ore.placement === 'wall' ? 50 : 42;
-    const width = ore.placement === 'wall' ? 10.5 : 8.4;
-    this.fillCavePolygon(this.createCaveVeinPoints(position.x, position.y, angle, length + 8, width + 4.5, ore.tileX, ore.tileY, salt + 1), 0x4a534e, 0.62);
-    this.fillCavePolygon(this.createCaveVeinPoints(position.x, position.y, angle, length + 2, width + 1.5, ore.tileX, ore.tileY, salt + 17), 0x111718, 0.94);
-    this.drawCaveRockPatch(position.x - Math.cos(angle) * 5, position.y - Math.sin(angle) * 5 + 5, 4.5, 2.4, ore.tileX, ore.tileY, salt + 31, 0x252e2b, 0.92);
+    this.drawCaveRockPatch(position.x - Math.cos(angle) * 8, position.y - Math.sin(angle) * 8 + 6, 7, 3.8, ore.tileX, ore.tileY, salt + 97, 0x25302c, 0.88);
+  }
+
+  private drawCaveOreFormation(ore: CaveOre, origin: CaveWorldOrigin, mineralColor: number, mined: boolean): void {
+    const position = caveWorldTilePosition(origin, ore.tileX, ore.tileY);
+    const salt = ore.placement === 'wall' ? 0x7301 : 0x7311;
+    const angle = this.caveVisualRandom(ore.tileX, ore.tileY, salt) * Math.PI;
+    const baseLength = ore.placement === 'wall' ? 68 : 58;
+    const baseWidth = ore.placement === 'wall' ? 11.5 : 9.4;
+    const hostRockColor = mined ? 0x4b5750 : ore.placement === 'wall' ? 0x34413c : 0x46514b;
+    const sideX = -Math.sin(angle);
+    const sideY = Math.cos(angle);
+    const drawStrand = (centerX: number, centerY: number, strandAngle: number, length: number, width: number, strandSalt: number): void => {
+      this.fillCavePolygon(
+        this.createCaveVeinPoints(centerX, centerY, strandAngle, length + 10, width + 5.5, ore.tileX, ore.tileY, strandSalt),
+        hostRockColor,
+        mined ? 0.74 : 0.68
+      );
+      this.fillCavePolygon(
+        this.createCaveVeinPoints(centerX, centerY, strandAngle, length, width, ore.tileX, ore.tileY, strandSalt + 19),
+        mineralColor,
+        mined ? 0.95 : 0.82
+      );
+    };
+
+    // Every placement has a seed-derived form. The individual strands overlap in the parent
+    // rock, creating geological seams and pockets instead of freestanding item-like marks.
+    switch (ore.veinStyle) {
+      case 'thread': {
+        drawStrand(position.x, position.y, angle, baseLength * 1.08, baseWidth * 0.46, salt + 1);
+        drawStrand(
+          position.x + Math.cos(angle) * baseLength * 0.1,
+          position.y + Math.sin(angle) * baseLength * 0.1,
+          angle + (this.caveVisualRandom(ore.tileX, ore.tileY, salt + 2) - 0.5) * 0.92,
+          baseLength * 0.56,
+          baseWidth * 0.28,
+          salt + 31
+        );
+        break;
+      }
+      case 'seam': {
+        drawStrand(position.x, position.y, angle, baseLength, baseWidth, salt + 41);
+        drawStrand(
+          position.x + sideX * baseWidth * 0.42,
+          position.y + sideY * baseWidth * 0.42,
+          angle + (this.caveVisualRandom(ore.tileX, ore.tileY, salt + 42) - 0.5) * 0.22,
+          baseLength * 0.78,
+          baseWidth * 0.5,
+          salt + 53
+        );
+        break;
+      }
+      case 'pocket': {
+        this.drawCaveRockPatch(position.x, position.y, baseWidth * 2.1, baseWidth * 1.55, ore.tileX, ore.tileY, salt + 61, hostRockColor, mined ? 0.76 : 0.7);
+        drawStrand(position.x, position.y, angle, baseLength * 0.58, baseWidth * 1.06, salt + 67);
+        drawStrand(position.x, position.y, angle + Math.PI / 2 + (this.caveVisualRandom(ore.tileX, ore.tileY, salt + 68) - 0.5) * 0.34, baseLength * 0.45, baseWidth * 0.68, salt + 79);
+        break;
+      }
+      case 'fan': {
+        for (let branch = -1; branch <= 1; branch += 1) {
+          const branchAngle = angle + branch * (0.42 + this.caveVisualRandom(ore.tileX, ore.tileY, salt + branch + 73) * 0.2);
+          const offset = branch * baseWidth * 0.46;
+          drawStrand(
+            position.x + sideX * offset + Math.cos(branchAngle) * baseLength * 0.13,
+            position.y + sideY * offset + Math.sin(branchAngle) * baseLength * 0.13,
+            branchAngle,
+            baseLength * (0.6 + this.caveVisualRandom(ore.tileX, ore.tileY, salt + branch + 77) * 0.2),
+            baseWidth * 0.42,
+            salt + 89 + branch * 13
+          );
+        }
+        break;
+      }
+      case 'ribbon': {
+        for (let ribbon = -1; ribbon <= 1; ribbon += 1) {
+          const offset = ribbon * baseWidth * 0.88;
+          drawStrand(
+            position.x + sideX * offset,
+            position.y + sideY * offset,
+            angle + (this.caveVisualRandom(ore.tileX, ore.tileY, salt + ribbon + 103) - 0.5) * 0.16,
+            baseLength * (0.72 + this.caveVisualRandom(ore.tileX, ore.tileY, salt + ribbon + 107) * 0.23),
+            baseWidth * 0.31,
+            salt + 113 + ribbon * 13
+          );
+        }
+        break;
+      }
+      case 'cluster': {
+        for (let cluster = 0; cluster < 4; cluster += 1) {
+          const clusterAngle = angle + (cluster - 1.5) * 0.52;
+          const distance = baseWidth * (0.42 + this.caveVisualRandom(ore.tileX, ore.tileY, salt + cluster + 131) * 0.55);
+          drawStrand(
+            position.x + Math.cos(clusterAngle) * distance,
+            position.y + Math.sin(clusterAngle) * distance,
+            clusterAngle + (this.caveVisualRandom(ore.tileX, ore.tileY, salt + cluster + 137) - 0.5) * 0.38,
+            baseLength * (0.35 + this.caveVisualRandom(ore.tileX, ore.tileY, salt + cluster + 139) * 0.22),
+            baseWidth * 0.5,
+            salt + 149 + cluster * 13
+          );
+        }
+        break;
+      }
+    }
   }
 
   private updateCave(time: number, delta: number): void {

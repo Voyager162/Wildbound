@@ -2,6 +2,13 @@ import { Biome, biomeAtTile } from '../generation/biomeGenerator';
 import { featureAtTile } from '../generation/featureGenerator';
 import { randomAtTile } from '../generation/noise';
 import { surfaceAtTile } from '../generation/terrainGenerator';
+import {
+  CAVE_ORE_PLACEMENT_CHANCE,
+  CAVE_ORE_SPAWN_RULES,
+  CAVE_ORE_VEIN_STYLES,
+  type CaveOreType,
+  type CaveOreVeinStyle
+} from './caveOreGenerationConfig';
 import { CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from '../worldConfig';
 import {
   CAVE_FORMATION_RADIUS_MAX_TILES,
@@ -21,8 +28,8 @@ import {
 } from './caveGenerationConfig';
 
 export type CaveDepth = 'shallow' | 'medium' | 'deep';
-export type CaveOreType = 'coal' | 'iron' | 'gold' | 'diamond';
 export type CaveOrePlacement = 'floor' | 'wall';
+export type { CaveOreType, CaveOreVeinStyle } from './caveOreGenerationConfig';
 
 export interface CaveEntrance {
   readonly id: string; readonly tileX: number; readonly tileY: number; readonly biome: Biome; readonly depth: CaveDepth;
@@ -30,7 +37,14 @@ export interface CaveEntrance {
   readonly mouthCenterForwardTiles: number; readonly mouthCenterSideTiles: number;
   readonly mouthForwardRadiusTiles: number; readonly mouthSideRadiusTiles: number;
 }
-export interface CaveOre { readonly id: string; readonly tileX: number; readonly tileY: number; readonly type: CaveOreType; readonly placement: CaveOrePlacement; }
+export interface CaveOre {
+  readonly id: string;
+  readonly tileX: number;
+  readonly tileY: number;
+  readonly type: CaveOreType;
+  readonly placement: CaveOrePlacement;
+  readonly veinStyle: CaveOreVeinStyle;
+}
 export interface CaveLayout {
   readonly entrance: CaveEntrance; readonly width: number; readonly height: number; readonly entranceTileX: number; readonly entranceTileY: number;
   readonly floorTiles: readonly (readonly boolean[])[]; readonly depthByTile: readonly (readonly number[])[]; readonly ores: readonly CaveOre[];
@@ -43,6 +57,7 @@ const CAVE_DEPTH_SALT = 71_213;
 const CAVE_FORMATION_SALT = 71_217;
 const CAVE_GRAPH_SALT = 71_219;
 const CAVE_ORE_SALT = 71_227;
+const CAVE_ORE_STYLE_SALT = 71_229;
 const CAVE_WORLD_OFFSET = 4_000_000;
 const CAVE_CHUNK_CACHE_LIMIT = 512;
 const caveChunkCache = new Map<string, readonly CaveEntrance[]>();
@@ -174,10 +189,17 @@ const buildDepthMap = (tiles: boolean[][], startX: number, startY: number): numb
 
 const oreForDepth = (seed: string, cave: CaveEntrance, x: number, y: number, depth: number): CaveOreType | null => {
   const roll = randomAtTile(seed, cave.tileX * 131 + x, cave.tileY * 131 + y, CAVE_ORE_SALT);
-  if (cave.depth === 'deep' && depth > 0.79 && roll < 0.018) return 'diamond';
-  if (depth > 0.61 && roll < 0.036) return 'gold';
-  if (depth > 0.34 && roll < 0.065) return 'iron';
-  return depth > 0.08 && roll < 0.1 ? 'coal' : null;
+  const rules = CAVE_ORE_SPAWN_RULES;
+  if ((!rules.diamond.requiresDeepCave || cave.depth === 'deep') && depth > rules.diamond.minimumNormalizedDepth && roll < rules.diamond.chance) return 'diamond';
+  if (depth > rules.gold.minimumNormalizedDepth && roll < rules.gold.chance) return 'gold';
+  if (depth > rules.iron.minimumNormalizedDepth && roll < rules.iron.chance) return 'iron';
+  return depth > rules.coal.minimumNormalizedDepth && roll < rules.coal.chance ? 'coal' : null;
+};
+
+const oreVeinStyleFor = (seed: string, cave: CaveEntrance, x: number, y: number, type: CaveOreType): CaveOreVeinStyle => {
+  const styles = CAVE_ORE_VEIN_STYLES[type];
+  const roll = randomAtTile(seed, cave.tileX * 149 + x, cave.tileY * 149 + y, CAVE_ORE_STYLE_SALT);
+  return styles[Math.min(styles.length - 1, Math.floor(roll * styles.length))];
 };
 
 /** Connected irregular chambers form a readable spine, with deterministic dead-end side tunnels. */
@@ -209,7 +231,16 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
     const placement: CaveOrePlacement = floorTiles[y][x] ? 'floor' : 'wall';
     const touchesFloor = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => floorTiles[y + dy][x + dx]);
     const ore = placement === 'wall' && !touchesFloor ? null : oreForDepth(seed, entrance, x, y, depth);
-    if (ore && randomAtTile(seed, x + entrance.tileX * 41, y + entrance.tileY * 41, CAVE_ORE_SALT + 3) < (placement === 'wall' ? 0.7 : 0.42)) ores.push({ id: `${entrance.id}:${x}:${y}`, tileX: x, tileY: y, type: ore, placement });
+    if (ore && randomAtTile(seed, x + entrance.tileX * 41, y + entrance.tileY * 41, CAVE_ORE_SALT + 3) < CAVE_ORE_PLACEMENT_CHANCE[placement]) {
+      ores.push({
+        id: `${entrance.id}:${x}:${y}`,
+        tileX: x,
+        tileY: y,
+        type: ore,
+        placement,
+        veinStyle: oreVeinStyleFor(seed, entrance, x, y, ore)
+      });
+    }
   }
   return { entrance, width, height, entranceTileX, entranceTileY, floorTiles, depthByTile, ores };
 };
