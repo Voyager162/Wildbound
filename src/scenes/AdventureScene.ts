@@ -52,6 +52,7 @@ import {
   type CaveOre,
   type CaveWorldOrigin
 } from '../world/caves/caveGenerator';
+import { CAVE_WALL_PUFFINESS_SCALE } from '../world/caves/caveInteriorVisualConfig';
 
 const BASE_PLAYER_SPEED = 220;
 const PLAYER_SPEED = BASE_PLAYER_SPEED * (PLAYER_SPEED_SCALE / 50);
@@ -71,6 +72,11 @@ const NIGHT_AMBIENT_LIGHT_UPDATE_INTERVAL_MS = 33;
 const MINIMAP_TILES_PER_CELL = Math.max(1, Math.round(16 * (MINIMAP_AREA_SCALE / 50)));
 const CAVE_ENTRANCE_INTERACTION_RADIUS_PIXELS = 84;
 const CAVE_ENTRANCE_SEARCH_RADIUS_TILES = 6;
+// Kept visual-only: designers can reshape the cave wall art without changing layouts or
+// collision. The clamp also protects the renderer from accidental extreme configuration.
+const CAVE_WALL_PUFFINESS = Math.max(0.25, Math.min(2, CAVE_WALL_PUFFINESS_SCALE));
+const CAVE_CONTOUR_BLEND = 0.08 + CAVE_WALL_PUFFINESS * 0.1;
+const CAVE_CONTOUR_JAGGEDNESS = 5 - CAVE_WALL_PUFFINESS * 1.4;
 
 type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
 
@@ -1298,13 +1304,13 @@ export class AdventureScene extends Phaser.Scene {
     // uneven rock slopes, which keeps the visible cave curved without hiding solid rock.
     const contours = this.createCaveContours(layout, origin);
     contours.forEach((contour) => {
-      graphics.lineStyle(30, 0x101516, 1);
+      graphics.lineStyle(30 * CAVE_WALL_PUFFINESS, 0x101516, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(21, 0x1e2927, 1);
+      graphics.lineStyle(21 * CAVE_WALL_PUFFINESS, 0x1e2927, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(12, 0x303e39, 0.98);
+      graphics.lineStyle(12 * CAVE_WALL_PUFFINESS, 0x303e39, 0.98);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(3, 0x526159, 0.86);
+      graphics.lineStyle(3 * CAVE_WALL_PUFFINESS, 0x526159, 0.86);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
     });
     contours.forEach((contour, index) => {
@@ -1459,8 +1465,14 @@ export class AdventureScene extends Phaser.Scene {
       for (let index = 0; index < smoothed.length; index += 1) {
         const current = smoothed[index];
         const following = smoothed[(index + 1) % smoothed.length];
-        next.push({ x: current.x * 0.82 + following.x * 0.18, y: current.y * 0.82 + following.y * 0.18 });
-        next.push({ x: current.x * 0.18 + following.x * 0.82, y: current.y * 0.18 + following.y * 0.82 });
+        next.push({
+          x: current.x * (1 - CAVE_CONTOUR_BLEND) + following.x * CAVE_CONTOUR_BLEND,
+          y: current.y * (1 - CAVE_CONTOUR_BLEND) + following.y * CAVE_CONTOUR_BLEND
+        });
+        next.push({
+          x: current.x * CAVE_CONTOUR_BLEND + following.x * (1 - CAVE_CONTOUR_BLEND),
+          y: current.y * CAVE_CONTOUR_BLEND + following.y * (1 - CAVE_CONTOUR_BLEND)
+        });
       }
       smoothed = next;
     }
@@ -1470,7 +1482,7 @@ export class AdventureScene extends Phaser.Scene {
       const distance = Math.hypot(following.x - prior.x, following.y - prior.y) || 1;
       const outwardX = (following.y - prior.y) / distance;
       const outwardY = -(following.x - prior.x) / distance;
-      const jag = (this.caveVisualRandom(contourIndex * 193 + index, contourIndex * 31 + index, 0x7201 + index) - 0.5) * 3.6;
+      const jag = (this.caveVisualRandom(contourIndex * 193 + index, contourIndex * 31 + index, 0x7201 + index) - 0.5) * CAVE_CONTOUR_JAGGEDNESS;
       return { x: point.x + outwardX * jag, y: point.y + outwardY * jag };
     });
   }
