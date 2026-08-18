@@ -1268,7 +1268,9 @@ export class AdventureScene extends Phaser.Scene {
     const outerX = origin.x - WORLD_TILE_SIZE;
     const outerY = origin.y - WORLD_TILE_SIZE;
     graphics.clear().setVisible(true);
-    graphics.fillStyle(0x07090b, 1);
+    // Keep the solid rock behind the passage visibly distinct from both the floor and the
+    // shadowed wall lip. This remains dark, but no longer reads as an empty black void.
+    graphics.fillStyle(0x17201f, 1);
     graphics.fillRect(outerX, outerY, (layout.width + 2) * WORLD_TILE_SIZE, (layout.height + 2) * WORLD_TILE_SIZE);
 
     // The rendered floor is a deterministic continuous field of irregular chambers and curved
@@ -1279,16 +1281,16 @@ export class AdventureScene extends Phaser.Scene {
       y: origin.y + point.y * WORLD_TILE_SIZE
     })));
     contours.forEach((contour) => {
-      this.fillCavePolygon(contour, 0x353c39, 1);
+      this.fillCavePolygon(contour, 0x424d47, 1);
     });
     contours.forEach((contour) => {
-      graphics.lineStyle(30 * CAVE_WALL_PUFFINESS, 0x101516, 1);
+      graphics.lineStyle(42 * CAVE_WALL_PUFFINESS, 0x16201f, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(21 * CAVE_WALL_PUFFINESS, 0x1e2927, 1);
+      graphics.lineStyle(32 * CAVE_WALL_PUFFINESS, 0x2a3935, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(12 * CAVE_WALL_PUFFINESS, 0x303e39, 0.98);
+      graphics.lineStyle(21 * CAVE_WALL_PUFFINESS, 0x51655d, 0.98);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(3 * CAVE_WALL_PUFFINESS, 0x526159, 0.86);
+      graphics.lineStyle(Math.max(2, 6 * CAVE_WALL_PUFFINESS), 0x94aa9b, 0.9);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
     });
     contours.forEach((contour, index) => {
@@ -1422,13 +1424,13 @@ export class AdventureScene extends Phaser.Scene {
       const outwardSign = area > 0 ? 1 : -1;
       const outwardX = deltaY / distance * outwardSign;
       const outwardY = -deltaX / distance * outwardSign;
-      const length = 20 + this.caveVisualRandom(contourIndex, index, 0x7221) * 22;
-      const width = 2.8 + this.caveVisualRandom(contourIndex, index, 0x7222) * 3.6;
-      const centerX = point.x + outwardX * (19 + this.caveVisualRandom(contourIndex, index, 0x7223) * 10);
-      const centerY = point.y + outwardY * (19 + this.caveVisualRandom(contourIndex, index, 0x7223) * 10);
+      const length = 25 + this.caveVisualRandom(contourIndex, index, 0x7221) * 27;
+      const width = 3.4 + this.caveVisualRandom(contourIndex, index, 0x7222) * 4.4;
+      const centerX = point.x + outwardX * (14 + CAVE_WALL_PUFFINESS * (13 + this.caveVisualRandom(contourIndex, index, 0x7223) * 11));
+      const centerY = point.y + outwardY * (14 + CAVE_WALL_PUFFINESS * (13 + this.caveVisualRandom(contourIndex, index, 0x7223) * 11));
       const angle = Math.atan2(deltaY, deltaX);
-      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length + 8, width + 2.5, contourIndex, index, 0x7224), 0x121917, 0.54);
-      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length, width, contourIndex, index, 0x7234), 0x5b6a60, 0.42);
+      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length + 9, width + 3, contourIndex, index, 0x7224), 0x20302c, 0.82);
+      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length, width, contourIndex, index, 0x7234), 0x85a095, 0.58);
     }
   }
 
