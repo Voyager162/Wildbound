@@ -1281,16 +1281,18 @@ export class AdventureScene extends Phaser.Scene {
       y: origin.y + point.y * WORLD_TILE_SIZE
     })));
     contours.forEach((contour) => {
-      this.fillCavePolygon(contour, 0x1b2728, 1);
+      this.fillCavePolygon(contour, 0x202a2a, 1);
     });
     contours.forEach((contour) => {
-      graphics.lineStyle(48 * CAVE_WALL_PUFFINESS, 0x0b1214, 1);
+      // Keep a substantial readable rock face even when puffiness is dialled low; only the
+      // outer shadow expands markedly with the setting. Geometry remains fully smooth.
+      graphics.lineStyle(24 + 32 * CAVE_WALL_PUFFINESS, 0x0c1416, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(36 * CAVE_WALL_PUFFINESS, 0x173033, 1);
+      graphics.lineStyle(16 + 28 * CAVE_WALL_PUFFINESS, 0x294347, 1);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(23 * CAVE_WALL_PUFFINESS, 0x31534f, 0.98);
+      graphics.lineStyle(9 + 20 * CAVE_WALL_PUFFINESS, 0x5d806f, 0.98);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
-      graphics.lineStyle(Math.max(1.8, 4.5 * CAVE_WALL_PUFFINESS), 0x83ad91, 0.82);
+      graphics.lineStyle(Math.max(2.5, 5 * CAVE_WALL_PUFFINESS), 0xb5caa6, 0.9);
       graphics.strokePoints(contour as CaveRenderPoint[], true);
     });
     contours.forEach((contour, index) => {
@@ -1429,8 +1431,8 @@ export class AdventureScene extends Phaser.Scene {
       const centerX = point.x + outwardX * (14 + CAVE_WALL_PUFFINESS * (13 + this.caveVisualRandom(contourIndex, index, 0x7223) * 11));
       const centerY = point.y + outwardY * (14 + CAVE_WALL_PUFFINESS * (13 + this.caveVisualRandom(contourIndex, index, 0x7223) * 11));
       const angle = Math.atan2(deltaY, deltaX);
-      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length + 9, width + 3, contourIndex, index, 0x7224), 0x14282a, 0.9);
-      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length, width, contourIndex, index, 0x7234), 0x4f806f, 0.68);
+      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length + 9, width + 3, contourIndex, index, 0x7224), 0x1d3739, 0.94);
+      this.fillCavePolygon(this.createCaveVeinPoints(centerX, centerY, angle, length, width, contourIndex, index, 0x7234), 0x83ad91, 0.8);
     }
   }
 
