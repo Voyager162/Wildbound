@@ -213,6 +213,14 @@ export class ChunkManager {
     this.chunks.get(`${chunkX},${chunkY}`)?.clearHarvestAnimation();
   }
 
+  // Surface features are generated independently from caves, so ask the loaded terrain chunk
+  // whether its cave formation occupies this tile before offering a harvest interaction.
+  isCaveFormationAtTile(tileX: number, tileY: number): boolean {
+    const chunkX = Math.floor(tileX / CHUNK_SIZE_TILES);
+    const chunkY = Math.floor(tileY / CHUNK_SIZE_TILES);
+    return this.chunks.get(`${chunkX},${chunkY}`)?.coversCaveFormationAtTile(tileX, tileY) ?? false;
+  }
+
   harvestFeature(tileX: number, tileY: number): boolean {
     if (!this.sessionState.harvestFeature(tileX, tileY)) {
       return false;

@@ -50,7 +50,11 @@ import {
   GROUND_GRASS_SIZE_SCALE
 } from './worldVisualConfig';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
-import { generateChunkCaveEntrances, type CaveEntrance } from './caves/caveGenerator';
+import {
+  caveFormationContainsWorldPoint,
+  generateChunkCaveEntrances,
+  type CaveEntrance
+} from './caves/caveGenerator';
 import {
   CAVE_MOUTH_STALACTITE_COUNT_MAX,
   CAVE_MOUTH_STALACTITE_COUNT_MIN,
@@ -61,9 +65,15 @@ import {
 // This keeps chunk generation bounded while avoiding a visible grid in the world itself.
 const VISUAL_TERRAIN_CELL_SIZE = 8;
 const VISUAL_CELLS_PER_TILE = WORLD_TILE_SIZE / VISUAL_TERRAIN_CELL_SIZE;
+// A two-pixel world-space guard band gives the renderer valid neighbour pixels when a camera
+// lands between physical pixels. The displayed frame remains exactly one chunk wide.
+const TERRAIN_TEXTURE_PADDING = 2;
+const TERRAIN_TEXTURE_SIZE = CHUNK_SIZE_PIXELS + TERRAIN_TEXTURE_PADDING * 2;
+const TERRAIN_VERTEX_MARGIN_CELLS = Math.ceil(TERRAIN_TEXTURE_PADDING / VISUAL_TERRAIN_CELL_SIZE);
 const FEATURE_TEXTURE_PADDING = 128;
 const FEATURE_TEXTURE_SIZE = CHUNK_SIZE_PIXELS + FEATURE_TEXTURE_PADDING * 2;
 const WATER_MOTION_TEXTURE_SIZE = 192;
+const CAVE_FEATURE_EDGE_BUFFER_PIXELS = WORLD_TILE_SIZE;
 
 interface WaterWave {
   worldX: number;
@@ -103,6 +113,7 @@ interface TerrainMaterialPixels {
 }
 
 interface CaveTerrainInfluence {
+  entrance: CaveEntrance;
   centerWorldX: number;
   centerWorldY: number;
   radiusPixels: number;
@@ -195,7 +206,7 @@ export class WorldChunk {
   ) {
     this.key = `${x},${y}`;
     this.textureKey = `terrain:v${TOPOGRAPHY_GENERATION_VERSION}:${seed}:${x}:${y}`;
-    const terrainTexture = scene.textures.createCanvas(this.textureKey, CHUNK_SIZE_PIXELS, CHUNK_SIZE_PIXELS);
+    const terrainTexture = scene.textures.createCanvas(this.textureKey, TERRAIN_TEXTURE_SIZE, TERRAIN_TEXTURE_SIZE);
     if (!terrainTexture) {
       throw new Error('Wildbound could not create a terrain texture.');
     }
@@ -205,7 +216,10 @@ export class WorldChunk {
     if (!featureTexture) {
       throw new Error('Wildbound could not create a feature texture.');
     }
-    this.terrainImage = scene.add.image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.textureKey).setOrigin(0);
+    terrainTexture.add('surface', 0, TERRAIN_TEXTURE_PADDING, TERRAIN_TEXTURE_PADDING, CHUNK_SIZE_PIXELS, CHUNK_SIZE_PIXELS);
+    this.terrainImage = scene.add
+      .image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.textureKey, 'surface')
+      .setOrigin(0);
     this.waterGraphics = scene.add.graphics().setDepth(0.25);
     this.featureImage = scene.add
       .image(x * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, y * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, this.featureTextureKey)
@@ -430,7 +444,7 @@ export class WorldChunk {
       const worldTileY = this.y * CHUNK_SIZE_TILES + feature.localTileY;
 
       if (!this.sessionState.isFeatureHarvested(worldTileX, worldTileY)
-        && !this.isCaveTerrainTile(worldTileX, worldTileY)) {
+        && !this.isCaveFeatureTile(worldTileX, worldTileY)) {
         const offset = this.harvestingTileKey === this.tileKey(worldTileX, worldTileY) ? this.harvestOffset : 0;
         this.drawFeature(
           feature.type,
@@ -831,6 +845,7 @@ export class WorldChunk {
               });
             }
             influences.push({
+              entrance,
               centerWorldX,
               centerWorldY,
               radiusPixels,
@@ -852,27 +867,24 @@ export class WorldChunk {
     return influences;
   }
 
-  private isCaveTerrainTile(worldTileX: number, worldTileY: number): boolean {
+  /** True when a harvestable tile would be covered by the exposed cave formation. */
+  coversCaveFormationAtTile(worldTileX: number, worldTileY: number): boolean {
+    return this.isCaveFeatureTile(worldTileX, worldTileY);
+  }
+
+  private isCaveFeatureTile(worldTileX: number, worldTileY: number): boolean {
     const worldPixelX = (worldTileX + 0.5) * WORLD_TILE_SIZE;
     const worldPixelY = (worldTileY + 0.5) * WORLD_TILE_SIZE;
-    return this.caveTerrainInfluences.some((cave) => {
-      const deltaX = worldPixelX - cave.centerWorldX;
-      const deltaY = worldPixelY - cave.centerWorldY;
-      const forward = deltaX * cave.forwardX + deltaY * cave.forwardY;
-      const side = -deltaX * cave.forwardY + deltaY * cave.forwardX;
-      const sideRadius = cave.radiusPixels * 1.28;
-      const sideAmount = Math.abs(side) / sideRadius;
-      const ridgeProfile = (coherentNoise(this.seed, worldPixelX, worldPixelY, 74, 0x3c719a) - 0.5) * 0.28
-        + (coherentNoise(this.seed, worldPixelX, worldPixelY, 21, 0x8f21d4) - 0.5) * 0.17
-        + (coherentNoise(this.seed, worldPixelX, worldPixelY, 6, 0x6e24a1) - 0.5) * 0.08;
-      const sideNoise = (coherentNoise(this.seed, worldPixelX, worldPixelY, 31, 0x3b1169) - 0.5) * 0.16;
-      const shoulder = Math.max(0, 1 - sideAmount ** 1.75);
-      const backEdge = -cave.radiusPixels * (0.42 + shoulder * 0.48 + ridgeProfile);
-      const frontEdge = cave.radiusPixels * (0.1 + shoulder * 0.2 + ridgeProfile * 0.34);
-      // Leave a small stone-free buffer so animated grass never appears to grow out of the
-      // exposed cave face or across the black mouth.
-      return sideAmount < 1 + sideNoise && forward > backEdge - cave.radiusPixels * 0.06 && forward < frontEdge + cave.radiusPixels * 0.06;
-    });
+    // Features have a visual footprint beyond their centre. The buffer keeps trees, rocks,
+    // grass, and their interaction rings clear of the rocky face rather than merely hiding
+    // their base tile beneath it.
+    return this.caveTerrainInfluences.some((cave) => caveFormationContainsWorldPoint(
+      this.seed,
+      cave.entrance,
+      worldPixelX,
+      worldPixelY,
+      CAVE_FEATURE_EDGE_BUFFER_PIXELS
+    ));
   }
 
   private oceanShoreNormal(tileX: number, tileY: number): { x: number; y: number } {
@@ -1005,11 +1017,11 @@ export class WorldChunk {
     const firstTileY = this.y * CHUNK_SIZE_TILES;
     const cellsPerChunk = CHUNK_SIZE_PIXELS / VISUAL_TERRAIN_CELL_SIZE;
 
-    // Vertex samples extend one cell farther than the chunk's last painted cell. Adjacent chunks
-    // query the same global coordinates at their shared edge, so their baked colours meet exactly.
-    for (let sampleY = 0; sampleY <= cellsPerChunk; sampleY += 1) {
+    // Include the texture guard band as world samples. Adjacent chunks therefore expose the
+    // identical pixels just beyond their visible frames instead of transparent texture edges.
+    for (let sampleY = -TERRAIN_VERTEX_MARGIN_CELLS; sampleY <= cellsPerChunk + TERRAIN_VERTEX_MARGIN_CELLS; sampleY += 1) {
       const row: TerrainVisualVertex[] = [];
-      for (let sampleX = 0; sampleX <= cellsPerChunk; sampleX += 1) {
+      for (let sampleX = -TERRAIN_VERTEX_MARGIN_CELLS; sampleX <= cellsPerChunk + TERRAIN_VERTEX_MARGIN_CELLS; sampleX += 1) {
         const worldPixelX = firstTileX * WORLD_TILE_SIZE + sampleX * VISUAL_TERRAIN_CELL_SIZE;
         const worldPixelY = firstTileY * WORLD_TILE_SIZE + sampleY * VISUAL_TERRAIN_CELL_SIZE;
         const surface = surfaceAtTile(
@@ -1069,7 +1081,7 @@ export class WorldChunk {
     vertices: readonly (readonly TerrainVisualVertex[])[],
     caveInfluences: readonly CaveTerrainInfluence[]
   ): void {
-    const imageData = context.createImageData(CHUNK_SIZE_PIXELS, CHUNK_SIZE_PIXELS);
+    const imageData = context.createImageData(TERRAIN_TEXTURE_SIZE, TERRAIN_TEXTURE_SIZE);
     const pixels = imageData.data;
     const cellsPerChunk = CHUNK_SIZE_PIXELS / VISUAL_TERRAIN_CELL_SIZE;
     const channel = (color: number, shift: number): number => (color >> shift) & 0xff;
@@ -1139,20 +1151,27 @@ export class WorldChunk {
       const seamShadow = Math.max(0, Math.min(4, (1.35 - edgeDistance) * 3));
       return faceTone + faceCenterLift - seamShadow;
     };
-    let pixel = 0;
-
-    for (let cellY = 0; cellY < cellsPerChunk; cellY += 1) {
-      const top = vertices[cellY];
-      const bottom = vertices[cellY + 1];
+    for (let cellY = -TERRAIN_VERTEX_MARGIN_CELLS; cellY < cellsPerChunk + TERRAIN_VERTEX_MARGIN_CELLS; cellY += 1) {
+      const top = vertices[cellY + TERRAIN_VERTEX_MARGIN_CELLS];
+      const bottom = vertices[cellY + TERRAIN_VERTEX_MARGIN_CELLS + 1];
       for (let offsetY = 0; offsetY < VISUAL_TERRAIN_CELL_SIZE; offsetY += 1) {
+        const textureY = cellY * VISUAL_TERRAIN_CELL_SIZE + offsetY + TERRAIN_TEXTURE_PADDING;
+        if (textureY < 0 || textureY >= TERRAIN_TEXTURE_SIZE) {
+          continue;
+        }
         const verticalAmount = (offsetY + 0.5) / VISUAL_TERRAIN_CELL_SIZE;
-        for (let cellX = 0; cellX < cellsPerChunk; cellX += 1) {
-          const topLeft = top[cellX];
-          const topRight = top[cellX + 1];
-          const bottomLeft = bottom[cellX];
-          const bottomRight = bottom[cellX + 1];
+        for (let cellX = -TERRAIN_VERTEX_MARGIN_CELLS; cellX < cellsPerChunk + TERRAIN_VERTEX_MARGIN_CELLS; cellX += 1) {
+          const textureX = cellX * VISUAL_TERRAIN_CELL_SIZE + TERRAIN_TEXTURE_PADDING;
+          const topLeft = top[cellX + TERRAIN_VERTEX_MARGIN_CELLS];
+          const topRight = top[cellX + TERRAIN_VERTEX_MARGIN_CELLS + 1];
+          const bottomLeft = bottom[cellX + TERRAIN_VERTEX_MARGIN_CELLS];
+          const bottomRight = bottom[cellX + TERRAIN_VERTEX_MARGIN_CELLS + 1];
 
           for (let offsetX = 0; offsetX < VISUAL_TERRAIN_CELL_SIZE; offsetX += 1) {
+            const pixelX = textureX + offsetX;
+            if (pixelX < 0 || pixelX >= TERRAIN_TEXTURE_SIZE) {
+              continue;
+            }
             const horizontalAmount = (offsetX + 0.5) / VISUAL_TERRAIN_CELL_SIZE;
             let red = sample(
               channel(topLeft.color, 16), channel(topRight.color, 16),
@@ -1343,11 +1362,11 @@ export class WorldChunk {
               blue = cave.rockBlue + bedrockTone * 0.9;
             });
 
+            const pixel = (textureY * TERRAIN_TEXTURE_SIZE + pixelX) * 4;
             pixels[pixel] = clampChannel(red);
             pixels[pixel + 1] = clampChannel(green);
             pixels[pixel + 2] = clampChannel(blue);
             pixels[pixel + 3] = 255;
-            pixel += 4;
           }
         }
       }
@@ -1377,21 +1396,21 @@ export class WorldChunk {
       const maxWorldX = Math.max(...facet.vertices.map((point) => point.x));
       const minWorldY = Math.min(...facet.vertices.map((point) => point.y));
       const maxWorldY = Math.max(...facet.vertices.map((point) => point.y));
-      const startX = Math.max(0, Math.floor(minWorldX - chunkWorldX));
-      const endX = Math.min(CHUNK_SIZE_PIXELS - 1, Math.ceil(maxWorldX - chunkWorldX));
-      const startY = Math.max(0, Math.floor(minWorldY - chunkWorldY));
-      const endY = Math.min(CHUNK_SIZE_PIXELS - 1, Math.ceil(maxWorldY - chunkWorldY));
+      const startX = Math.max(0, Math.floor(minWorldX - chunkWorldX) + TERRAIN_TEXTURE_PADDING);
+      const endX = Math.min(TERRAIN_TEXTURE_SIZE - 1, Math.ceil(maxWorldX - chunkWorldX) + TERRAIN_TEXTURE_PADDING);
+      const startY = Math.max(0, Math.floor(minWorldY - chunkWorldY) + TERRAIN_TEXTURE_PADDING);
+      const endY = Math.min(TERRAIN_TEXTURE_SIZE - 1, Math.ceil(maxWorldY - chunkWorldY) + TERRAIN_TEXTURE_PADDING);
       if (startX > endX || startY > endY) {
         return;
       }
       for (let pixelY = startY; pixelY <= endY; pixelY += 1) {
-        const worldY = chunkWorldY + pixelY + 0.5;
+        const worldY = chunkWorldY + pixelY - TERRAIN_TEXTURE_PADDING + 0.5;
         for (let pixelX = startX; pixelX <= endX; pixelX += 1) {
-          const worldX = chunkWorldX + pixelX + 0.5;
+          const worldX = chunkWorldX + pixelX - TERRAIN_TEXTURE_PADDING + 0.5;
           if (!isInsidePolygon(worldX, worldY, facet.vertices)) {
             continue;
           }
-          const pixelIndex = (pixelY * CHUNK_SIZE_PIXELS + pixelX) * 4;
+          const pixelIndex = (pixelY * TERRAIN_TEXTURE_SIZE + pixelX) * 4;
           const opacity = facet.opacity ?? 1;
           const textureSalt = facet.textureSalt;
           const textureStrength = facet.textureStrength ?? 0;
@@ -1559,7 +1578,7 @@ export class WorldChunk {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
         const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
         const worldTileY = this.y * CHUNK_SIZE_TILES + localY;
-        if (this.isCaveTerrainTile(worldTileX, worldTileY)) {
+        if (this.isCaveFeatureTile(worldTileX, worldTileY)) {
           continue;
         }
         const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
@@ -1607,7 +1626,7 @@ export class WorldChunk {
       const worldTileY = this.y * CHUNK_SIZE_TILES + feature.localTileY;
       const key = this.tileKey(worldTileX, worldTileY);
       if (this.sessionState.isFeatureHarvested(worldTileX, worldTileY)
-        || this.isCaveTerrainTile(worldTileX, worldTileY)) {
+        || this.isCaveFeatureTile(worldTileX, worldTileY)) {
         return;
       }
 

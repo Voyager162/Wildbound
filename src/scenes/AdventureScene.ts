@@ -2088,6 +2088,7 @@ export class AdventureScene extends Phaser.Scene {
       this.player.x,
       this.player.y,
       (candidateX, candidateY) => !this.sessionWorldState.isFeatureHarvested(candidateX, candidateY)
+        && !this.chunkManager.isCaveFormationAtTile(candidateX, candidateY)
     );
 
     if (this.interactionTarget) {
@@ -2474,7 +2475,9 @@ export class AdventureScene extends Phaser.Scene {
     const tileX = worldToTile(this.player.x);
     const tileY = worldToTile(this.player.y);
     const climate = climateAtTile(this.worldSeed, tileX, tileY);
-    const generatedFeature = featureAtTile(this.worldSeed, tileX, tileY);
+    const generatedFeature = this.chunkManager.isCaveFormationAtTile(tileX, tileY)
+      ? null
+      : featureAtTile(this.worldSeed, tileX, tileY);
     const feature = this.sessionWorldState.isFeatureHarvested(tileX, tileY) ? 'harvested' : (generatedFeature ?? 'none');
     const target = this.interactionTarget ? this.interactionTarget.feature : 'none';
     const landmark = landmarkAtTile(this.worldSeed, tileX, tileY)?.label ?? 'none';

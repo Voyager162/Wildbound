@@ -1,6 +1,6 @@
 import { Biome, biomeAtTile } from '../generation/biomeGenerator';
 import { featureAtTile } from '../generation/featureGenerator';
-import { randomAtTile } from '../generation/noise';
+import { coherentNoise, randomAtTile } from '../generation/noise';
 import { surfaceAtTile } from '../generation/terrainGenerator';
 import {
   CAVE_ORE_FLOOR_PLACEMENT_CHANCE,
@@ -138,6 +138,41 @@ export interface CaveMouthCenter {
   readonly x: number;
   readonly y: number;
 }
+
+/**
+ * The exposed surface face is a world-space field rather than a per-chunk shape.  Rendering,
+ * foliage placement, and interaction all use this same test so a terrain object cannot be
+ * hidden by a cave while remaining harvestable.
+ */
+export const caveFormationContainsWorldPoint = (
+  seed: string,
+  entrance: CaveEntrance,
+  worldPixelX: number,
+  worldPixelY: number,
+  edgePaddingPixels = 0
+): boolean => {
+  const centerWorldX = (entrance.tileX + 0.5) * WORLD_TILE_SIZE;
+  const centerWorldY = (entrance.tileY + 0.5) * WORLD_TILE_SIZE;
+  const forwardX = Math.cos(entrance.mouthAngle);
+  const forwardY = Math.sin(entrance.mouthAngle);
+  const deltaX = worldPixelX - centerWorldX;
+  const deltaY = worldPixelY - centerWorldY;
+  const forward = deltaX * forwardX + deltaY * forwardY;
+  const side = -deltaX * forwardY + deltaY * forwardX;
+  const radiusPixels = entrance.formationRadiusTiles * WORLD_TILE_SIZE;
+  const sideRadius = radiusPixels * 1.28;
+  const sideAmount = Math.abs(side) / sideRadius;
+  const ridgeProfile = (coherentNoise(seed, worldPixelX, worldPixelY, 74, 0x3c719a) - 0.5) * 0.28
+    + (coherentNoise(seed, worldPixelX, worldPixelY, 21, 0x8f21d4) - 0.5) * 0.17
+    + (coherentNoise(seed, worldPixelX, worldPixelY, 6, 0x6e24a1) - 0.5) * 0.08;
+  const sideNoise = (coherentNoise(seed, worldPixelX, worldPixelY, 31, 0x3b1169) - 0.5) * 0.16;
+  const shoulder = Math.max(0, 1 - sideAmount ** 1.75);
+  const backEdge = -radiusPixels * (0.42 + shoulder * 0.48 + ridgeProfile);
+  const frontEdge = radiusPixels * (0.1 + shoulder * 0.2 + ridgeProfile * 0.34);
+  return sideAmount < 1 + sideNoise + edgePaddingPixels / sideRadius
+    && forward > backEdge - edgePaddingPixels
+    && forward < frontEdge + edgePaddingPixels;
+};
 
 const caveChanceAt = (seed: string, x: number, y: number): number => CAVE_SPAWN_CHANCE_BY_BIOME[biomeAtTile(seed, x, y)];
 const isRawCaveCandidate = (seed: string, x: number, y: number): boolean => randomAtTile(seed, x, y, CAVE_ROLL_SALT) < caveChanceAt(seed, x, y);
