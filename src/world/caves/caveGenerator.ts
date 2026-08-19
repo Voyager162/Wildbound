@@ -777,9 +777,16 @@ const createTerrainContours = (terrain: CaveTerrain, width: number, height: numb
   return contours;
 };
 
-const buildDepthMap = (tiles: boolean[][], startX: number, startY: number): number[][] => {
+const buildDepthMap = (tiles: boolean[][], starts: readonly (readonly [number, number])[]): number[][] => {
   const distances = Array.from({ length: tiles.length }, () => Array<number>(tiles[0].length).fill(-1));
-  const queue: Array<readonly [number, number]> = [[startX, startY]]; distances[startY][startX] = 0;
+  const queue: Array<readonly [number, number]> = [];
+  starts.forEach(([startX, startY]) => {
+    if (!tiles[startY]?.[startX] || distances[startY][startX] === 0) {
+      return;
+    }
+    distances[startY][startX] = 0;
+    queue.push([startX, startY]);
+  });
   for (let index = 0; index < queue.length; index += 1) {
     const [x, y] = queue[index], distance = distances[y][x] + 1;
     CARDINAL_DIRECTIONS.forEach(([dx, dy]) => {
@@ -1016,7 +1023,6 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
     return caveTerrainFieldAt(terrain, x + 0.5, y + 0.5) >= 0;
   }));
   floorTiles[entranceTileY][entranceTileX] = true;
-  const depthByTile = buildDepthMap(floorTiles, entranceTileX, entranceTileY);
   const findFloorNear = (centerX: number, centerY: number): { readonly x: number; readonly y: number } => {
     for (let radius = 0; radius < 20; radius += 1) {
       for (let y = Math.max(1, Math.floor(centerY) - radius); y <= Math.min(height - 2, Math.floor(centerY) + radius); y += 1) {
@@ -1043,6 +1049,14 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
     target.tileX === entrance.tileX && target.tileY === entrance.tileY
   ));
   const spawn = incomingLinkedOutlet?.tile ?? { x: entranceTileX, y: entranceTileY };
+  // A cave system can have multiple surface entrances. All of them are real daylight openings,
+  // so each must reset the geological depth field. This keeps stalagmites, lava, and deep ores
+  // away from every entrance rather than only away from the original root mouth.
+  const depthByTile = buildDepthMap(
+    floorTiles,
+    [{ x: entranceTileX, y: entranceTileY }, ...linkedOutlets.map(({ tile }) => tile)]
+      .map(({ x, y }) => [x, y] as const)
+  );
   const protectedSurfaceExitTiles = [
     { x: entranceTileX, y: entranceTileY },
     ...linkedOutlets.map(({ tile }) => tile)

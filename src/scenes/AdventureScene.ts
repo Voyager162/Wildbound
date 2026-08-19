@@ -314,6 +314,7 @@ export class AdventureScene extends Phaser.Scene {
 
     if (this.worldMapOpen) {
       this.chunkManager.updateWaterAnimation(time);
+      this.chunkManager.updateCaveEntranceDaylight(time, 1 - this.nightAmount);
       this.chunkManager.updateSwampWaterDecorations(time, delta, this.player.x, this.player.y, 0, 0, this.isSwimming);
       this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.ambientLightAmount);
       this.updateNightAmbientLighting(time);
@@ -353,6 +354,7 @@ export class AdventureScene extends Phaser.Scene {
     this.chunkManager.update(this.player.x, this.player.y, time);
     this.chunkManager.updateFoliage(time);
     this.chunkManager.updateWaterAnimation(time);
+    this.chunkManager.updateCaveEntranceDaylight(time, 1 - this.nightAmount);
     this.chunkManager.updateSwampWaterDecorations(
       time,
       delta,
