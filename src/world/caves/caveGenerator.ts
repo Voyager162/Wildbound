@@ -92,7 +92,7 @@ export interface CaveLayout {
   // The terrain field is the source of truth for the cave's visual shape. floorTiles are a
   // compact collision/readability grid sampled from the same continuous field.
   readonly terrain: CaveTerrain;
-  readonly terrainContours: readonly (readonly CaveContourPoint[])[];
+  readonly terrainContours: readonly CaveTerrainContour[];
   readonly floorTiles: readonly (readonly boolean[])[]; readonly depthByTile: readonly (readonly number[])[];
   readonly ores: readonly CaveOre[];
   readonly lavaPools: readonly CaveLavaPool[];
@@ -112,6 +112,12 @@ export interface CaveTerrainTunnel {
 export interface CaveTerrain {
   readonly chambers: readonly CaveTerrainChamber[];
   readonly tunnels: readonly CaveTerrainTunnel[];
+}
+export interface CaveTerrainContour {
+  readonly points: readonly CaveContourPoint[];
+  // A field contour can bound either connected floor or a sealed rock pocket. Keeping that
+  // distinction lets the renderer preserve dark enclosed walls instead of filling them green.
+  readonly enclosesFloor: boolean;
 }
 
 const CAVE_ROLL_SALT = 71_209;
@@ -329,6 +335,8 @@ const caveDimensions = (depth: CaveDepth) => {
 const graphRandom = (seed: string, cave: CaveEntrance, index: number, salt: number): number => randomAtTile(seed, cave.tileX * 97 + index * 23, cave.tileY * 97 - index * 29, CAVE_GRAPH_SALT + salt);
 const CAVE_TERRAIN_PROFILE_SAMPLES = 14;
 const CAVE_TUNNEL_DISTANCE_SAMPLES = 10;
+const CAVE_TUNNEL_CLEARANCE_SAMPLES = 18;
+const CAVE_TUNNEL_MIN_WALL_GAP_TILES = 1.15;
 
 const profileValueAt = (profile: readonly number[], unitAngle: number): number => {
   const position = ((unitAngle % 1 + 1) % 1) * profile.length;
@@ -384,6 +392,11 @@ const tunnelFieldAt = (tunnel: CaveTerrainTunnel, x: number, y: number): number 
   }
   return strongest;
 };
+
+const tunnelRadiusAt = (tunnel: CaveTerrainTunnel, progress: number): number => (
+  (tunnel.startRadius * (1 - progress) + tunnel.endRadius * progress)
+  * profileValueAt(tunnel.radiusProfile, progress)
+);
 
 /** Samples the continuous chamber-and-tunnel terrain used by both collision and rendering. */
 export const caveTerrainFieldAt = (terrain: CaveTerrain, x: number, y: number): number => {
@@ -449,8 +462,46 @@ const smoothTerrainContour = (points: readonly CaveContourPoint[]): CaveContourP
 interface CaveContourEdge { readonly point: CaveContourPoint; readonly key: string; }
 interface CaveContourSegment { readonly from: CaveContourEdge; readonly to: CaveContourEdge; }
 
+const pointIsInsideContour = (points: readonly CaveContourPoint[], x: number, y: number): boolean => {
+  let isInside = false;
+  for (let index = 0, previous = points.length - 1; index < points.length; previous = index, index += 1) {
+    const currentPoint = points[index];
+    const previousPoint = points[previous];
+    if ((currentPoint.y > y) !== (previousPoint.y > y)
+      && x < (previousPoint.x - currentPoint.x) * (y - currentPoint.y) / (previousPoint.y - currentPoint.y) + currentPoint.x) {
+      isInside = !isInside;
+    }
+  }
+  return isInside;
+};
+
+const contourEnclosesFloor = (terrain: CaveTerrain, points: readonly CaveContourPoint[]): boolean => {
+  // Probe the geometric interior beside a contour edge rather than relying on a centroid, which
+  // can be outside a winding tunnel contour. This makes holes in a ring of rock unambiguous.
+  for (let index = 0; index < points.length; index += 1) {
+    const from = points[index];
+    const to = points[(index + 1) % points.length];
+    const deltaX = to.x - from.x;
+    const deltaY = to.y - from.y;
+    const length = Math.hypot(deltaX, deltaY);
+    if (length < 0.01) continue;
+    const midpointX = (from.x + to.x) * 0.5;
+    const midpointY = (from.y + to.y) * 0.5;
+    const normalX = -deltaY / length * 0.28;
+    const normalY = deltaX / length * 0.28;
+    for (const direction of [-1, 1]) {
+      const sampleX = midpointX + normalX * direction;
+      const sampleY = midpointY + normalY * direction;
+      if (pointIsInsideContour(points, sampleX, sampleY)) {
+        return caveTerrainFieldAt(terrain, sampleX, sampleY) >= 0;
+      }
+    }
+  }
+  return false;
+};
+
 /** Extracts a smooth isocontour from the continuous cave field; no collision-tile edges are rendered. */
-const createTerrainContours = (terrain: CaveTerrain, width: number, height: number): readonly (readonly CaveContourPoint[])[] => {
+const createTerrainContours = (terrain: CaveTerrain, width: number, height: number): readonly CaveTerrainContour[] => {
   const contourStepTiles = Math.max(0.5, Math.sqrt(width * height / CAVE_VISUAL_CONTOUR_TARGET_CELLS));
   const columns = Math.ceil(width / contourStepTiles);
   const rows = Math.ceil(height / contourStepTiles);
@@ -514,7 +565,7 @@ const createTerrainContours = (terrain: CaveTerrain, width: number, height: numb
     });
   });
   const used = new Set<number>();
-  const contours: CaveContourPoint[][] = [];
+  const contours: CaveTerrainContour[] = [];
   segments.forEach((segment, startingIndex) => {
     if (used.has(startingIndex)) {
       return;
@@ -540,7 +591,8 @@ const createTerrainContours = (terrain: CaveTerrain, width: number, height: numb
       current = next.from.key === currentKey ? next.to : next.from;
     }
     if (closed && points.length >= 8) {
-      contours.push(smoothTerrainContour(points));
+      const smoothed = smoothTerrainContour(points);
+      contours.push({ points: smoothed, enclosesFloor: contourEnclosesFloor(terrain, smoothed) });
     }
   });
   return contours;
@@ -615,6 +667,29 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
   const hasClearanceFromOtherNodes = (x: number, y: number, parentIndex: number): boolean => chambers.every((node, index) => (
     index === parentIndex || Math.hypot(node.x - x, node.y - y) >= 5.1
   ));
+  const hasSafePassageClearance = (
+    passage: CaveTerrainTunnel,
+    allowedChambers: readonly CaveTerrainChamber[]
+  ): boolean => {
+    for (let sampleIndex = 1; sampleIndex < CAVE_TUNNEL_CLEARANCE_SAMPLES; sampleIndex += 1) {
+      const progress = sampleIndex / CAVE_TUNNEL_CLEARANCE_SAMPLES;
+      const point = quadraticPoint(passage, progress);
+      // A passage is allowed to blend into its endpoints, but once it leaves those chambers it
+      // must retain a real strip of rock between every existing tunnel. Otherwise two walls can
+      // visually touch or create a misleading pinched route.
+      if (allowedChambers.some((chamber) => chamberFieldAt(chamber, point.x, point.y) >= 0)) {
+        continue;
+      }
+      const requiredGap = tunnelRadiusAt(passage, progress) + CAVE_TUNNEL_MIN_WALL_GAP_TILES;
+      if (chambers.some((chamber) => !allowedChambers.includes(chamber) && chamberFieldAt(chamber, point.x, point.y) >= -requiredGap)) {
+        return false;
+      }
+      if (tunnels.some((existing) => tunnelFieldAt(existing, point.x, point.y) >= -requiredGap)) {
+        return false;
+      }
+    }
+    return true;
+  };
 
   for (let index = 1; index < profile.spineSegments; index += 1) {
     const progress = index / (profile.spineSegments - 1);
@@ -624,11 +699,17 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
       + (graphRandom(seed, systemEntrance, index, 2) - 0.5) * 0.46;
     const stride = (entranceTileY - 13) / (profile.spineSegments - 1) * (0.84 + graphRandom(seed, systemEntrance, index, 3) * 0.28);
     const node = createPassageNode(index, clampX(prior.x + Math.cos(heading) * stride), clampY(prior.y + Math.sin(heading) * stride));
+    const passage = connectChambers(seed, systemEntrance, prior, node, index);
+    if (!hasClearanceFromOtherNodes(node.x, node.y, spineIndices[index - 1]) || !hasSafePassageClearance(passage, [prior, node])) {
+      // A clean dead end is always preferable to a second corridor pinching through an existing
+      // wall. Side branches can still grow from the safe portion of this main route.
+      break;
+    }
     const nodeIndex = chambers.length;
     chambers.push(node);
     nodeHeadings.push(heading);
     spineIndices.push(nodeIndex);
-    tunnels.push(connectChambers(seed, systemEntrance, prior, node, index));
+    tunnels.push(passage);
   }
 
   // A deliberately shorter arm runs behind the entrance. It prevents every cave from reading
@@ -643,11 +724,15 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
       + (graphRandom(seed, systemEntrance, index, 52) - 0.5) * 0.52;
     const stride = (height - 13 - entranceTileY) / rearSegments * (0.82 + graphRandom(seed, systemEntrance, index, 53) * 0.3);
     const node = createPassageNode(4_000 + index, clampX(prior.x + Math.cos(heading) * stride), clampY(prior.y + Math.sin(heading) * stride));
+    const passage = connectChambers(seed, systemEntrance, prior, node, 4_000 + index);
+    if (!hasClearanceFromOtherNodes(node.x, node.y, rearIndices[index - 1]) || !hasSafePassageClearance(passage, [prior, node])) {
+      break;
+    }
     const nodeIndex = chambers.length;
     chambers.push(node);
     nodeHeadings.push(heading);
     rearIndices.push(nodeIndex);
-    tunnels.push(connectChambers(seed, systemEntrance, prior, node, 4_000 + index));
+    tunnels.push(passage);
   }
 
   for (let branchIndex = 0; branchIndex < profile.branchSegments; branchIndex += 1) {
@@ -677,9 +762,13 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
     if (!nextNode) {
       continue;
     }
+    const passage = connectChambers(seed, systemEntrance, parent, nextNode, profile.spineSegments + rearSegments + branchIndex);
+    if (!hasSafePassageClearance(passage, [parent, nextNode])) {
+      continue;
+    }
     chambers.push(nextNode);
     nodeHeadings.push(nextHeading);
-    tunnels.push(connectChambers(seed, systemEntrance, parent, nextNode, profile.spineSegments + rearSegments + branchIndex));
+    tunnels.push(passage);
   }
 
   for (let loopIndex = 0; loopIndex < profile.loopConnections; loopIndex += 1) {
@@ -689,7 +778,10 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
     const second = chambers[secondIndex];
     const distance = Math.hypot(first.x - second.x, first.y - second.y);
     if (firstIndex !== secondIndex && distance > 7 && distance < 25) {
-      tunnels.push(connectChambers(seed, systemEntrance, first, second, 10_000 + loopIndex));
+      const passage = connectChambers(seed, systemEntrance, first, second, 10_000 + loopIndex);
+      if (hasSafePassageClearance(passage, [first, second])) {
+        tunnels.push(passage);
+      }
     }
   }
 
@@ -722,7 +814,9 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
     if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
       return false;
     }
-    return caveTerrainFieldAt(terrain, x + 0.5, y + 0.5) >= 0.12;
+    // The grid supports path depth, features, and quick broad-phase checks. Its threshold must
+    // match the rendered isocontour so it never invents a collision strip on visible floor.
+    return caveTerrainFieldAt(terrain, x + 0.5, y + 0.5) >= 0;
   }));
   floorTiles[entranceTileY][entranceTileX] = true;
   const depthByTile = buildDepthMap(floorTiles, entranceTileX, entranceTileY);

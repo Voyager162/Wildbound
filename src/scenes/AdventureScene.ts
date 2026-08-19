@@ -43,6 +43,7 @@ import { craftRecipe as applyCraftingRecipe } from '../crafting/craftingService'
 import { harvestSpeedForFeature } from '../crafting/harvestSpeedConfig';
 import {
   caveEntranceAtTile,
+  caveTerrainFieldAt,
   caveMouthCenter,
   caveWorldOrigin,
   caveWorldTilePosition,
@@ -1323,26 +1324,29 @@ export class AdventureScene extends Phaser.Scene {
     // The rendered floor is a deterministic continuous field of irregular chambers and curved
     // tunnels. The compact tile grid is retained only for fast collision lookup and is never
     // used as visible geometry.
-    const contours = layout.terrainContours.map((contour) => contour.map((point) => ({
-      x: origin.x + point.x * WORLD_TILE_SIZE,
-      y: origin.y + point.y * WORLD_TILE_SIZE
-    })));
-    contours.forEach((contour) => {
-      this.fillCavePolygon(contour, 0x26352e, 1);
+    const contours = layout.terrainContours.map((contour) => ({
+      enclosesFloor: contour.enclosesFloor,
+      points: contour.points.map((point) => ({
+        x: origin.x + point.x * WORLD_TILE_SIZE,
+        y: origin.y + point.y * WORLD_TILE_SIZE
+      }))
+    }));
+    contours.filter((contour) => contour.enclosesFloor).forEach((contour) => {
+      this.fillCavePolygon(contour.points, 0x26352e, 1);
     });
     this.drawCaveDepthShading(layout, origin);
     contours.forEach((contour) => {
       graphics.lineStyle(39 * CAVE_WALL_FACE_SCALE, 0x17241e, 1);
-      graphics.strokePoints(contour as CaveRenderPoint[], true);
+      graphics.strokePoints(contour.points as CaveRenderPoint[], true);
       graphics.lineStyle(30 * CAVE_WALL_FACE_SCALE, 0x354b3d, 1);
-      graphics.strokePoints(contour as CaveRenderPoint[], true);
+      graphics.strokePoints(contour.points as CaveRenderPoint[], true);
       graphics.lineStyle(19 * CAVE_WALL_FACE_SCALE, 0x6e856b, 0.98);
-      graphics.strokePoints(contour as CaveRenderPoint[], true);
+      graphics.strokePoints(contour.points as CaveRenderPoint[], true);
       graphics.lineStyle(Math.max(2.5, 5 * CAVE_WALL_FACE_SCALE), 0xb3cea5, 0.9);
-      graphics.strokePoints(contour as CaveRenderPoint[], true);
+      graphics.strokePoints(contour.points as CaveRenderPoint[], true);
     });
     contours.forEach((contour, index) => {
-      this.drawCaveWallStrata(contour, index);
+      this.drawCaveWallStrata(contour.points, index);
     });
     this.drawCaveFloorTexture(layout, origin);
     this.drawCaveStalagmites(layout.stalagmites, origin);
@@ -1936,9 +1940,19 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
     const tryMove = (x: number, y: number): boolean => {
-      const tileX = Math.floor((x - cave.origin.x) / WORLD_TILE_SIZE);
-      const tileY = Math.floor((y - cave.origin.y) / WORLD_TILE_SIZE);
-      return tileY >= 0 && tileY < cave.layout.height && tileX >= 0 && tileX < cave.layout.width && cave.layout.floorTiles[tileY][tileX];
+      const tileX = (x - cave.origin.x) / WORLD_TILE_SIZE;
+      const tileY = (y - cave.origin.y) / WORLD_TILE_SIZE;
+      if (tileY < 0 || tileY >= cave.layout.height || tileX < 0 || tileX >= cave.layout.width
+        || caveTerrainFieldAt(cave.layout.terrain, tileX, tileY) < 0) {
+        return false;
+      }
+      // Lava remains a visible, impassable floor feature while all ordinary collision comes
+      // directly from the same smooth terrain field used to draw the cave.
+      return !cave.layout.lavaPools.some((pool) => {
+        const normalized = (tileX - pool.tileX) ** 2 / (pool.radiusX * pool.radiusX)
+          + (tileY - pool.tileY) ** 2 / (pool.radiusY * pool.radiusY);
+        return normalized < 0.86;
+      });
     };
     if (tryMove(this.player.x + deltaX, this.player.y)) {
       this.player.x += deltaX;
