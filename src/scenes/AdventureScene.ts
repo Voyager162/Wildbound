@@ -81,10 +81,12 @@ const CAVE_WALL_PUFFINESS = Math.max(0.25, Math.min(2, CAVE_WALL_PUFFINESS_SCALE
 // Thin walls still need a legible rock face. Puffiness controls the physical visual weight,
 // while this keeps the layered face broad enough to read at the game's normal camera scale.
 const CAVE_WALL_FACE_SCALE = 0.72 + CAVE_WALL_PUFFINESS * 0.28;
-const CAVE_PLAYER_VISION_RADIUS_TILES = 12.5;
-const CAVE_LAVA_LIGHT_RADIUS_TILES = 6;
-const CAVE_VISIBILITY_RAY_COUNT = 112;
-const CAVE_LAVA_LIGHT_RAY_COUNT = 56;
+// A simple, player-centred low-light circle is deliberately more readable than a jagged
+// tile-by-tile sight polygon. It still limits how much of a tunnel is known at once, while
+// keeping nearby cave walls and floor details legible.
+const CAVE_PLAYER_VISION_RADIUS_TILES = 10.5;
+const CAVE_LAVA_LIGHT_RADIUS_TILES = 7;
+const CAVE_VISIBILITY_REFRESH_DISTANCE_PIXELS = 5;
 
 type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
 
@@ -125,9 +127,11 @@ export class AdventureScene extends Phaser.Scene {
   private harvestProgressGraphics!: Phaser.GameObjects.Graphics;
   private caveGraphics!: Phaser.GameObjects.Graphics;
   private caveLavaGraphics!: Phaser.GameObjects.Graphics;
-  private caveFogTexture!: Phaser.GameObjects.RenderTexture;
-  private caveVisionGraphics!: Phaser.GameObjects.Graphics;
-  private caveFogMask!: Phaser.Display.Masks.GeometryMask;
+  private caveFogOverlay!: SVGSVGElement;
+  private caveFogMaskBase!: SVGRectElement;
+  private caveFogDarkness!: SVGRectElement;
+  private caveFogPlayerLight!: SVGCircleElement;
+  private caveFogLavaLights: SVGCircleElement[] = [];
   private caveHintPanel!: Phaser.GameObjects.Graphics;
   private caveHint!: Phaser.GameObjects.Text;
   private isDebugVisible = false;
@@ -147,8 +151,8 @@ export class AdventureScene extends Phaser.Scene {
   private caveHarvestOre: CaveOre | null = null;
   private caveExitNearby = false;
   private caveExitTarget: CaveSurfaceExit | null = null;
-  private lastCaveVisibilityTileX = Number.NaN;
-  private lastCaveVisibilityTileY = Number.NaN;
+  private lastCaveVisibilityWorldX = Number.NaN;
+  private lastCaveVisibilityWorldY = Number.NaN;
   private nearbyDrop: DroppedItem | null = null;
   private harvestTarget: InteractionTarget | null = null;
   private harvestElapsedMs = 0;
@@ -197,15 +201,7 @@ export class AdventureScene extends Phaser.Scene {
     this.harvestProgressGraphics = this.add.graphics().setDepth(15);
     this.caveGraphics = this.add.graphics().setDepth(2).setVisible(false);
     this.caveLavaGraphics = this.add.graphics().setDepth(2.2).setVisible(false);
-    this.caveFogTexture = this.add
-      .renderTexture(0, 0, 1, 1)
-      .setOrigin(0)
-      .setDepth(9)
-      .setVisible(false);
-    this.caveVisionGraphics = this.make.graphics({ x: 0, y: 0 });
-    this.caveFogMask = this.caveVisionGraphics.createGeometryMask();
-    this.caveFogMask.invertAlpha = true;
-    this.caveFogTexture.setMask(this.caveFogMask);
+    this.createCaveFogOverlay();
     this.interactionHighlight = this.add
       .circle(0, 0, 62, 0xf5d76e, 0.09)
       .setStrokeStyle(3, 0xffec8b, 0.95)
@@ -652,8 +648,8 @@ export class AdventureScene extends Phaser.Scene {
   private handleResize(): void {
     this.updateCameraZoom();
     this.resizeCaveFog();
-    this.lastCaveVisibilityTileX = Number.NaN;
-    this.lastCaveVisibilityTileY = Number.NaN;
+    this.lastCaveVisibilityWorldX = Number.NaN;
+    this.lastCaveVisibilityWorldY = Number.NaN;
     if (this.worldReady) {
       this.updateMinimap(0, true);
     }
@@ -671,6 +667,7 @@ export class AdventureScene extends Phaser.Scene {
     this.worldMapOverlay.destroy();
     this.chunkManager?.destroy();
     this.dropManager?.destroy();
+    this.caveFogOverlay.remove();
   }
 
   private readonly handleBeforeUnload = (): void => {
@@ -1250,8 +1247,8 @@ export class AdventureScene extends Phaser.Scene {
       ? layout.entrance.id
       : `${layout.entrance.id}:linked`;
     this.activeCave = { entrance, layout, origin, returnWorldX, returnWorldY, entrySurfaceExitId };
-    this.lastCaveVisibilityTileX = Number.NaN;
-    this.lastCaveVisibilityTileY = Number.NaN;
+    this.lastCaveVisibilityWorldX = Number.NaN;
+    this.lastCaveVisibilityWorldY = Number.NaN;
     const spawn = caveWorldTilePosition(origin, layout.spawnTileX, layout.spawnTileY);
     this.player.setPosition(spawn.x, spawn.y);
     this.cameras.main.centerOn(this.player.x, this.player.y);
@@ -1280,10 +1277,9 @@ export class AdventureScene extends Phaser.Scene {
     this.caveExitTarget = null;
     this.caveGraphics.clear().setVisible(false);
     this.caveLavaGraphics.clear().setVisible(false);
-    this.caveFogTexture.clear().setVisible(false);
-    this.caveVisionGraphics.clear();
-    this.lastCaveVisibilityTileX = Number.NaN;
-    this.lastCaveVisibilityTileY = Number.NaN;
+    this.caveFogOverlay.classList.remove('is-visible');
+    this.lastCaveVisibilityWorldX = Number.NaN;
+    this.lastCaveVisibilityWorldY = Number.NaN;
     this.caveHintPanel.clear().setVisible(false);
     this.caveHint.setVisible(false);
     const returnToEntrySurface = !exitTarget || exitTarget.id === cave.entrySurfaceExitId;
@@ -1588,75 +1584,96 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private resizeCaveFog(): void {
+    const width = this.scale.width;
+    const height = this.scale.height;
+    this.caveFogOverlay.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    this.caveFogMaskBase.setAttribute('width', `${width}`);
+    this.caveFogMaskBase.setAttribute('height', `${height}`);
+    this.caveFogDarkness.setAttribute('width', `${width}`);
+    this.caveFogDarkness.setAttribute('height', `${height}`);
+  }
+
+  private createCaveFogOverlay(): void {
+    const namespace = 'http://www.w3.org/2000/svg';
+    const overlay = document.createElementNS(namespace, 'svg');
+    overlay.classList.add('cave-fog-overlay');
+    overlay.setAttribute('aria-hidden', 'true');
+    const definitions = document.createElementNS(namespace, 'defs');
+    const mask = document.createElementNS(namespace, 'mask');
+    const maskId = 'wildbound-cave-fog-mask';
+    mask.setAttribute('id', maskId);
+    mask.setAttribute('maskUnits', 'userSpaceOnUse');
+    mask.setAttribute('maskContentUnits', 'userSpaceOnUse');
+    mask.setAttribute('mask-type', 'luminance');
+    this.caveFogMaskBase = document.createElementNS(namespace, 'rect');
+    this.caveFogMaskBase.setAttribute('x', '0');
+    this.caveFogMaskBase.setAttribute('y', '0');
+    this.caveFogMaskBase.setAttribute('fill', '#ffffff');
+    this.caveFogPlayerLight = document.createElementNS(namespace, 'circle');
+    this.caveFogPlayerLight.setAttribute('fill', '#000000');
+    mask.append(this.caveFogMaskBase, this.caveFogPlayerLight);
+    definitions.appendChild(mask);
+    this.caveFogDarkness = document.createElementNS(namespace, 'rect');
+    this.caveFogDarkness.setAttribute('x', '0');
+    this.caveFogDarkness.setAttribute('y', '0');
+    this.caveFogDarkness.setAttribute('fill', '#020405');
+    this.caveFogDarkness.setAttribute('fill-opacity', '0.995');
+    this.caveFogDarkness.setAttribute('mask', `url(#${maskId})`);
+    overlay.append(definitions, this.caveFogDarkness);
+    document.getElementById('game')!.appendChild(overlay);
+    this.caveFogOverlay = overlay;
+  }
+
+  private caveWorldToScreen(worldX: number, worldY: number): CaveRenderPoint {
     const camera = this.cameras.main;
-    this.caveFogTexture.resize(camera.width / camera.zoom, camera.height / camera.zoom);
+    return {
+      // The camera follows the avatar and keeps it at the viewport centre. Basing the light
+      // from that same anchor avoids a visual drift while the camera's follow easing catches up.
+      x: this.scale.width * 0.5 + (worldX - this.player.x) * camera.zoom,
+      y: this.scale.height * 0.5 + (worldY - this.player.y) * camera.zoom
+    };
   }
 
-  private caveVisibilityWorldPoint(worldX: number, worldY: number): CaveRenderPoint {
-    return { x: worldX, y: worldY };
-  }
-
-  private drawCaveVisibilityField(
-    cave: ActiveCave,
-    sourceWorldX: number,
-    sourceWorldY: number,
-    radiusTiles: number,
-    rayCount: number
-  ): void {
-    const sourceTileX = (sourceWorldX - cave.origin.x) / WORLD_TILE_SIZE;
-    const sourceTileY = (sourceWorldY - cave.origin.y) / WORLD_TILE_SIZE;
-    const points: CaveRenderPoint[] = [];
-    for (let ray = 0; ray < rayCount; ray += 1) {
-      const angle = ray / rayCount * Math.PI * 2;
-      const directionX = Math.cos(angle);
-      const directionY = Math.sin(angle);
-      let visibleTileX = sourceTileX;
-      let visibleTileY = sourceTileY;
-      for (let distance = 0.18; distance <= radiusTiles; distance += 0.24) {
-        const sampleX = sourceTileX + directionX * distance;
-        const sampleY = sourceTileY + directionY * distance;
-        const tileX = Math.floor(sampleX);
-        const tileY = Math.floor(sampleY);
-        if (tileY < 0 || tileY >= cave.layout.height || tileX < 0 || tileX >= cave.layout.width || !cave.layout.floorTiles[tileY][tileX]) {
-          break;
-        }
-        visibleTileX = sampleX;
-        visibleTileY = sampleY;
-      }
-      points.push(this.caveVisibilityWorldPoint(
-        cave.origin.x + visibleTileX * WORLD_TILE_SIZE,
-        cave.origin.y + visibleTileY * WORLD_TILE_SIZE
-      ));
-    }
-    this.caveVisionGraphics.fillPoints(points as CaveRenderPoint[], true);
+  private setCaveLight(circle: SVGCircleElement, worldX: number, worldY: number, radiusTiles: number): void {
+    const screen = this.caveWorldToScreen(worldX, worldY);
+    circle.setAttribute('cx', `${screen.x}`);
+    circle.setAttribute('cy', `${screen.y}`);
+    circle.setAttribute('r', `${radiusTiles * WORLD_TILE_SIZE * this.cameras.main.zoom}`);
   }
 
   private updateCaveVisibility(force = false): void {
     const cave = this.activeCave;
     if (!cave) {
-      this.caveFogTexture.clear().setVisible(false);
+      this.caveFogOverlay.classList.remove('is-visible');
       return;
     }
-    const localTileX = Math.floor((this.player.x - cave.origin.x) / WORLD_TILE_SIZE);
-    const localTileY = Math.floor((this.player.y - cave.origin.y) / WORLD_TILE_SIZE);
-    if (!force && localTileX === this.lastCaveVisibilityTileX && localTileY === this.lastCaveVisibilityTileY) {
+    if (!force && Math.hypot(
+      this.player.x - this.lastCaveVisibilityWorldX,
+      this.player.y - this.lastCaveVisibilityWorldY
+    ) < CAVE_VISIBILITY_REFRESH_DISTANCE_PIXELS) {
       return;
     }
-    this.lastCaveVisibilityTileX = localTileX;
-    this.lastCaveVisibilityTileY = localTileY;
-    this.caveFogTexture.setPosition(this.cameras.main.scrollX, this.cameras.main.scrollY);
-    this.caveVisionGraphics.clear();
-    this.caveVisionGraphics.fillStyle(0xffffff, 1);
-    this.drawCaveVisibilityField(cave, this.player.x, this.player.y, CAVE_PLAYER_VISION_RADIUS_TILES, CAVE_VISIBILITY_RAY_COUNT);
-    // Lava doubles as a small fixed light source, but its rays still stop at rock so it never
-    // reveals an entire cave through walls.
-    cave.layout.lavaPools.forEach((pool) => {
+    this.lastCaveVisibilityWorldX = this.player.x;
+    this.lastCaveVisibilityWorldY = this.player.y;
+    this.setCaveLight(this.caveFogPlayerLight, this.player.x, this.player.y, CAVE_PLAYER_VISION_RADIUS_TILES);
+    // Lava adds its own calm, circular local illumination. Unlike the previous ray fan, this
+    // cannot create sharp spikes or accidentally reveal a distant tunnel along one narrow line.
+    while (this.caveFogLavaLights.length < cave.layout.lavaPools.length) {
+      const lavaLight = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      lavaLight.setAttribute('fill', '#000000');
+      this.caveFogPlayerLight.parentElement!.appendChild(lavaLight);
+      this.caveFogLavaLights.push(lavaLight);
+    }
+    this.caveFogLavaLights.forEach((lavaLight, index) => {
+      const pool = cave.layout.lavaPools[index];
+      if (!pool) {
+        lavaLight.setAttribute('r', '0');
+        return;
+      }
       const position = caveWorldTilePosition(cave.origin, pool.tileX, pool.tileY);
-      this.drawCaveVisibilityField(cave, position.x, position.y, CAVE_LAVA_LIGHT_RADIUS_TILES, CAVE_LAVA_LIGHT_RAY_COUNT);
+      this.setCaveLight(lavaLight, position.x, position.y, CAVE_LAVA_LIGHT_RADIUS_TILES);
     });
-    this.caveFogTexture.clear();
-    this.caveFogTexture.fill(0x020405, 0.985);
-    this.caveFogTexture.setVisible(true);
+    this.caveFogOverlay.classList.add('is-visible');
   }
 
   private drawCaveFloorTexture(layout: CaveLayout, origin: CaveWorldOrigin): void {
@@ -1907,7 +1924,6 @@ export class AdventureScene extends Phaser.Scene {
       this.markSaveDirty();
     }
     this.updateCaveLava(time);
-    this.caveFogTexture.setPosition(this.cameras.main.scrollX, this.cameras.main.scrollY);
     this.updateCaveVisibility();
     this.updateCaveInteraction();
     this.updateCaveHarvesting(delta);
