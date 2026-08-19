@@ -551,6 +551,11 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     if (this.activeCave) {
+      // A resource on the cave floor is an interaction before the nearby surface outlet. This
+      // keeps E dependable at a crowded entrance and mirrors pickup behavior outdoors.
+      if (this.pickupNearbyDrop()) {
+        return;
+      }
       if (this.caveExitNearby) {
         this.exitCave(this.caveExitTarget ?? undefined);
       } else {
@@ -1261,6 +1266,7 @@ export class AdventureScene extends Phaser.Scene {
     this.drawActiveCave();
     this.updateCaveVisibility(true);
     this.updateCaveInteraction(true);
+    this.updateDropInteraction(0, true);
     this.updatePlayerAvatar(0, false);
     if (markDirty) {
       this.markSaveDirty();
@@ -1932,6 +1938,7 @@ export class AdventureScene extends Phaser.Scene {
     this.updateCaveLava(time);
     this.updateCaveVisibility();
     this.updateCaveInteraction();
+    this.updateDropInteraction(time);
     this.updateCaveHarvesting(delta);
     this.updatePlayerAvatar(delta, isMoving);
   }
@@ -2124,7 +2131,7 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private drawDropHint(drop: DroppedItem): void {
-    const label = `${resourceLabel(drop.resource)}  E`;
+    const label = `Press E to pick up ${resourceLabel(drop.resource)}`;
     const x = drop.worldX;
     const y = drop.worldY - 34;
     this.dropHint.setText(label).setPosition(x + 4, y).setVisible(true);
