@@ -38,9 +38,9 @@ import { landmarkAtTile, landmarksIntersectingTiles } from '../world/generation/
 import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
 import { TERRAIN_MATERIAL_ASSETS } from '../world/terrainMaterialConfig';
 import { type CraftingRecipe } from '../crafting/recipeConfig';
-import { TOOL_DEFINITIONS, isToolId, type ToolId } from '../crafting/toolConfig';
+import { TOOL_DEFINITIONS, TOOL_HEAD_PALETTES, isToolId, type ToolId } from '../crafting/toolConfig';
 import { craftRecipe as applyCraftingRecipe } from '../crafting/craftingService';
-import { harvestSpeedForFeature } from '../crafting/harvestSpeedConfig';
+import { caveOreMiningSpeedForTool, harvestSpeedForFeature } from '../crafting/harvestSpeedConfig';
 import {
   caveEntranceAtTile,
   caveTerrainContainsPoint,
@@ -57,6 +57,8 @@ import {
   type CaveWorldOrigin
 } from '../world/caves/caveGenerator';
 import { CAVE_WALL_PUFFINESS_SCALE } from '../world/caves/caveInteriorVisualConfig';
+import { CAVE_DEPTH_SCALE_MAX } from '../world/caves/caveInteriorGenerationConfig';
+import { caveOreYieldFor } from '../world/caves/caveOreYieldService';
 
 const BASE_PLAYER_SPEED = 220;
 const PLAYER_SPEED = BASE_PLAYER_SPEED * (PLAYER_SPEED_SCALE / 50);
@@ -920,8 +922,7 @@ export class AdventureScene extends Phaser.Scene {
     avatar.lineBetween(handX + toolPerpendicularX, handY + toolPerpendicularY, headX + toolPerpendicularX, headY + toolPerpendicularY);
 
     if (tool.kind === 'axe') {
-      const headColor = tool.headMaterial === 'stone' ? 0xaeb8bd : 0xb77a3d;
-      const edgeColor = tool.headMaterial === 'stone' ? 0x52646b : 0x704124;
+      const { fill: headColor, edge: edgeColor } = TOOL_HEAD_PALETTES[tool.headMaterial];
       avatar.fillStyle(edgeColor, 1);
       avatar.fillTriangle(
         headX - toolDirectionX * 2 + toolPerpendicularX * 6.4,
@@ -941,8 +942,7 @@ export class AdventureScene extends Phaser.Scene {
         headY + toolDirectionY * 5.5 + toolPerpendicularY * 4
       );
     } else {
-      const headColor = tool.headMaterial === 'stone' ? 0xaeb8bd : 0xb77a3d;
-      const edgeColor = tool.headMaterial === 'stone' ? 0x52646b : 0x704124;
+      const { fill: headColor, edge: edgeColor } = TOOL_HEAD_PALETTES[tool.headMaterial];
       avatar.lineStyle(5.6, edgeColor, 1);
       avatar.lineBetween(
         headX - toolPerpendicularX * 7.5,
@@ -2048,13 +2048,19 @@ export class AdventureScene extends Phaser.Scene {
       this.harvestRequiresMouseRelease = true;
       const resource = ore.type === 'coal' ? ResourceType.Coal : ore.type === 'iron' ? ResourceType.Iron
         : ore.type === 'gold' ? ResourceType.Gold : ResourceType.Diamond;
-      if (!this.inventory.canAdd(resource, 1)) {
+      const amount = caveOreYieldFor(
+        this.worldSeed,
+        cave.layout.entrance.systemRootTileX,
+        cave.layout.entrance.systemRootTileY,
+        ore
+      );
+      if (!this.inventory.canAdd(resource, amount)) {
         this.showWorldFeedback(this.player.x, this.player.y - 28, 'Inventory full');
         return;
       }
       if (this.sessionWorldState.harvestCaveOre(ore.id)) {
-        this.inventory.add(resource, 1);
-        this.showWorldFeedback(this.player.x, this.player.y - 28, `+ 1 ${resourceLabel(resource)}`);
+        this.inventory.add(resource, amount);
+        this.showWorldFeedback(this.player.x, this.player.y - 28, `+ ${amount} ${resourceLabel(resource)}`);
         this.handleInventoryChanged();
         this.drawActiveCave();
         this.updateCaveInteraction(true);
@@ -2063,14 +2069,7 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private caveMiningSpeed(): number {
-    if (!this.equippedTool) {
-      return 0.55;
-    }
-    const tool = TOOL_DEFINITIONS[this.equippedTool];
-    if (tool.kind !== 'pickaxe') {
-      return 0.7;
-    }
-    return tool.headMaterial === 'stone' ? 2.35 : 1.6;
+    return caveOreMiningSpeedForTool(this.equippedTool);
   }
 
   private updateInteractionTarget(force = false): void {
@@ -2457,11 +2456,16 @@ export class AdventureScene extends Phaser.Scene {
       const cave = this.activeCave;
       const localTileX = Math.floor((this.player.x - cave.origin.x) / WORLD_TILE_SIZE);
       const localTileY = Math.floor((this.player.y - cave.origin.y) / WORLD_TILE_SIZE);
+      const localDepth = cave.layout.depthByTile[Math.max(0, Math.min(cave.layout.height - 1, localTileY))]
+        ?.[Math.max(0, Math.min(cave.layout.width - 1, localTileX))] ?? 0;
+      const depthMeter = Math.round(Math.max(0, localDepth) * CAVE_DEPTH_SCALE_MAX);
+      const depthBars = Math.max(0, Math.min(10, Math.round(depthMeter / CAVE_DEPTH_SCALE_MAX * 10)));
       const remainingOres = cave.layout.ores.filter((ore) => !this.sessionWorldState.isCaveOreHarvested(ore.id)).length;
       this.debugElement.textContent = [
         'WILDBOUND // CAVE STATUS',
         `Cave        ${cave.entrance.id}`,
-        `Depth       ${cave.entrance.depth}`,
+        `Cave class  ${cave.entrance.depth}`,
+        `Depth meter ${depthMeter} / ${CAVE_DEPTH_SCALE_MAX} [${'█'.repeat(depthBars)}${'·'.repeat(10 - depthBars)}]`,
         `Interior    ${cave.layout.width} x ${cave.layout.height} tiles`,
         `Tile        ${localTileX}, ${localTileY}`,
         `Target      ${this.caveOreTarget?.type ?? (this.caveExitNearby ? 'exit' : 'none')}`,
