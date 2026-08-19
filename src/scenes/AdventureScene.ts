@@ -43,7 +43,7 @@ import { craftRecipe as applyCraftingRecipe } from '../crafting/craftingService'
 import { harvestSpeedForFeature } from '../crafting/harvestSpeedConfig';
 import {
   caveEntranceAtTile,
-  caveTerrainFieldAt,
+  caveTerrainContainsPoint,
   caveMouthCenter,
   caveWorldOrigin,
   caveWorldTilePosition,
@@ -1244,9 +1244,9 @@ export class AdventureScene extends Phaser.Scene {
 
     const layout = generateCaveLayout(this.worldSeed, entrance);
     const origin = caveWorldOrigin(entrance);
-    const entrySurfaceExitId = entrance.tileX === layout.entrance.tileX && entrance.tileY === layout.entrance.tileY
-      ? layout.entrance.id
-      : `${layout.entrance.id}:linked`;
+    const entrySurfaceExitId = layout.surfaceExits.find((exit) => (
+      exit.surfaceTileX === entrance.tileX && exit.surfaceTileY === entrance.tileY
+    ))?.id ?? layout.entrance.id;
     this.activeCave = { entrance, layout, origin, returnWorldX, returnWorldY, entrySurfaceExitId };
     this.lastCaveVisibilityWorldX = Number.NaN;
     this.lastCaveVisibilityWorldY = Number.NaN;
@@ -1322,8 +1322,8 @@ export class AdventureScene extends Phaser.Scene {
     graphics.fillRect(outerX, outerY, (layout.width + 2) * WORLD_TILE_SIZE, (layout.height + 2) * WORLD_TILE_SIZE);
 
     // The rendered floor is a deterministic continuous field of irregular chambers and curved
-    // tunnels. The compact tile grid is retained only for fast collision lookup and is never
-    // used as visible geometry.
+    // tunnels. Its contour is also the movement boundary, while the compact grid remains for
+    // depth and feature generation only.
     const contours = layout.terrainContours.map((contour) => ({
       enclosesFloor: contour.enclosesFloor,
       points: contour.points.map((point) => ({
@@ -1943,11 +1943,11 @@ export class AdventureScene extends Phaser.Scene {
       const tileX = (x - cave.origin.x) / WORLD_TILE_SIZE;
       const tileY = (y - cave.origin.y) / WORLD_TILE_SIZE;
       if (tileY < 0 || tileY >= cave.layout.height || tileX < 0 || tileX >= cave.layout.width
-        || caveTerrainFieldAt(cave.layout.terrain, tileX, tileY) < 0) {
+        || !caveTerrainContainsPoint(cave.layout.terrainContours, tileX, tileY)) {
         return false;
       }
-      // Lava remains a visible, impassable floor feature while all ordinary collision comes
-      // directly from the same smooth terrain field used to draw the cave.
+      // Lava remains a visible, impassable floor feature while ordinary collision uses the
+      // exact contour region drawn for the cave floor and its enclosed rock pockets.
       return !cave.layout.lavaPools.some((pool) => {
         const normalized = (tileX - pool.tileX) ** 2 / (pool.radiusX * pool.radiusX)
           + (tileY - pool.tileY) ** 2 / (pool.radiusY * pool.radiusY);
