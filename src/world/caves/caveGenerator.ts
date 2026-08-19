@@ -372,6 +372,12 @@ const CAVE_TERRAIN_PROFILE_SAMPLES = 14;
 const CAVE_TUNNEL_DISTANCE_SAMPLES = 10;
 const CAVE_TUNNEL_CLEARANCE_SAMPLES = 18;
 const CAVE_TUNNEL_MIN_WALL_GAP_TILES = 1.15;
+// A route is made from several small nodes, but its nodes must still be far enough apart that
+// the wall-separation check recognizes them as a continuing tunnel rather than a self-collision.
+const CAVE_PASSAGE_TARGET_STRIDE_TILES = 7.2;
+// Existing passages are allowed to meet at their common node. Beyond this small junction zone,
+// regular clearance applies again so unrelated walls cannot merge or leave phantom blockers.
+const CAVE_TUNNEL_JUNCTION_EXEMPT_RADIUS_TILES = 4.3;
 
 const profileValueAt = (profile: readonly number[], unitAngle: number): number => {
   const position = ((unitAngle % 1 + 1) % 1) * profile.length;
@@ -712,7 +718,12 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
       // A passage is allowed to blend into its endpoints, but once it leaves those chambers it
       // must retain a real strip of rock between every existing tunnel. Otherwise two walls can
       // visually touch or create a misleading pinched route.
-      if (allowedChambers.some((chamber) => chamberFieldAt(chamber, point.x, point.y) >= 0)) {
+      const isAtAllowedJunction = allowedChambers.some((chamber) => (
+        chambers.includes(chamber)
+        && Math.hypot(chamber.x - point.x, chamber.y - point.y)
+          <= Math.max(chamber.radiusX, chamber.radiusY) + CAVE_TUNNEL_JUNCTION_EXEMPT_RADIUS_TILES
+      ));
+      if (isAtAllowedJunction) {
         continue;
       }
       const requiredGap = tunnelRadiusAt(passage, progress) + CAVE_TUNNEL_MIN_WALL_GAP_TILES;
@@ -726,13 +737,21 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
     return true;
   };
 
-  for (let index = 1; index < profile.spineSegments; index += 1) {
-    const progress = index / (profile.spineSegments - 1);
+  // Scaling the system footprint must not scale its spine density one-for-one: doing so makes
+  // every proposed node only a couple tiles from its grandparent, which correctly trips the
+  // wall-clearance guard but incorrectly collapses the whole cave into its entry chamber.
+  const forwardRouteLength = Math.max(0, entranceTileY - 13);
+  const spineSegments = Math.max(
+    3,
+    Math.min(profile.spineSegments, Math.floor(forwardRouteLength / CAVE_PASSAGE_TARGET_STRIDE_TILES) + 1)
+  );
+  for (let index = 1; index < spineSegments; index += 1) {
+    const progress = index / (spineSegments - 1);
     const prior = chambers[spineIndices[index - 1]];
     const heading = -Math.PI / 2
       + Math.sin(progress * Math.PI * 3 + graphRandom(seed, systemEntrance, index, 1) * Math.PI * 2) * 0.18
       + (graphRandom(seed, systemEntrance, index, 2) - 0.5) * 0.46;
-    const stride = (entranceTileY - 13) / (profile.spineSegments - 1) * (0.84 + graphRandom(seed, systemEntrance, index, 3) * 0.28);
+    const stride = forwardRouteLength / (spineSegments - 1) * (0.84 + graphRandom(seed, systemEntrance, index, 3) * 0.28);
     const node = createPassageNode(index, clampX(prior.x + Math.cos(heading) * stride), clampY(prior.y + Math.sin(heading) * stride));
     const passage = connectChambers(seed, systemEntrance, prior, node, index);
     if (!hasClearanceFromOtherNodes(node.x, node.y, spineIndices[index - 1]) || !hasSafePassageClearance(passage, [prior, node])) {
@@ -749,7 +768,14 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
 
   // A deliberately shorter arm runs behind the entrance. It prevents every cave from reading
   // as a single upward march and gives the first decision point some immediate exploration.
-  const rearSegments = Math.max(3, Math.round(profile.spineSegments * 0.32));
+  const rearRouteLength = Math.max(0, height - 13 - entranceTileY);
+  const rearSegments = Math.max(
+    3,
+    Math.min(
+      Math.round(spineSegments * 0.32),
+      Math.floor(rearRouteLength / CAVE_PASSAGE_TARGET_STRIDE_TILES)
+    )
+  );
   const rearIndices = [0];
   for (let index = 1; index <= rearSegments; index += 1) {
     const prior = chambers[rearIndices[index - 1]];
@@ -757,7 +783,7 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
     const heading = Math.PI / 2
       + Math.sin(progress * Math.PI * 2.4 + graphRandom(seed, systemEntrance, index, 51) * Math.PI) * 0.2
       + (graphRandom(seed, systemEntrance, index, 52) - 0.5) * 0.52;
-    const stride = (height - 13 - entranceTileY) / rearSegments * (0.82 + graphRandom(seed, systemEntrance, index, 53) * 0.3);
+    const stride = rearRouteLength / rearSegments * (0.82 + graphRandom(seed, systemEntrance, index, 53) * 0.3);
     const node = createPassageNode(4_000 + index, clampX(prior.x + Math.cos(heading) * stride), clampY(prior.y + Math.sin(heading) * stride));
     const passage = connectChambers(seed, systemEntrance, prior, node, 4_000 + index);
     if (!hasClearanceFromOtherNodes(node.x, node.y, rearIndices[index - 1]) || !hasSafePassageClearance(passage, [prior, node])) {
@@ -790,14 +816,14 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
       if (Math.hypot(candidateX - parent.x, candidateY - parent.y) < 4.2 || !hasClearanceFromOtherNodes(candidateX, candidateY, parentIndex)) {
         continue;
       }
-      const nodeIndex = profile.spineSegments + rearSegments + branchIndex;
+      const nodeIndex = spineSegments + rearSegments + branchIndex;
       nextNode = createPassageNode(nodeIndex, candidateX, candidateY);
       nextHeading = heading;
     }
     if (!nextNode) {
       continue;
     }
-    const passage = connectChambers(seed, systemEntrance, parent, nextNode, profile.spineSegments + rearSegments + branchIndex);
+    const passage = connectChambers(seed, systemEntrance, parent, nextNode, spineSegments + rearSegments + branchIndex);
     if (!hasSafePassageClearance(passage, [parent, nextNode])) {
       continue;
     }
