@@ -1579,8 +1579,8 @@ export class AdventureScene extends Phaser.Scene {
     const sideY = visual.wallNormalX;
     // A narrow dark seam is cut straight into the existing contour wall. Unlike the old broad
     // panel, it preserves the cave's own wall texture and gives the ladder a believable recess.
-    const seamHalfWidth = isLinkedOutlet ? 11 : 9.5;
-    this.caveGraphics.lineStyle(11, 0x08100f, 0.58);
+    const seamHalfWidth = isLinkedOutlet ? 15 : 13;
+    this.caveGraphics.lineStyle(14, 0x08100f, 0.58);
     this.caveGraphics.lineBetween(
       visual.x - sideX * seamHalfWidth + visual.wallNormalX * 2,
       visual.y - sideY * seamHalfWidth + visual.wallNormalY * 2,
@@ -1597,27 +1597,27 @@ export class AdventureScene extends Phaser.Scene {
 
     // The rails begin inside that wall seam and stay narrow against the contour. Their short
     // floor reach makes this read as a fixed ladder, not a standalone prop on the cave floor.
-    const ladderTop = { x: visual.x + visual.wallNormalX * 4, y: visual.y + visual.wallNormalY * 4 };
-    const ladderBottom = { x: visual.x + insideX * 20, y: visual.y + insideY * 20 };
-    const railHalfWidth = 5.2;
+    const ladderTop = { x: visual.x + visual.wallNormalX * 5, y: visual.y + visual.wallNormalY * 5 };
+    const ladderBottom = { x: visual.x + insideX * 30, y: visual.y + insideY * 30 };
+    const railHalfWidth = 6.7;
     const railColor = isLinkedOutlet ? 0x82523a : 0x95613b;
     for (const side of [-1, 1]) {
       const offsetX = sideX * railHalfWidth * side;
       const offsetY = sideY * railHalfWidth * side;
-      this.caveGraphics.lineStyle(2.9, 0x251913, 0.98);
+      this.caveGraphics.lineStyle(3.4, 0x251913, 0.98);
       this.caveGraphics.lineBetween(ladderTop.x + offsetX, ladderTop.y + offsetY, ladderBottom.x + offsetX, ladderBottom.y + offsetY);
-      this.caveGraphics.lineStyle(1.2, railColor, 1);
+      this.caveGraphics.lineStyle(1.5, railColor, 1);
       this.caveGraphics.lineBetween(ladderTop.x + offsetX, ladderTop.y + offsetY, ladderBottom.x + offsetX, ladderBottom.y + offsetY);
     }
-    const rungCount = 4 + Math.floor(this.caveVisualRandom(exit.tileX, exit.tileY, 0x6da1) * 2);
+    const rungCount = 5 + Math.floor(this.caveVisualRandom(exit.tileX, exit.tileY, 0x6da1) * 2);
     for (let rung = 1; rung <= rungCount; rung += 1) {
       const progress = rung / (rungCount + 1);
       const x = ladderTop.x + (ladderBottom.x - ladderTop.x) * progress;
       const y = ladderTop.y + (ladderBottom.y - ladderTop.y) * progress;
-      this.caveGraphics.lineStyle(2.7, 0x251913, 0.98);
-      this.caveGraphics.lineBetween(x - sideX * 6.4, y - sideY * 6.4, x + sideX * 6.4, y + sideY * 6.4);
-      this.caveGraphics.lineStyle(1.05, 0xb57743, 0.92);
-      this.caveGraphics.lineBetween(x - sideX * 5.4, y - sideY * 5.4, x + sideX * 5.4, y + sideY * 5.4);
+      this.caveGraphics.lineStyle(3.1, 0x251913, 0.98);
+      this.caveGraphics.lineBetween(x - sideX * 8.1, y - sideY * 8.1, x + sideX * 8.1, y + sideY * 8.1);
+      this.caveGraphics.lineStyle(1.25, 0xb57743, 0.92);
+      this.caveGraphics.lineBetween(x - sideX * 6.8, y - sideY * 6.8, x + sideX * 6.8, y + sideY * 6.8);
     }
   }
 
@@ -1665,11 +1665,11 @@ export class AdventureScene extends Phaser.Scene {
       // The narrow shaft begins above the wall ladder and falls onto the first few steps. It is
       // deliberately contained rather than an outward cone, so the opening feels overhead.
       graphics.fillStyle(0x9dcfc2, 0.028 * lightLevel);
-      graphics.fillPoints(beam(42, 10, 0x6e71), true);
+      graphics.fillPoints(beam(54, 13, 0x6e71), true);
       graphics.fillStyle(0xc5e8d4, 0.06 * lightLevel);
-      graphics.fillPoints(beam(24, 7, 0x6e91), true);
+      graphics.fillPoints(beam(31, 9, 0x6e91), true);
       graphics.fillStyle(0xeeffe6, 0.22 * lightLevel);
-      graphics.fillEllipse(visual.x + insideX * 3, visual.y + insideY * 3, 12, 8);
+      graphics.fillEllipse(visual.x + insideX * 3, visual.y + insideY * 3, 16, 10);
     });
     this.updateCaveVisibility(true);
   }
