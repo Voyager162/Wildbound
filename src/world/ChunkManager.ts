@@ -41,8 +41,6 @@ import {
   worldToChunk
 } from './worldConfig';
 
-const CAVE_DAYLIGHT_UPDATE_INTERVAL_MS = 120;
-
 interface PendingChunk {
   x: number;
   y: number;
@@ -63,13 +61,11 @@ export class ChunkManager {
   private lastPrefetchSignature = '';
   private lastWaterAnimationTime = Number.NEGATIVE_INFINITY;
   private lastWaterSurfaceTime = Number.NEGATIVE_INFINITY;
-  private lastCaveDaylightTime = Number.NEGATIVE_INFINITY;
   private lastAmbientParticleTime = Number.NEGATIVE_INFINITY;
   private lastChunkBuildTime = Number.NEGATIVE_INFINITY;
   private readonly ambientParticleManager: AmbientParticleManager;
   private readonly landmarkManager: LandmarkManager;
   private readonly swampWaterDecorationManager: SwampWaterDecorationManager;
-  private caveDaylightAmount = 0;
 
   constructor(
     private readonly scene: Phaser.Scene,
@@ -160,22 +156,6 @@ export class ChunkManager {
         && Math.abs(chunk.y - this.activeChunkY) <= AMBIENT_CHUNK_RADIUS_Y
       ) {
         chunk.updateWaterAnimation(time);
-      }
-    });
-  }
-
-  updateCaveEntranceDaylight(time: number, daylightAmount: number): void {
-    const nextAmount = Phaser.Math.Clamp(daylightAmount, 0, 1);
-    if (time - this.lastCaveDaylightTime < CAVE_DAYLIGHT_UPDATE_INTERVAL_MS
-      && Math.abs(nextAmount - this.caveDaylightAmount) < 0.006) {
-      return;
-    }
-
-    this.lastCaveDaylightTime = time;
-    this.caveDaylightAmount = nextAmount;
-    this.chunks.forEach((chunk) => {
-      if (this.isWithinRenderWindow(chunk.x, chunk.y)) {
-        chunk.setCaveEntranceDaylight(nextAmount);
       }
     });
   }
@@ -420,7 +400,6 @@ export class ChunkManager {
       const chunk = new WorldChunk(this.scene, this.seed, this.sessionState, coordinate.x, coordinate.y);
       chunk.setRenderVisible(this.isWithinRenderWindow(coordinate.x, coordinate.y));
       chunk.setGroundGrassVisible(this.isWithinForegroundWindow(coordinate.x, coordinate.y));
-      chunk.setCaveEntranceDaylight(this.caveDaylightAmount);
       this.chunks.set(key, chunk);
       built += 1;
     }

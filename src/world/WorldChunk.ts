@@ -170,9 +170,6 @@ export class WorldChunk {
   private readonly textureKey: string;
   private readonly terrainImage: Phaser.GameObjects.Image;
   private readonly waterGraphics: Phaser.GameObjects.Graphics;
-  // A small, dynamic daytime layer sits above the baked terrain. Cave geometry remains fully
-  // seed-generated in the terrain canvas; only its natural daylight changes over time.
-  private readonly caveDaylightGraphics: Phaser.GameObjects.Graphics;
   private oceanWaterSurface: Phaser.GameObjects.TileSprite | null = null;
   private oceanWaterHighlights: Phaser.GameObjects.TileSprite | null = null;
   private swampWaterSurface: Phaser.GameObjects.TileSprite | null = null;
@@ -194,7 +191,6 @@ export class WorldChunk {
   private readonly waterWaves: WaterWave[] = [];
   private hasWater = false;
   private renderVisible = true;
-  private caveDaylightAmount = 0;
   private groundGrassVisible = true;
   private lastGroundGrassFrame = Number.NEGATIVE_INFINITY;
   private lastFeatureFoliageFrame = Number.NEGATIVE_INFINITY;
@@ -225,7 +221,6 @@ export class WorldChunk {
       .image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.textureKey, 'surface')
       .setOrigin(0);
     this.waterGraphics = scene.add.graphics().setDepth(0.25);
-    this.caveDaylightGraphics = scene.add.graphics().setDepth(0.2).setAlpha(0);
     this.featureImage = scene.add
       .image(x * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, y * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, this.featureTextureKey)
       .setOrigin(0)
@@ -237,7 +232,6 @@ export class WorldChunk {
     this.caveTerrainInfluences = this.collectCaveTerrainInfluences();
 
     this.drawTerrain(terrainTexture);
-    this.drawCaveDaylight();
     this.createAnimatedGroundGrass();
     this.refreshFeatures();
     this.updateFoliage(performance.now());
@@ -251,7 +245,6 @@ export class WorldChunk {
     this.renderVisible = visible;
     this.terrainImage.setVisible(visible);
     this.waterGraphics.setVisible(visible);
-    this.caveDaylightGraphics.setVisible(visible && this.caveDaylightAmount > 0.01);
     this.oceanWaterSurface?.setVisible(visible);
     this.oceanWaterHighlights?.setVisible(visible);
     this.swampWaterSurface?.setVisible(visible);
@@ -437,18 +430,6 @@ export class WorldChunk {
     }
   }
 
-  setCaveEntranceDaylight(daylightAmount: number): void {
-    const nextAmount = Phaser.Math.Clamp(daylightAmount, 0, 1);
-    if (Math.abs(nextAmount - this.caveDaylightAmount) < 0.006) {
-      return;
-    }
-
-    this.caveDaylightAmount = nextAmount;
-    this.caveDaylightGraphics
-      .setAlpha(nextAmount)
-      .setVisible(this.renderVisible && nextAmount > 0.01);
-  }
-
   refreshFeatures(): void {
     const texture = this.scene.textures.get(this.featureTextureKey) as Phaser.Textures.CanvasTexture;
     const canvas = texture.getSourceImage() as HTMLCanvasElement;
@@ -483,7 +464,6 @@ export class WorldChunk {
   destroy(): void {
     this.terrainImage.destroy();
     this.waterGraphics.destroy();
-    this.caveDaylightGraphics.destroy();
     this.oceanWaterSurface?.destroy();
     this.oceanWaterHighlights?.destroy();
     this.swampWaterSurface?.destroy();
@@ -885,63 +865,6 @@ export class WorldChunk {
       }
     }
     return influences;
-  }
-
-  private drawCaveDaylight(): void {
-    const graphics = this.caveDaylightGraphics;
-    graphics.clear();
-    // An influence is gathered from neighbouring chunks to keep the baked cliff seamless. The
-    // moving sunlight itself is only drawn by the chunk that owns a mouth, avoiding doubled
-    // light at chunk boundaries.
-    const localEntranceIds = new Set(this.caveEntrances.map((entrance) => entrance.id));
-    this.caveTerrainInfluences.forEach((cave) => {
-      if (!localEntranceIds.has(cave.entrance.id) || cave.mouthRecessVertices.length === 0) {
-        return;
-      }
-
-      const mouth = cave.mouthRecessVertices.reduce(
-        (total, point) => ({ x: total.x + point.x, y: total.y + point.y }),
-        { x: 0, y: 0 }
-      );
-      mouth.x /= cave.mouthRecessVertices.length;
-      mouth.y /= cave.mouthRecessVertices.length;
-      const outwardX = -cave.forwardX;
-      const outwardY = -cave.forwardY;
-      const sideX = -cave.forwardY;
-      const sideY = cave.forwardX;
-      const mouthHalfWidth = cave.entrance.mouthSideRadiusTiles * WORLD_TILE_SIZE * 0.42;
-      const reach = Math.max(82, Math.min(210, cave.radiusPixels * 0.9));
-      const beam = (distance: number, endWidthScale: number, salt: number): TerrainPoint[] => {
-        const left: TerrainPoint[] = [];
-        const right: TerrainPoint[] = [];
-        const segmentCount = 7;
-        for (let segment = 0; segment < segmentCount; segment += 1) {
-          const progress = segment / (segmentCount - 1);
-          const halfWidth = mouthHalfWidth * (0.72 + progress * endWidthScale);
-          const forwardDistance = distance * progress;
-          const sideJitter = (randomAtTile(this.seed, cave.entrance.tileX, cave.entrance.tileY, salt + segment) - 0.5)
-            * mouthHalfWidth * (0.06 + progress * 0.08);
-          const forwardJitter = (randomAtTile(this.seed, cave.entrance.tileX, cave.entrance.tileY, salt + 31 + segment) - 0.5)
-            * 7 * progress;
-          const centerX = mouth.x + outwardX * (forwardDistance + forwardJitter);
-          const centerY = mouth.y + outwardY * (forwardDistance + forwardJitter);
-          left.push({ x: centerX + sideX * (halfWidth + sideJitter), y: centerY + sideY * (halfWidth + sideJitter) });
-          right.push({ x: centerX - sideX * (halfWidth - sideJitter), y: centerY - sideY * (halfWidth - sideJitter) });
-        }
-        return [...left, ...right.reverse()];
-      };
-
-      // Nested, lightly irregular ribbons read as sunlight falling over the rock shelf instead
-      // of a neon aura or a separate cave icon. Their shared alpha is driven by daytime only.
-      graphics.fillStyle(0xf4c66f, 0.05);
-      graphics.fillPoints(beam(reach, 0.46, 0xa7b1), true);
-      graphics.fillStyle(0xffdb91, 0.075);
-      graphics.fillPoints(beam(reach * 0.67, 0.28, 0xa7d1), true);
-      graphics.fillStyle(0xffefbb, 0.10);
-      graphics.fillPoints(beam(reach * 0.37, 0.12, 0xa7f1), true);
-      graphics.fillStyle(0xffe2a2, 0.08);
-      graphics.fillPoints(cave.mouthRecessVertices as Phaser.Types.Math.Vector2Like[], true);
-    });
   }
 
   /** True when a harvestable tile would be covered by the exposed cave formation. */

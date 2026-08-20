@@ -89,6 +89,7 @@ const CAVE_WALL_FACE_SCALE = 0.72 + CAVE_WALL_PUFFINESS * 0.28;
 // keeping nearby cave walls and floor details legible.
 const CAVE_PLAYER_VISION_RADIUS_TILES = 10.5;
 const CAVE_LAVA_LIGHT_RADIUS_TILES = 7;
+const CAVE_SURFACE_EXIT_LIGHT_RADIUS_TILES = 4.2;
 const CAVE_VISIBILITY_REFRESH_DISTANCE_PIXELS = 5;
 
 type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
@@ -100,11 +101,17 @@ interface ActiveCave {
   readonly returnWorldX: number;
   readonly returnWorldY: number;
   readonly entrySurfaceExitId: string;
+  readonly exitVisuals: ReadonlyMap<string, CaveExitVisual>;
 }
 
 interface CaveRenderPoint {
   readonly x: number;
   readonly y: number;
+}
+
+interface CaveExitVisual extends CaveRenderPoint {
+  readonly wallNormalX: number;
+  readonly wallNormalY: number;
 }
 
 export class AdventureScene extends Phaser.Scene {
@@ -130,11 +137,13 @@ export class AdventureScene extends Phaser.Scene {
   private harvestProgressGraphics!: Phaser.GameObjects.Graphics;
   private caveGraphics!: Phaser.GameObjects.Graphics;
   private caveLavaGraphics!: Phaser.GameObjects.Graphics;
+  private caveEntranceLightGraphics!: Phaser.GameObjects.Graphics;
   private caveFogOverlay!: SVGSVGElement;
   private caveFogMaskBase!: SVGRectElement;
   private caveFogDarkness!: SVGRectElement;
   private caveFogPlayerLight!: SVGCircleElement;
   private caveFogLavaLights: SVGCircleElement[] = [];
+  private caveFogEntranceLights: SVGCircleElement[] = [];
   private caveHintPanel!: Phaser.GameObjects.Graphics;
   private caveHint!: Phaser.GameObjects.Text;
   private isDebugVisible = false;
@@ -187,6 +196,7 @@ export class AdventureScene extends Phaser.Scene {
   private lastCaveEntranceTileX = Number.NaN;
   private lastCaveEntranceTileY = Number.NaN;
   private lastCaveLavaFrame = Number.NEGATIVE_INFINITY;
+  private lastCaveEntranceLightFrame = Number.NEGATIVE_INFINITY;
 
   constructor() {
     super('adventure');
@@ -204,6 +214,7 @@ export class AdventureScene extends Phaser.Scene {
     this.harvestProgressGraphics = this.add.graphics().setDepth(15);
     this.caveGraphics = this.add.graphics().setDepth(2).setVisible(false);
     this.caveLavaGraphics = this.add.graphics().setDepth(2.2).setVisible(false);
+    this.caveEntranceLightGraphics = this.add.graphics().setDepth(2.1).setVisible(false);
     this.createCaveFogOverlay();
     this.interactionHighlight = this.add
       .circle(0, 0, 62, 0xf5d76e, 0.09)
@@ -314,7 +325,6 @@ export class AdventureScene extends Phaser.Scene {
 
     if (this.worldMapOpen) {
       this.chunkManager.updateWaterAnimation(time);
-      this.chunkManager.updateCaveEntranceDaylight(time, 1 - this.nightAmount);
       this.chunkManager.updateSwampWaterDecorations(time, delta, this.player.x, this.player.y, 0, 0, this.isSwimming);
       this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.ambientLightAmount);
       this.updateNightAmbientLighting(time);
@@ -354,7 +364,6 @@ export class AdventureScene extends Phaser.Scene {
     this.chunkManager.update(this.player.x, this.player.y, time);
     this.chunkManager.updateFoliage(time);
     this.chunkManager.updateWaterAnimation(time);
-    this.chunkManager.updateCaveEntranceDaylight(time, 1 - this.nightAmount);
     this.chunkManager.updateSwampWaterDecorations(
       time,
       delta,
@@ -1254,7 +1263,8 @@ export class AdventureScene extends Phaser.Scene {
     const entrySurfaceExitId = layout.surfaceExits.find((exit) => (
       exit.surfaceTileX === entrance.tileX && exit.surfaceTileY === entrance.tileY
     ))?.id ?? layout.entrance.id;
-    this.activeCave = { entrance, layout, origin, returnWorldX, returnWorldY, entrySurfaceExitId };
+    const exitVisuals = this.createCaveExitVisuals(layout, origin);
+    this.activeCave = { entrance, layout, origin, returnWorldX, returnWorldY, entrySurfaceExitId, exitVisuals };
     this.lastCaveVisibilityWorldX = Number.NaN;
     this.lastCaveVisibilityWorldY = Number.NaN;
     const spawn = caveWorldTilePosition(origin, layout.spawnTileX, layout.spawnTileY);
@@ -1286,6 +1296,7 @@ export class AdventureScene extends Phaser.Scene {
     this.caveExitTarget = null;
     this.caveGraphics.clear().setVisible(false);
     this.caveLavaGraphics.clear().setVisible(false);
+    this.caveEntranceLightGraphics.clear().setVisible(false);
     this.caveFogOverlay.classList.remove('is-visible');
     this.lastCaveVisibilityWorldX = Number.NaN;
     this.lastCaveVisibilityWorldY = Number.NaN;
@@ -1358,9 +1369,11 @@ export class AdventureScene extends Phaser.Scene {
     });
     this.drawCaveFloorTexture(layout, origin);
     this.drawCaveStalagmites(layout.stalagmites, origin);
-    layout.surfaceExits.forEach((exit, index) => this.drawCaveSurfaceExit(exit, origin, index > 0));
+    layout.surfaceExits.forEach((exit, index) => this.drawCaveSurfaceExit(exit, cave, index > 0));
     this.drawCaveLavaRims(layout.lavaPools, origin);
     this.lastCaveLavaFrame = Number.NEGATIVE_INFINITY;
+    this.lastCaveEntranceLightFrame = Number.NEGATIVE_INFINITY;
+    this.updateCaveEntranceDaylight(this.time.now, true);
     this.updateCaveLava(this.time.now, true);
 
     layout.ores.forEach((ore) => {
@@ -1511,15 +1524,148 @@ export class AdventureScene extends Phaser.Scene {
     });
   }
 
-  private drawCaveSurfaceExit(exit: CaveSurfaceExit, origin: CaveWorldOrigin, isLinkedOutlet: boolean): void {
-    const position = caveWorldTilePosition(origin, exit.tileX, exit.tileY);
-    const rockColor = isLinkedOutlet ? 0x5e7d72 : 0x746647;
-    this.drawCaveRockPatch(position.x, position.y + 3, isLinkedOutlet ? 22 : 18, isLinkedOutlet ? 14 : 12, exit.tileX, exit.tileY, isLinkedOutlet ? 0x6d21 : 0x6d01, rockColor, 0.74);
-    this.fillCavePolygon(this.createCaveVeinPoints(position.x, position.y + 3, 0.08, isLinkedOutlet ? 27 : 23, isLinkedOutlet ? 8 : 7, exit.tileX, exit.tileY, isLinkedOutlet ? 0x6d22 : 0x6d02), 0x070b0c, 0.98);
-    if (isLinkedOutlet) {
-      this.caveGraphics.lineStyle(1.5, 0x9dcbb2, 0.58);
-      this.caveGraphics.strokeEllipse(position.x, position.y + 3, 29, 12);
+  private createCaveExitVisuals(layout: CaveLayout, origin: CaveWorldOrigin): ReadonlyMap<string, CaveExitVisual> {
+    const visuals = new Map<string, CaveExitVisual>();
+    layout.surfaceExits.forEach((exit) => {
+      const sourceX = exit.tileX + 0.5;
+      const sourceY = exit.tileY + 0.5;
+      let wallNormalX = 0;
+      let wallNormalY = -1;
+      let wallDistance = Infinity;
+      // Put each ladder just inside the nearest real contour wall. This anchors the exit to the
+      // cave geometry instead of leaving a marker in the middle of the floor.
+      for (let sample = 0; sample < 28; sample += 1) {
+        const angle = sample / 28 * Math.PI * 2;
+        const normalX = Math.cos(angle);
+        const normalY = Math.sin(angle);
+        for (let distance = 0.45; distance <= 4.2; distance += 0.14) {
+          if (caveTerrainContainsPoint(layout.terrainContours, sourceX + normalX * distance, sourceY + normalY * distance)) {
+            continue;
+          }
+          if (distance < wallDistance) {
+            wallDistance = distance;
+            wallNormalX = normalX;
+            wallNormalY = normalY;
+          }
+          break;
+        }
+      }
+      const anchorDistance = Number.isFinite(wallDistance) ? Math.max(0.5, wallDistance - 0.36) : 0.7;
+      visuals.set(exit.id, {
+        x: origin.x + (sourceX + wallNormalX * anchorDistance) * WORLD_TILE_SIZE,
+        y: origin.y + (sourceY + wallNormalY * anchorDistance) * WORLD_TILE_SIZE,
+        wallNormalX,
+        wallNormalY
+      });
+    });
+    return visuals;
+  }
+
+  private caveExitVisual(cave: ActiveCave, exit: CaveSurfaceExit): CaveExitVisual {
+    return cave.exitVisuals.get(exit.id) ?? {
+      ...caveWorldTilePosition(cave.origin, exit.tileX, exit.tileY),
+      wallNormalX: 0,
+      wallNormalY: -1
+    };
+  }
+
+  private drawCaveSurfaceExit(exit: CaveSurfaceExit, cave: ActiveCave, isLinkedOutlet: boolean): void {
+    const visual = this.caveExitVisual(cave, exit);
+    const insideX = -visual.wallNormalX;
+    const insideY = -visual.wallNormalY;
+    const sideX = -visual.wallNormalY;
+    const sideY = visual.wallNormalX;
+    const wallWidth = isLinkedOutlet ? 22 : 19;
+    const wallDepth = isLinkedOutlet ? 13 : 11;
+    const rockColor = isLinkedOutlet ? 0x355147 : 0x3c4d43;
+    const wallFace: CaveRenderPoint[] = [
+      { x: visual.x + sideX * wallWidth + visual.wallNormalX * wallDepth, y: visual.y + sideY * wallWidth + visual.wallNormalY * wallDepth },
+      { x: visual.x - sideX * wallWidth + visual.wallNormalX * wallDepth, y: visual.y - sideY * wallWidth + visual.wallNormalY * wallDepth },
+      { x: visual.x - sideX * (wallWidth * 0.78) + insideX * 18, y: visual.y - sideY * (wallWidth * 0.78) + insideY * 18 },
+      { x: visual.x + sideX * (wallWidth * 0.78) + insideX * 18, y: visual.y + sideY * (wallWidth * 0.78) + insideY * 18 }
+    ];
+    this.drawCaveRockPatch(visual.x + visual.wallNormalX * 11, visual.y + visual.wallNormalY * 11, wallWidth * 1.25, wallDepth * 1.5, exit.tileX, exit.tileY, isLinkedOutlet ? 0x6d21 : 0x6d01, rockColor, 0.82);
+    this.fillCavePolygon(wallFace, 0x0b1212, 0.94);
+    this.caveGraphics.lineStyle(1.45, 0x72877a, 0.54);
+    this.caveGraphics.strokePoints(wallFace, true);
+
+    // The ladder is mounted into the wall: its top disappears into the dark opening and its
+    // feet rest on the floor, so it reads as a climb back to the surface rather than a floor icon.
+    const ladderTop = { x: visual.x + visual.wallNormalX * 8, y: visual.y + visual.wallNormalY * 8 };
+    const ladderBottom = { x: visual.x + insideX * 28, y: visual.y + insideY * 28 };
+    const railHalfWidth = 7;
+    const railColor = isLinkedOutlet ? 0x865338 : 0x9b6337;
+    for (const side of [-1, 1]) {
+      const offsetX = sideX * railHalfWidth * side;
+      const offsetY = sideY * railHalfWidth * side;
+      this.caveGraphics.lineStyle(3.8, 0x2b1b13, 0.98);
+      this.caveGraphics.lineBetween(ladderTop.x + offsetX, ladderTop.y + offsetY, ladderBottom.x + offsetX, ladderBottom.y + offsetY);
+      this.caveGraphics.lineStyle(1.65, railColor, 1);
+      this.caveGraphics.lineBetween(ladderTop.x + offsetX, ladderTop.y + offsetY, ladderBottom.x + offsetX, ladderBottom.y + offsetY);
     }
+    const rungCount = 5 + Math.floor(this.caveVisualRandom(exit.tileX, exit.tileY, 0x6da1) * 2);
+    for (let rung = 1; rung <= rungCount; rung += 1) {
+      const progress = rung / (rungCount + 1);
+      const x = ladderTop.x + (ladderBottom.x - ladderTop.x) * progress;
+      const y = ladderTop.y + (ladderBottom.y - ladderTop.y) * progress;
+      this.caveGraphics.lineStyle(3.4, 0x281913, 0.98);
+      this.caveGraphics.lineBetween(x - sideX * 8.5, y - sideY * 8.5, x + sideX * 8.5, y + sideY * 8.5);
+      this.caveGraphics.lineStyle(1.45, 0xbd7a42, 0.94);
+      this.caveGraphics.lineBetween(x - sideX * 7.1, y - sideY * 7.1, x + sideX * 7.1, y + sideY * 7.1);
+    }
+  }
+
+  private updateCaveEntranceDaylight(time: number, force = false): void {
+    const cave = this.activeCave;
+    const frame = Math.floor(time / 120);
+    if (!cave) {
+      this.caveEntranceLightGraphics.clear().setVisible(false);
+      return;
+    }
+    if (!force && frame === this.lastCaveEntranceLightFrame) {
+      return;
+    }
+    this.lastCaveEntranceLightFrame = frame;
+    const lightLevel = sampleDayNight(this.worldTimeMs).lightLevel;
+    const graphics = this.caveEntranceLightGraphics;
+    graphics.clear().setVisible(lightLevel > 0.01);
+    if (lightLevel <= 0.01) {
+      this.updateCaveVisibility(true);
+      return;
+    }
+
+    cave.layout.surfaceExits.forEach((exit) => {
+      const visual = this.caveExitVisual(cave, exit);
+      const insideX = -visual.wallNormalX;
+      const insideY = -visual.wallNormalY;
+      const sideX = -visual.wallNormalY;
+      const sideY = visual.wallNormalX;
+      const beam = (reach: number, endHalfWidth: number, salt: number): CaveRenderPoint[] => {
+        const left: CaveRenderPoint[] = [];
+        const right: CaveRenderPoint[] = [];
+        const segments = 6;
+        for (let segment = 0; segment < segments; segment += 1) {
+          const progress = segment / (segments - 1);
+          const distance = 4 + reach * progress;
+          const halfWidth = 6 + (endHalfWidth - 6) * progress;
+          const jitter = (this.caveVisualRandom(exit.tileX + segment, exit.tileY - segment, salt + segment) - 0.5) * 2.2 * progress;
+          const x = visual.x + insideX * distance;
+          const y = visual.y + insideY * distance;
+          left.push({ x: x + sideX * (halfWidth + jitter), y: y + sideY * (halfWidth + jitter) });
+          right.push({ x: x - sideX * (halfWidth - jitter), y: y - sideY * (halfWidth - jitter) });
+        }
+        return [...left, ...right.reverse()];
+      };
+      // The narrow shaft begins above the wall ladder and falls onto the first few steps. It is
+      // deliberately contained rather than an outward cone, so the opening feels overhead.
+      graphics.fillStyle(0x9dcfc2, 0.05 * lightLevel);
+      graphics.fillPoints(beam(68, 17, 0x6e71), true);
+      graphics.fillStyle(0xc5e8d4, 0.09 * lightLevel);
+      graphics.fillPoints(beam(42, 12, 0x6e91), true);
+      graphics.fillStyle(0xeeffe6, 0.28 * lightLevel);
+      graphics.fillEllipse(visual.x + insideX * 4, visual.y + insideY * 4, 17, 12);
+    });
+    this.updateCaveVisibility(true);
   }
 
   private caveLavaPoints(pool: CaveLavaPool, origin: CaveWorldOrigin): CaveRenderPoint[] {
@@ -1684,6 +1830,22 @@ export class AdventureScene extends Phaser.Scene {
       }
       const position = caveWorldTilePosition(cave.origin, pool.tileX, pool.tileY);
       this.setCaveLight(lavaLight, position.x, position.y, CAVE_LAVA_LIGHT_RADIUS_TILES);
+    });
+    const daylight = sampleDayNight(this.worldTimeMs).lightLevel;
+    while (this.caveFogEntranceLights.length < cave.layout.surfaceExits.length) {
+      const entranceLight = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      entranceLight.setAttribute('fill', '#000000');
+      this.caveFogPlayerLight.parentElement!.appendChild(entranceLight);
+      this.caveFogEntranceLights.push(entranceLight);
+    }
+    this.caveFogEntranceLights.forEach((entranceLight, index) => {
+      const exit = cave.layout.surfaceExits[index];
+      if (!exit || daylight <= 0.01) {
+        entranceLight.setAttribute('r', '0');
+        return;
+      }
+      const visual = this.caveExitVisual(cave, exit);
+      this.setCaveLight(entranceLight, visual.x, visual.y, CAVE_SURFACE_EXIT_LIGHT_RADIUS_TILES * daylight);
     });
     this.caveFogOverlay.classList.add('is-visible');
   }
@@ -1936,6 +2098,7 @@ export class AdventureScene extends Phaser.Scene {
       this.markSaveDirty();
     }
     this.updateCaveLava(time);
+    this.updateCaveEntranceDaylight(time);
     this.updateCaveVisibility();
     this.updateCaveInteraction();
     this.updateDropInteraction(time);
@@ -1979,7 +2142,7 @@ export class AdventureScene extends Phaser.Scene {
     let nearbyExit: CaveSurfaceExit | null = null;
     let nearestExitDistanceSquared = 52 * 52;
     cave.layout.surfaceExits.forEach((exit) => {
-      const position = caveWorldTilePosition(cave.origin, exit.tileX, exit.tileY);
+      const position = this.caveExitVisual(cave, exit);
       const distanceSquared = Phaser.Math.Distance.Squared(this.player.x, this.player.y, position.x, position.y);
       if (distanceSquared < nearestExitDistanceSquared) {
         nearbyExit = exit;
@@ -2005,7 +2168,7 @@ export class AdventureScene extends Phaser.Scene {
 
     if (nearbyExit) {
       const exit = nearbyExit as CaveSurfaceExit;
-      const position = caveWorldTilePosition(cave.origin, exit.tileX, exit.tileY);
+      const position = this.caveExitVisual(cave, exit);
       this.interactionHighlight.setRadius(48).setPosition(position.x, position.y).setVisible(true);
       this.drawCaveHint(position.x, position.y - 33, exit.label);
     } else if (nearest) {
