@@ -1550,7 +1550,9 @@ export class AdventureScene extends Phaser.Scene {
           break;
         }
       }
-      const anchorDistance = Number.isFinite(wallDistance) ? Math.max(0.5, wallDistance - 0.36) : 0.7;
+      // Keep the ladder almost on the contour edge. The small inset preserves a reachable
+      // interaction point without making a new floor-side platform around the exit.
+      const anchorDistance = Number.isFinite(wallDistance) ? Math.max(0.35, wallDistance - 0.16) : 0.5;
       visuals.set(exit.id, {
         x: origin.x + (sourceX + wallNormalX * anchorDistance) * WORLD_TILE_SIZE,
         y: origin.y + (sourceY + wallNormalY * anchorDistance) * WORLD_TILE_SIZE,
@@ -1575,43 +1577,47 @@ export class AdventureScene extends Phaser.Scene {
     const insideY = -visual.wallNormalY;
     const sideX = -visual.wallNormalY;
     const sideY = visual.wallNormalX;
-    const wallWidth = isLinkedOutlet ? 22 : 19;
-    const wallDepth = isLinkedOutlet ? 13 : 11;
-    const rockColor = isLinkedOutlet ? 0x355147 : 0x3c4d43;
-    const wallFace: CaveRenderPoint[] = [
-      { x: visual.x + sideX * wallWidth + visual.wallNormalX * wallDepth, y: visual.y + sideY * wallWidth + visual.wallNormalY * wallDepth },
-      { x: visual.x - sideX * wallWidth + visual.wallNormalX * wallDepth, y: visual.y - sideY * wallWidth + visual.wallNormalY * wallDepth },
-      { x: visual.x - sideX * (wallWidth * 0.78) + insideX * 18, y: visual.y - sideY * (wallWidth * 0.78) + insideY * 18 },
-      { x: visual.x + sideX * (wallWidth * 0.78) + insideX * 18, y: visual.y + sideY * (wallWidth * 0.78) + insideY * 18 }
-    ];
-    this.drawCaveRockPatch(visual.x + visual.wallNormalX * 11, visual.y + visual.wallNormalY * 11, wallWidth * 1.25, wallDepth * 1.5, exit.tileX, exit.tileY, isLinkedOutlet ? 0x6d21 : 0x6d01, rockColor, 0.82);
-    this.fillCavePolygon(wallFace, 0x0b1212, 0.94);
-    this.caveGraphics.lineStyle(1.45, 0x72877a, 0.54);
-    this.caveGraphics.strokePoints(wallFace, true);
+    // A narrow dark seam is cut straight into the existing contour wall. Unlike the old broad
+    // panel, it preserves the cave's own wall texture and gives the ladder a believable recess.
+    const seamHalfWidth = isLinkedOutlet ? 11 : 9.5;
+    this.caveGraphics.lineStyle(11, 0x08100f, 0.58);
+    this.caveGraphics.lineBetween(
+      visual.x - sideX * seamHalfWidth + visual.wallNormalX * 2,
+      visual.y - sideY * seamHalfWidth + visual.wallNormalY * 2,
+      visual.x + sideX * seamHalfWidth + visual.wallNormalX * 2,
+      visual.y + sideY * seamHalfWidth + visual.wallNormalY * 2
+    );
+    this.caveGraphics.lineStyle(1.2, 0x617466, 0.46);
+    this.caveGraphics.lineBetween(
+      visual.x - sideX * seamHalfWidth,
+      visual.y - sideY * seamHalfWidth,
+      visual.x + sideX * seamHalfWidth,
+      visual.y + sideY * seamHalfWidth
+    );
 
-    // The ladder is mounted into the wall: its top disappears into the dark opening and its
-    // feet rest on the floor, so it reads as a climb back to the surface rather than a floor icon.
-    const ladderTop = { x: visual.x + visual.wallNormalX * 8, y: visual.y + visual.wallNormalY * 8 };
-    const ladderBottom = { x: visual.x + insideX * 28, y: visual.y + insideY * 28 };
-    const railHalfWidth = 7;
-    const railColor = isLinkedOutlet ? 0x865338 : 0x9b6337;
+    // The rails begin inside that wall seam and stay narrow against the contour. Their short
+    // floor reach makes this read as a fixed ladder, not a standalone prop on the cave floor.
+    const ladderTop = { x: visual.x + visual.wallNormalX * 4, y: visual.y + visual.wallNormalY * 4 };
+    const ladderBottom = { x: visual.x + insideX * 20, y: visual.y + insideY * 20 };
+    const railHalfWidth = 5.2;
+    const railColor = isLinkedOutlet ? 0x82523a : 0x95613b;
     for (const side of [-1, 1]) {
       const offsetX = sideX * railHalfWidth * side;
       const offsetY = sideY * railHalfWidth * side;
-      this.caveGraphics.lineStyle(3.8, 0x2b1b13, 0.98);
+      this.caveGraphics.lineStyle(2.9, 0x251913, 0.98);
       this.caveGraphics.lineBetween(ladderTop.x + offsetX, ladderTop.y + offsetY, ladderBottom.x + offsetX, ladderBottom.y + offsetY);
-      this.caveGraphics.lineStyle(1.65, railColor, 1);
+      this.caveGraphics.lineStyle(1.2, railColor, 1);
       this.caveGraphics.lineBetween(ladderTop.x + offsetX, ladderTop.y + offsetY, ladderBottom.x + offsetX, ladderBottom.y + offsetY);
     }
-    const rungCount = 5 + Math.floor(this.caveVisualRandom(exit.tileX, exit.tileY, 0x6da1) * 2);
+    const rungCount = 4 + Math.floor(this.caveVisualRandom(exit.tileX, exit.tileY, 0x6da1) * 2);
     for (let rung = 1; rung <= rungCount; rung += 1) {
       const progress = rung / (rungCount + 1);
       const x = ladderTop.x + (ladderBottom.x - ladderTop.x) * progress;
       const y = ladderTop.y + (ladderBottom.y - ladderTop.y) * progress;
-      this.caveGraphics.lineStyle(3.4, 0x281913, 0.98);
-      this.caveGraphics.lineBetween(x - sideX * 8.5, y - sideY * 8.5, x + sideX * 8.5, y + sideY * 8.5);
-      this.caveGraphics.lineStyle(1.45, 0xbd7a42, 0.94);
-      this.caveGraphics.lineBetween(x - sideX * 7.1, y - sideY * 7.1, x + sideX * 7.1, y + sideY * 7.1);
+      this.caveGraphics.lineStyle(2.7, 0x251913, 0.98);
+      this.caveGraphics.lineBetween(x - sideX * 6.4, y - sideY * 6.4, x + sideX * 6.4, y + sideY * 6.4);
+      this.caveGraphics.lineStyle(1.05, 0xb57743, 0.92);
+      this.caveGraphics.lineBetween(x - sideX * 5.4, y - sideY * 5.4, x + sideX * 5.4, y + sideY * 5.4);
     }
   }
 
@@ -1658,12 +1664,12 @@ export class AdventureScene extends Phaser.Scene {
       };
       // The narrow shaft begins above the wall ladder and falls onto the first few steps. It is
       // deliberately contained rather than an outward cone, so the opening feels overhead.
-      graphics.fillStyle(0x9dcfc2, 0.05 * lightLevel);
-      graphics.fillPoints(beam(68, 17, 0x6e71), true);
-      graphics.fillStyle(0xc5e8d4, 0.09 * lightLevel);
-      graphics.fillPoints(beam(42, 12, 0x6e91), true);
-      graphics.fillStyle(0xeeffe6, 0.28 * lightLevel);
-      graphics.fillEllipse(visual.x + insideX * 4, visual.y + insideY * 4, 17, 12);
+      graphics.fillStyle(0x9dcfc2, 0.028 * lightLevel);
+      graphics.fillPoints(beam(42, 10, 0x6e71), true);
+      graphics.fillStyle(0xc5e8d4, 0.06 * lightLevel);
+      graphics.fillPoints(beam(24, 7, 0x6e91), true);
+      graphics.fillStyle(0xeeffe6, 0.22 * lightLevel);
+      graphics.fillEllipse(visual.x + insideX * 3, visual.y + insideY * 3, 12, 8);
     });
     this.updateCaveVisibility(true);
   }
