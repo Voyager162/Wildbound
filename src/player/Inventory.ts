@@ -132,6 +132,34 @@ export class Inventory {
     return true;
   }
 
+  canPlaceInSlot(index: number, item: InventoryItem, amount: number): boolean {
+    if (!this.isValidIndex(index) || !Number.isInteger(amount) || amount < 1) {
+      return false;
+    }
+
+    const slot = this.slots[index];
+    const stackLimit = inventoryItemStackLimit(item);
+    if (!slot) {
+      return amount <= stackLimit;
+    }
+
+    return slot.item === item && slot.amount + amount <= stackLimit;
+  }
+
+  placeInSlot(index: number, item: InventoryItem, amount: number): boolean {
+    if (!this.canPlaceInSlot(index, item, amount)) {
+      return false;
+    }
+
+    const slot = this.slots[index];
+    if (slot) {
+      slot.amount += amount;
+    } else {
+      this.slots[index] = { item, amount };
+    }
+    return true;
+  }
+
   takeSlot(index: number): InventorySlot | null {
     if (!this.isValidIndex(index) || !this.slots[index]) {
       return null;

@@ -1,8 +1,19 @@
-import { TOOL_DEFINITIONS, isToolId, type ToolId } from '../crafting/toolConfig';
+import { TOOL_DEFINITIONS, isToolId, type ToolId, type ToolKind } from '../crafting/toolConfig';
 import { peakHarvestSpeedForTool } from '../crafting/harvestSpeedConfig';
 import { CRAFTING_RECIPES, type CraftingRecipe } from '../crafting/recipeConfig';
 import { HOTBAR_SLOT_COUNT, type Inventory, type InventoryItem, type InventorySlot } from '../player/Inventory';
 import { resourceLabel } from '../world/resources';
+
+interface ToolCategory {
+  readonly kind: ToolKind;
+  readonly label: string;
+  readonly description: string;
+}
+
+const TOOL_CATEGORIES: readonly ToolCategory[] = [
+  { kind: 'axe', label: 'Axes', description: 'Fell trees, shrubs, and cacti faster.' },
+  { kind: 'pickaxe', label: 'Pickaxes', description: 'Mine stone and ore features faster.' }
+];
 
 export class InventoryOverlay {
   private readonly element: HTMLDivElement;
@@ -11,12 +22,13 @@ export class InventoryOverlay {
   private readonly titleHint: HTMLSpanElement;
   private readonly hotbar: HTMLDivElement;
   private readonly grid: HTMLDivElement;
-  private readonly inventoryContent: HTMLDivElement;
-  private readonly crafting: HTMLDivElement;
-  private craftingOpen = false;
+  private readonly crafting: HTMLElement;
+  private selectedToolKind: ToolKind | null = null;
+  private pendingCraft: CraftingRecipe | null = null;
   private draggingIndex: number | null = null;
-  private dragSourceSlot: HTMLButtonElement | null = null;
-  private dragItemElement: HTMLDivElement | null = null;
+  private draggingCraftOutput = false;
+  private dragSourceSlot: HTMLElement | null = null;
+  private dragItemElement: HTMLElement | null = null;
   private activePointerId: number | null = null;
   private dragOriginX = 0;
   private dragOriginY = 0;
@@ -31,7 +43,7 @@ export class InventoryOverlay {
     private readonly onDropOutside: (slot: InventorySlot) => void,
     private readonly equippedTool: () => ToolId | null,
     private readonly onEquipTool: (tool: ToolId | null) => void,
-    private readonly onCraft: (recipe: CraftingRecipe) => boolean
+    private readonly onClaimCraft: (recipe: CraftingRecipe, destinationIndex: number) => boolean
   ) {
     this.element = document.createElement('div');
     this.element.className = 'inventory-overlay';
@@ -39,13 +51,13 @@ export class InventoryOverlay {
 
     this.panel = document.createElement('section');
     this.panel.className = 'inventory-panel';
-    this.panel.setAttribute('aria-label', 'Inventory');
+    this.panel.setAttribute('aria-label', 'Inventory and crafting');
 
     const title = document.createElement('div');
     title.className = 'inventory-title';
     this.titleLabel = document.createElement('span');
     this.titleLabel.className = 'inventory-title__label';
-    this.titleLabel.textContent = 'Inventory';
+    this.titleLabel.textContent = 'Inventory & Crafting';
     this.titleHint = document.createElement('span');
     this.titleHint.className = 'inventory-title__hint';
     title.append(this.titleLabel, this.titleHint);
@@ -54,8 +66,10 @@ export class InventoryOverlay {
     equipped.className = 'inventory-equipped';
     this.panel.append(title, equipped);
 
-    this.inventoryContent = document.createElement('div');
-    this.inventoryContent.className = 'inventory-content';
+    const workspace = document.createElement('div');
+    workspace.className = 'inventory-workspace';
+    const inventoryContent = document.createElement('div');
+    inventoryContent.className = 'inventory-content';
     const hotbarLabel = document.createElement('div');
     hotbarLabel.className = 'inventory-hotbar-label';
     hotbarLabel.textContent = 'Quick access';
@@ -63,11 +77,13 @@ export class InventoryOverlay {
     this.hotbar.className = 'inventory-hotbar';
     this.grid = document.createElement('div');
     this.grid.className = 'inventory-grid';
-    this.inventoryContent.append(hotbarLabel, this.hotbar, this.grid);
+    inventoryContent.append(hotbarLabel, this.hotbar, this.grid);
 
-    this.crafting = document.createElement('div');
+    this.crafting = document.createElement('aside');
     this.crafting.className = 'inventory-crafting';
-    this.panel.append(this.inventoryContent, this.crafting);
+    this.crafting.setAttribute('aria-label', 'Tool crafting');
+    workspace.append(inventoryContent, this.crafting);
+    this.panel.append(workspace);
     this.element.append(this.panel);
     parent.append(this.element);
     this.render();
@@ -77,24 +93,17 @@ export class InventoryOverlay {
     if (!open) {
       this.cancelDrag();
     }
-
     this.element.classList.toggle('is-open', open);
     this.element.setAttribute('aria-hidden', String(!open));
-
     if (open) {
       this.render();
     }
   }
 
-  setCraftingOpen(open: boolean): void {
-    if (this.craftingOpen === open) {
-      return;
-    }
-
+  // Crafting is now always beside the inventory. Keep this small compatibility boundary for
+  // older scene state without allowing either side of the workspace to disappear.
+  setCraftingOpen(_open: boolean): void {
     this.cancelDrag();
-    this.craftingOpen = open;
-    this.panel.classList.toggle('is-crafting', open);
-    this.panel.setAttribute('aria-label', open ? 'Crafting in inventory' : 'Inventory');
     this.render();
   }
 
@@ -110,8 +119,8 @@ export class InventoryOverlay {
   private render(): void {
     this.grid.replaceChildren();
     this.hotbar.replaceChildren();
-    this.titleLabel.textContent = this.craftingOpen ? 'Crafting' : 'Inventory';
-    this.titleHint.textContent = this.craftingOpen ? 'C inventory · E close' : 'C crafting · E close';
+    this.titleLabel.textContent = 'Inventory & Crafting';
+    this.titleHint.textContent = 'E or C close';
     const equippedLabel = this.element.querySelector<HTMLElement>('.inventory-equipped');
     const equipped = this.equippedTool();
     if (equippedLabel) {
@@ -122,53 +131,143 @@ export class InventoryOverlay {
       const slotElement = this.createSlot(index, slot, equipped);
       (index < HOTBAR_SLOT_COUNT ? this.hotbar : this.grid).append(slotElement);
     });
+    this.renderCrafting();
+  }
 
+  private renderCrafting(): void {
     this.crafting.replaceChildren();
-    if (this.craftingOpen) {
-      const description = document.createElement('p');
-      description.className = 'inventory-crafting__description';
-      description.textContent = 'Craft tools using resources from this inventory.';
-      const recipes = document.createElement('div');
-      recipes.className = 'inventory-crafting__recipes';
-      recipes.append(...CRAFTING_RECIPES.map((recipe) => this.createRecipe(recipe)));
-      this.crafting.append(description, recipes);
+    const heading = document.createElement('div');
+    heading.className = 'inventory-crafting__heading';
+    const title = document.createElement('strong');
+    title.textContent = 'Craft tools';
+    const description = document.createElement('p');
+    description.className = 'inventory-crafting__description';
+    description.textContent = this.pendingCraft
+      ? 'Drag the finished tool into an empty inventory slot.'
+      : 'Choose a tool type, then select a material variant.';
+    heading.append(title, description);
+    this.crafting.append(heading);
+
+    if (this.pendingCraft) {
+      this.crafting.append(this.createPendingCraft(this.pendingCraft));
+    }
+
+    const categories = document.createElement('div');
+    categories.className = 'crafting-categories';
+    categories.append(...TOOL_CATEGORIES.map((category) => this.createCategory(category)));
+    this.crafting.append(categories);
+
+    if (this.selectedToolKind) {
+      const selectedCategory = TOOL_CATEGORIES.find((category) => category.kind === this.selectedToolKind)!;
+      const variants = document.createElement('section');
+      variants.className = 'crafting-variants';
+      const variantsHeading = document.createElement('div');
+      variantsHeading.className = 'crafting-variants__heading';
+      const label = document.createElement('strong');
+      label.textContent = `${selectedCategory.label} variants`;
+      const change = document.createElement('button');
+      change.type = 'button';
+      change.className = 'crafting-variants__close';
+      change.textContent = 'Change';
+      change.addEventListener('click', () => {
+        this.selectedToolKind = null;
+        this.render();
+      });
+      variantsHeading.append(label, change);
+
+      const list = document.createElement('div');
+      list.className = 'crafting-variants__list';
+      const recipes = CRAFTING_RECIPES.filter((recipe) => TOOL_DEFINITIONS[recipe.output].kind === this.selectedToolKind);
+      list.append(...recipes.map((recipe) => this.createRecipe(recipe)));
+      variants.append(variantsHeading, list);
+      this.crafting.append(variants);
     }
   }
 
+  private createCategory(category: ToolCategory): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'crafting-category';
+    button.classList.toggle('is-selected', this.selectedToolKind === category.kind);
+    button.setAttribute('aria-pressed', String(this.selectedToolKind === category.kind));
+
+    const icon = document.createElement('span');
+    icon.className = `tool-icon tool-icon--${category.kind} tool-icon--stone`;
+    icon.setAttribute('aria-hidden', 'true');
+    const details = document.createElement('span');
+    details.className = 'crafting-category__details';
+    const label = document.createElement('strong');
+    label.textContent = category.label;
+    const description = document.createElement('small');
+    description.textContent = category.description;
+    details.append(label, description);
+    button.append(icon, details);
+    button.addEventListener('click', () => {
+      this.selectedToolKind = category.kind;
+      this.render();
+    });
+    return button;
+  }
+
   private createRecipe(recipe: CraftingRecipe): HTMLButtonElement {
-    const canCraft = recipe.ingredients.every((ingredient) => this.inventory.get(ingredient.resource) >= ingredient.amount)
-      && this.inventory.canAdd(recipe.output, 1);
+    const canCraft = !this.pendingCraft
+      && recipe.ingredients.every((ingredient) => this.inventory.get(ingredient.resource) >= ingredient.amount);
     const tool = TOOL_DEFINITIONS[recipe.output];
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'crafting-recipe';
+    button.className = 'crafting-variant';
     button.disabled = !canCraft;
-    button.setAttribute('aria-label', `Craft ${tool.label}`);
+    button.setAttribute('aria-label', canCraft ? `Craft ${tool.label}` : `Need resources for ${tool.label}`);
 
-    const icon = document.createElement('span');
-    icon.className = `tool-icon tool-icon--${tool.kind} tool-icon--${tool.headMaterial}`;
-    icon.setAttribute('aria-hidden', 'true');
-
+    const icon = this.createItemIcon(recipe.output);
     const details = document.createElement('span');
-    details.className = 'crafting-recipe__details';
+    details.className = 'crafting-variant__details';
     const label = document.createElement('strong');
     label.textContent = tool.label;
     const speed = document.createElement('small');
     speed.textContent = `Up to ${peakHarvestSpeedForTool(tool.id).toFixed(2)}× harvest speed`;
     const ingredients = document.createElement('span');
-    ingredients.className = 'crafting-recipe__ingredients';
-    ingredients.textContent = recipe.ingredients.map((ingredient) => {
+    ingredients.className = 'crafting-variant__ingredients';
+    ingredients.append(...recipe.ingredients.map((ingredient) => {
+      const requirement = document.createElement('span');
       const available = this.inventory.get(ingredient.resource);
-      return `${resourceLabel(ingredient.resource)} ${available}/${ingredient.amount}`;
-    }).join(' · ');
+      requirement.className = 'crafting-requirement';
+      requirement.classList.toggle('is-ready', available >= ingredient.amount);
+      requirement.classList.toggle('is-missing', available < ingredient.amount);
+      requirement.title = `${resourceLabel(ingredient.resource)}: ${available}/${ingredient.amount}`;
+      const resourceIcon = this.createItemIcon(ingredient.resource);
+      const amount = document.createElement('span');
+      amount.textContent = `${available}/${ingredient.amount}`;
+      requirement.append(resourceIcon, amount);
+      return requirement;
+    }));
     details.append(label, speed, ingredients);
     button.append(icon, details);
     button.addEventListener('click', () => {
-      if (this.onCraft(recipe)) {
+      if (canCraft) {
+        this.pendingCraft = recipe;
         this.render();
       }
     });
     return button;
+  }
+
+  private createPendingCraft(recipe: CraftingRecipe): HTMLElement {
+    const pending = document.createElement('div');
+    pending.className = 'crafting-pending';
+    const instruction = document.createElement('span');
+    instruction.className = 'crafting-pending__instruction';
+    instruction.textContent = 'Finished tool';
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'crafting-pending__item';
+    item.setAttribute('aria-label', `Drag ${TOOL_DEFINITIONS[recipe.output].label} to an empty inventory slot`);
+    item.append(this.createItemIcon(recipe.output));
+    item.addEventListener('pointerdown', (event) => this.beginCraftOutputDrag(event, item));
+    const name = document.createElement('strong');
+    name.textContent = TOOL_DEFINITIONS[recipe.output].label;
+    pending.append(instruction, item, name);
+    return pending;
   }
 
   private createSlot(index: number, slot: InventorySlot | null, equipped: ToolId | null): HTMLButtonElement {
@@ -198,7 +297,6 @@ export class InventoryOverlay {
         slotElement.classList.add('is-equipped');
       }
     }
-
     slotElement.addEventListener('pointerdown', (event) => this.beginDrag(event, index, slotElement));
     return slotElement;
   }
@@ -206,14 +304,31 @@ export class InventoryOverlay {
   private beginDrag(event: PointerEvent, slotIndex: number, sourceSlot: HTMLButtonElement): void {
     const slot = this.inventory.getSlots()[slotIndex];
     const itemElement = sourceSlot.querySelector<HTMLDivElement>('.inventory-item');
-    if (!slot || !itemElement || event.button !== 0 || this.draggingIndex !== null) {
+    if (!slot || !itemElement || event.button !== 0 || this.activePointerId !== null) {
       return;
     }
+    this.startDrag(event, sourceSlot, itemElement, slotIndex, false);
+  }
 
+  private beginCraftOutputDrag(event: PointerEvent, itemElement: HTMLButtonElement): void {
+    if (!this.pendingCraft || event.button !== 0 || this.activePointerId !== null) {
+      return;
+    }
+    this.startDrag(event, itemElement, itemElement, null, true);
+  }
+
+  private startDrag(
+    event: PointerEvent,
+    source: HTMLElement,
+    itemElement: HTMLElement,
+    slotIndex: number | null,
+    isCraftOutput: boolean
+  ): void {
     event.preventDefault();
     const rect = itemElement.getBoundingClientRect();
     this.draggingIndex = slotIndex;
-    this.dragSourceSlot = sourceSlot;
+    this.draggingCraftOutput = isCraftOutput;
+    this.dragSourceSlot = source;
     this.dragItemElement = itemElement;
     this.activePointerId = event.pointerId;
     this.dragOriginX = rect.left;
@@ -221,16 +336,14 @@ export class InventoryOverlay {
     this.dragGrabOffsetX = event.clientX - rect.left;
     this.dragGrabOffsetY = event.clientY - rect.top;
     this.dragHasMoved = false;
-
-    sourceSlot.setPointerCapture(event.pointerId);
-    sourceSlot.classList.add('is-dragging');
+    source.setPointerCapture(event.pointerId);
+    source.classList.add('is-dragging');
     itemElement.style.width = `${Math.round(rect.width)}px`;
     itemElement.style.height = `${Math.round(rect.height)}px`;
     itemElement.style.zIndex = '100';
     itemElement.style.pointerEvents = 'none';
     itemElement.style.willChange = 'transform';
     this.positionDraggedItem(event.clientX, event.clientY);
-
     document.addEventListener('pointermove', this.handlePointerMove, true);
     document.addEventListener('pointerup', this.handlePointerUp, true);
     document.addEventListener('pointercancel', this.handlePointerCancel, true);
@@ -249,13 +362,20 @@ export class InventoryOverlay {
     if (event.pointerId !== this.activePointerId) {
       return;
     }
-
     const sourceIndex = this.draggingIndex;
+    const wasCraftOutput = this.draggingCraftOutput;
+    const pendingCraft = this.pendingCraft;
     const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-inventory-slot]');
     const targetIndex = target ? Number(target.dataset.inventorySlot) : Number.NaN;
     let changed = false;
 
-    if (sourceIndex !== null && targetIndex === sourceIndex && !this.dragHasMoved) {
+    if (wasCraftOutput && pendingCraft && Number.isInteger(targetIndex)) {
+      if (this.inventory.canPlaceInSlot(targetIndex, pendingCraft.output, 1)
+        && this.onClaimCraft(pendingCraft, targetIndex)) {
+        this.pendingCraft = null;
+        changed = true;
+      }
+    } else if (sourceIndex !== null && targetIndex === sourceIndex && !this.dragHasMoved) {
       const slot = this.inventory.getSlots()[sourceIndex];
       if (slot && isToolId(slot.item)) {
         this.onEquipTool(this.equippedTool() === slot.item ? null : slot.item);
@@ -265,8 +385,7 @@ export class InventoryOverlay {
       changed = this.inventory.moveSlot(sourceIndex, targetIndex);
     } else if (sourceIndex !== null) {
       const sourceSlot = this.inventory.getSlots()[sourceIndex];
-      // World drops are resource entities today. Keep tools safely in the inventory rather than
-      // discarding them while that future drop representation does not exist yet.
+      // Tools remain protected in inventory; only resources have a matching world-drop entity.
       const dropped = sourceSlot && !isToolId(sourceSlot.item) ? this.inventory.takeSlot(sourceIndex) : null;
       if (dropped) {
         this.onDropOutside(dropped);
@@ -295,7 +414,6 @@ export class InventoryOverlay {
     if (this.dragSourceSlot && this.activePointerId !== null && this.dragSourceSlot.hasPointerCapture(this.activePointerId)) {
       this.dragSourceSlot.releasePointerCapture(this.activePointerId);
     }
-
     this.dragSourceSlot?.classList.remove('is-dragging');
     if (this.dragItemElement) {
       this.dragItemElement.style.removeProperty('width');
@@ -305,10 +423,10 @@ export class InventoryOverlay {
       this.dragItemElement.style.removeProperty('transform');
       this.dragItemElement.style.removeProperty('will-change');
     }
-
     this.dragSourceSlot = null;
     this.dragItemElement = null;
     this.draggingIndex = null;
+    this.draggingCraftOutput = false;
     this.activePointerId = null;
     this.dragOriginX = 0;
     this.dragOriginY = 0;
@@ -321,7 +439,6 @@ export class InventoryOverlay {
     if (!this.dragItemElement) {
       return;
     }
-
     const x = clientX - this.dragGrabOffsetX - this.dragOriginX;
     const y = clientY - this.dragGrabOffsetY - this.dragOriginY;
     this.dragItemElement.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0) scale(1.12)`;

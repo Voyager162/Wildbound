@@ -302,12 +302,14 @@ body {
 }
 
 .inventory-panel {
-  width: min(420px, calc(100vw - 40px));
+  width: min(780px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
   padding: 16px;
   border: 2px solid #91b99d;
   border-radius: 12px;
   background: linear-gradient(145deg, #193628, #0d2118);
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.48), inset 0 0 0 1px rgba(225, 255, 234, 0.12);
+  overflow: hidden;
   opacity: 0;
   transform: translateY(10px) scale(0.94);
   transition: opacity 160ms ease, transform 180ms cubic-bezier(0.18, 0.78, 0.3, 1.18);
@@ -345,6 +347,18 @@ body {
   margin: -7px 2px 13px;
   color: #d9edaa;
   font: 700 12px/1.3 "Cascadia Mono", Consolas, monospace;
+}
+
+.inventory-workspace {
+  display: grid;
+  grid-template-columns: minmax(300px, 1.08fr) minmax(254px, 0.92fr);
+  gap: 14px;
+  align-items: start;
+  min-height: 0;
+}
+
+.inventory-content {
+  min-width: 0;
 }
 
 .inventory-hotbar-label {
@@ -449,38 +463,248 @@ body {
 }
 
 .inventory-crafting {
-  display: none;
-}
-
-.inventory-panel.is-crafting .inventory-equipped,
-.inventory-panel.is-crafting .inventory-content {
-  display: none;
-}
-
-.inventory-panel.is-crafting {
-  display: flex;
-  flex-direction: column;
-  max-height: calc(100vh - 32px);
-}
-
-.inventory-panel.is-crafting .inventory-crafting {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   min-height: 0;
+  max-height: min(560px, calc(100vh - 170px));
+  padding: 12px;
+  border: 1px solid rgba(174, 199, 132, 0.48);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgba(52, 61, 36, 0.96), rgba(21, 38, 25, 0.96));
+  box-shadow: inset 0 0 0 1px rgba(255, 239, 174, 0.06), inset 0 12px 28px rgba(0, 0, 0, 0.16);
   overflow-y: auto;
-  padding-right: 4px;
+}
+
+.inventory-crafting__heading {
+  display: grid;
+  gap: 2px;
+}
+
+.inventory-crafting__heading strong {
+  color: #fff4cf;
+  font-size: 16px;
 }
 
 .inventory-crafting__description {
-  margin: -6px 2px 0;
+  margin: 0;
   color: #c6cbb0;
   font: 600 12px/1.35 "Cascadia Mono", Consolas, monospace;
 }
 
-.inventory-crafting__recipes {
+.crafting-categories {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 9px;
+  gap: 8px;
+}
+
+.crafting-category {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 70px;
+  padding: 8px;
+  border: 1px solid #78845e;
+  border-radius: 8px;
+  color: #f2f5df;
+  background: linear-gradient(145deg, #3d4931, #283525);
+  cursor: pointer;
+  text-align: left;
+}
+
+.crafting-category:hover,
+.crafting-category.is-selected {
+  border-color: #f0d981;
+  background: linear-gradient(145deg, #59603b, #323e29);
+  box-shadow: 0 0 0 1px rgba(249, 226, 128, 0.14), inset 0 0 16px rgba(255, 234, 151, 0.07);
+}
+
+.crafting-category__details {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.crafting-category__details strong,
+.crafting-variants__heading strong,
+.crafting-pending strong {
+  color: #fff8df;
+  font-size: 13px;
+}
+
+.crafting-category__details small,
+.crafting-variant small {
+  color: #c6cbb0;
+  font: 600 10px/1.28 "Cascadia Mono", Consolas, monospace;
+}
+
+.crafting-variants {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid rgba(240, 217, 129, 0.48);
+  border-radius: 9px;
+  background: linear-gradient(155deg, rgba(29, 47, 31, 0.96), rgba(22, 31, 22, 0.92));
+  box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.18);
+}
+
+.crafting-variants__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.crafting-variants__close {
+  padding: 3px 6px;
+  border: 1px solid #759173;
+  border-radius: 5px;
+  color: #d9e8c5;
+  background: rgba(32, 59, 39, 0.82);
+  cursor: pointer;
+  font: 800 10px/1 "Cascadia Mono", Consolas, monospace;
+}
+
+.crafting-variants__close:hover {
+  border-color: #f0d981;
+  color: #fff6d6;
+}
+
+.crafting-variants__list {
+  display: grid;
+  gap: 7px;
+}
+
+.crafting-variant {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 66px;
+  padding: 8px;
+  border: 1px solid #727b5c;
+  border-radius: 7px;
+  color: #eef3df;
+  background: linear-gradient(145deg, #404630, #273126);
+  cursor: pointer;
+  text-align: left;
+}
+
+.crafting-variant:hover:not(:disabled) {
+  border-color: #f2dc84;
+  background: linear-gradient(145deg, #5b5a38, #313e2a);
+}
+
+.crafting-variant:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.crafting-variant__details {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.crafting-variant__details strong {
+  color: #fff8df;
+  font-size: 13px;
+}
+
+.crafting-variant__ingredients {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.crafting-requirement {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  min-width: 39px;
+  height: 24px;
+  padding: 0 4px 0 0;
+  border: 1px solid #6f7a62;
+  border-radius: 5px;
+  color: #cad3ba;
+  background: rgba(12, 25, 17, 0.55);
+  font: 800 9px/1 "Cascadia Mono", Consolas, monospace;
+}
+
+.crafting-requirement.is-ready {
+  border-color: #8ebd7a;
+  color: #e3f3c6;
+}
+
+.crafting-requirement.is-missing {
+  border-color: #a5685d;
+  color: #e5a89c;
+}
+
+.crafting-requirement .resource-icon {
+  flex: 0 0 20px;
+  margin: -5px -7px -5px -4px;
+  transform: scale(0.58);
+}
+
+.crafting-pending {
+  display: grid;
+  grid-template-columns: auto 60px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 72px;
+  padding: 7px;
+  border: 1px solid #f0d981;
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(109, 92, 42, 0.72), rgba(42, 61, 35, 0.9));
+  box-shadow: inset 0 0 16px rgba(255, 225, 132, 0.1);
+}
+
+.crafting-pending__instruction {
+  max-width: 44px;
+  color: #f4dfa0;
+  font: 800 9px/1.22 "Cascadia Mono", Consolas, monospace;
+  text-transform: uppercase;
+}
+
+.crafting-pending__item {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 60px;
+  border: 1px solid #ffe998;
+  border-radius: 7px;
+  background: linear-gradient(145deg, #4f6540, #2c422e);
+  cursor: grab;
+  touch-action: none;
+}
+
+.crafting-pending__item:hover {
+  border-color: #fff5c4;
+  background: linear-gradient(145deg, #667d4d, #344a31);
+}
+
+.crafting-pending__item.is-dragging {
+  cursor: grabbing;
+  filter: drop-shadow(0 12px 10px rgba(0, 0, 0, 0.45));
+}
+
+@media (max-width: 690px) {
+  .inventory-panel {
+    width: min(500px, calc(100vw - 24px));
+    overflow-y: auto;
+  }
+
+  .inventory-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inventory-crafting {
+    max-height: none;
+    overflow: visible;
+  }
 }
 
 .inventory-slot__key {

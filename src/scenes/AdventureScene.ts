@@ -39,7 +39,7 @@ import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
 import { TERRAIN_MATERIAL_ASSETS } from '../world/terrainMaterialConfig';
 import { type CraftingRecipe } from '../crafting/recipeConfig';
 import { TOOL_DEFINITIONS, TOOL_HEAD_PALETTES, isToolId, type ToolId } from '../crafting/toolConfig';
-import { craftRecipe as applyCraftingRecipe } from '../crafting/craftingService';
+import { craftRecipeIntoSlot as applyCraftingRecipe } from '../crafting/craftingService';
 import { caveOreMiningSpeedForTool, harvestSpeedForFeature } from '../crafting/harvestSpeedConfig';
 import {
   caveEntranceAtTile,
@@ -294,7 +294,7 @@ export class AdventureScene extends Phaser.Scene {
       (slot) => this.dropInventorySlot(slot),
       () => this.equippedTool,
       (tool) => this.setEquippedTool(tool),
-      (recipe) => this.craftRecipe(recipe)
+      (recipe, destinationIndex) => this.claimCraftedTool(recipe, destinationIndex)
     );
     this.minimapOverlay = new MinimapOverlay(gameElement);
     this.dayNightOverlay = new DayNightOverlay(gameElement);
@@ -589,7 +589,6 @@ export class AdventureScene extends Phaser.Scene {
     this.inventoryOpen = !this.inventoryOpen;
     if (this.inventoryOpen && this.craftingOpen) {
       this.craftingOpen = false;
-      this.inventoryOverlay.setCraftingOpen(false);
     }
     this.cancelHarvesting();
     this.inventoryOverlay.setOpen(this.inventoryOpen);
@@ -607,22 +606,9 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
-    if (this.craftingOpen) {
-      this.craftingOpen = false;
-      this.inventoryOpen = true;
-      this.cancelHarvesting();
-      this.inventoryOverlay.setCraftingOpen(false);
-      this.inventoryOverlay.setOpen(true);
-      this.updateHotbarVisibility();
-      return;
-    }
-
-    this.craftingOpen = true;
-    this.inventoryOpen = false;
-    this.cancelHarvesting();
-    this.inventoryOverlay.setCraftingOpen(this.craftingOpen);
-    this.inventoryOverlay.setOpen(this.craftingOpen);
-    this.updateHotbarVisibility();
+    // Crafting lives beside the inventory now, so C opens the same combined workspace instead
+    // of replacing the inventory panel with a separate screen.
+    this.toggleInventory();
   }
 
   private toggleWorldMap(): void {
@@ -2440,8 +2426,8 @@ export class AdventureScene extends Phaser.Scene {
     this.harvestProgressGraphics.strokePath();
   }
 
-  private craftRecipe(recipe: CraftingRecipe): boolean {
-    const result = applyCraftingRecipe(this.inventory, recipe);
+  private claimCraftedTool(recipe: CraftingRecipe, destinationIndex: number): boolean {
+    const result = applyCraftingRecipe(this.inventory, recipe, destinationIndex);
     if (result === 'missing-ingredients') {
       this.showWorldFeedback(this.player.x, this.player.y - 28, 'Need more resources');
       return false;
@@ -2452,7 +2438,6 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     this.showWorldFeedback(this.player.x, this.player.y - 28, `Crafted ${TOOL_DEFINITIONS[recipe.output].label}`);
-    this.handleInventoryChanged();
     return true;
   }
 
