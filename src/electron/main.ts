@@ -9,6 +9,11 @@ const launchedByInstaller = process.argv.includes('--squirrel-firstrun');
 
 app.setName('Wildbound');
 app.setAppUserModelId('com.wildbound.desktop');
+// Chromium normally chooses the OS-preferred adapter. Request the discrete adapter before the
+// app is ready so Windows/NVIDIA can route WebGL compositing and Phaser's texture work to it.
+// This remains a preference rather than a software-rendering override, so it preserves Chromium's
+// normal fallback behaviour on machines without a dedicated GPU.
+app.commandLine.appendSwitch('force_high_performance_gpu');
 
 const shouldExitForSquirrel = squirrelStartup || launchedByInstaller;
 if (shouldExitForSquirrel) {

@@ -147,8 +147,10 @@ const CAVE_ORE_STYLE_SALT = 71_229;
 const CAVE_WORLD_OFFSET = 4_000_000;
 const CAVE_CHUNK_CACHE_LIMIT = 512;
 const CAVE_ENTRANCE_CACHE_LIMIT = 8_192;
+const CAVE_OFFSET_SEED_CACHE_LIMIT = 8;
 const caveChunkCache = new Map<string, readonly CaveEntrance[]>();
 const caveEntranceCache = new Map<string, CaveEntrance | null>();
+const linkedConnectionOffsetCache = new Map<string, Map<number, { readonly x: number; readonly y: number }>>();
 const CARDINAL_DIRECTIONS: readonly (readonly [number, number])[] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
 export interface CaveMouthCenter {
@@ -191,8 +193,15 @@ export const caveFormationContainsWorldPoint = (
     && forward < frontEdge + edgePaddingPixels;
 };
 
+const maximumCaveSpawnChance = Math.max(...Object.values(CAVE_SPAWN_CHANCE_BY_BIOME));
 const caveChanceAt = (seed: string, x: number, y: number): number => CAVE_SPAWN_CHANCE_BY_BIOME[biomeAtTile(seed, x, y)];
-const isRawCaveCandidate = (seed: string, x: number, y: number): boolean => randomAtTile(seed, x, y, CAVE_ROLL_SALT) < caveChanceAt(seed, x, y);
+const isRawCaveCandidate = (seed: string, x: number, y: number): boolean => {
+  // Cave probability is always bounded by the largest biome probability. Most tiles can be
+  // rejected from their cheap deterministic roll before sampling the three climate noise fields.
+  // This is mathematically identical to comparing the roll directly against the final biome rate.
+  const roll = randomAtTile(seed, x, y, CAVE_ROLL_SALT);
+  return roll < maximumCaveSpawnChance && roll < caveChanceAt(seed, x, y);
+};
 
 const depthForEntrance = (seed: string, x: number, y: number): CaveDepth => {
   // This stream deliberately differs from the sparse candidate stream, avoiding conditioned rolls.
@@ -282,12 +291,27 @@ const connectionChanceAt = (connectionIndex: number): number => (
 // distant chunk asks whether one of its tiles is a linked surface mouth. The widening rings keep
 // repeated rare links visually and spatially distinct without imposing a connection-count cap.
 const linkedConnectionOffsetAt = (seed: string, connectionIndex: number): { readonly x: number; readonly y: number } => {
+  let offsets = linkedConnectionOffsetCache.get(seed);
+  if (!offsets) {
+    if (linkedConnectionOffsetCache.size >= CAVE_OFFSET_SEED_CACHE_LIMIT) {
+      const oldestSeed = linkedConnectionOffsetCache.keys().next().value;
+      if (oldestSeed) linkedConnectionOffsetCache.delete(oldestSeed);
+    }
+    offsets = new Map();
+    linkedConnectionOffsetCache.set(seed, offsets);
+  }
+  const cached = offsets.get(connectionIndex);
+  if (cached) {
+    return cached;
+  }
   const distanceIndex = connectionIndex % CAVE_LINKED_SYSTEM_DISTANCE_TILES.length;
   const ring = Math.floor(connectionIndex / CAVE_LINKED_SYSTEM_DISTANCE_TILES.length);
   const baseDistance = CAVE_LINKED_SYSTEM_DISTANCE_TILES[distanceIndex];
   const distance = baseDistance * (1 + ring * CAVE_CONNECTION_DISTANCE_RING_GROWTH);
   const angle = randomAtTile(seed, connectionIndex, -connectionIndex, CAVE_GRAPH_SALT + 67) * Math.PI * 2;
-  return { x: Math.round(Math.cos(angle) * distance), y: Math.round(Math.sin(angle) * distance) };
+  const offset = { x: Math.round(Math.cos(angle) * distance), y: Math.round(Math.sin(angle) * distance) };
+  offsets.set(connectionIndex, offset);
+  return offset;
 };
 
 /**

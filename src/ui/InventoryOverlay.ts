@@ -26,15 +26,15 @@ export class InventoryOverlay {
   private selectedToolKind: ToolKind | null = null;
   private pendingCraft: CraftingRecipe | null = null;
   private draggingIndex: number | null = null;
-  private draggingCraftOutput = false;
   private dragSourceSlot: HTMLElement | null = null;
-  private dragItemElement: HTMLElement | null = null;
+  private dragCursorItem: HTMLDivElement | null = null;
   private activePointerId: number | null = null;
   private dragOriginX = 0;
   private dragOriginY = 0;
   private dragGrabOffsetX = 0;
   private dragGrabOffsetY = 0;
   private dragHasMoved = false;
+  private craftCursorItem: HTMLDivElement | null = null;
 
   constructor(
     parent: HTMLElement,
@@ -92,6 +92,7 @@ export class InventoryOverlay {
   setOpen(open: boolean): void {
     if (!open) {
       this.cancelDrag();
+      this.cancelCraftCursor();
     }
     this.element.classList.toggle('is-open', open);
     this.element.setAttribute('aria-hidden', String(!open));
@@ -104,11 +105,13 @@ export class InventoryOverlay {
   // older scene state without allowing either side of the workspace to disappear.
   setCraftingOpen(_open: boolean): void {
     this.cancelDrag();
+    this.cancelCraftCursor();
     this.render();
   }
 
   destroy(): void {
     this.cancelDrag();
+    this.cancelCraftCursor();
     this.element.remove();
   }
 
@@ -143,14 +146,10 @@ export class InventoryOverlay {
     const description = document.createElement('p');
     description.className = 'inventory-crafting__description';
     description.textContent = this.pendingCraft
-      ? 'Drag the finished tool into an empty inventory slot.'
+      ? 'Place the tool carried by your cursor into an empty inventory slot.'
       : 'Choose a tool type, then select a material variant.';
     heading.append(title, description);
     this.crafting.append(heading);
-
-    if (this.pendingCraft) {
-      this.crafting.append(this.createPendingCraft(this.pendingCraft));
-    }
 
     const categories = document.createElement('div');
     categories.className = 'crafting-categories';
@@ -243,31 +242,14 @@ export class InventoryOverlay {
     }));
     details.append(label, speed, ingredients);
     button.append(icon, details);
-    button.addEventListener('click', () => {
+    button.addEventListener('click', (event) => {
       if (canCraft) {
         this.pendingCraft = recipe;
         this.render();
+        this.startCraftCursor(recipe, event.clientX, event.clientY);
       }
     });
     return button;
-  }
-
-  private createPendingCraft(recipe: CraftingRecipe): HTMLElement {
-    const pending = document.createElement('div');
-    pending.className = 'crafting-pending';
-    const instruction = document.createElement('span');
-    instruction.className = 'crafting-pending__instruction';
-    instruction.textContent = 'Finished tool';
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'crafting-pending__item';
-    item.setAttribute('aria-label', `Drag ${TOOL_DEFINITIONS[recipe.output].label} to an empty inventory slot`);
-    item.append(this.createItemIcon(recipe.output));
-    item.addEventListener('pointerdown', (event) => this.beginCraftOutputDrag(event, item));
-    const name = document.createElement('strong');
-    name.textContent = TOOL_DEFINITIONS[recipe.output].label;
-    pending.append(instruction, item, name);
-    return pending;
   }
 
   private createSlot(index: number, slot: InventorySlot | null, equipped: ToolId | null): HTMLButtonElement {
@@ -307,29 +289,19 @@ export class InventoryOverlay {
     if (!slot || !itemElement || event.button !== 0 || this.activePointerId !== null) {
       return;
     }
-    this.startDrag(event, sourceSlot, itemElement, slotIndex, false);
-  }
-
-  private beginCraftOutputDrag(event: PointerEvent, itemElement: HTMLButtonElement): void {
-    if (!this.pendingCraft || event.button !== 0 || this.activePointerId !== null) {
-      return;
-    }
-    this.startDrag(event, itemElement, itemElement, null, true);
+    this.startDrag(event, sourceSlot, itemElement, slotIndex);
   }
 
   private startDrag(
     event: PointerEvent,
     source: HTMLElement,
     itemElement: HTMLElement,
-    slotIndex: number | null,
-    isCraftOutput: boolean
+    slotIndex: number
   ): void {
     event.preventDefault();
     const rect = itemElement.getBoundingClientRect();
     this.draggingIndex = slotIndex;
-    this.draggingCraftOutput = isCraftOutput;
     this.dragSourceSlot = source;
-    this.dragItemElement = itemElement;
     this.activePointerId = event.pointerId;
     this.dragOriginX = rect.left;
     this.dragOriginY = rect.top;
@@ -338,11 +310,15 @@ export class InventoryOverlay {
     this.dragHasMoved = false;
     source.setPointerCapture(event.pointerId);
     source.classList.add('is-dragging');
-    itemElement.style.width = `${Math.round(rect.width)}px`;
-    itemElement.style.height = `${Math.round(rect.height)}px`;
-    itemElement.style.zIndex = '100';
-    itemElement.style.pointerEvents = 'none';
-    itemElement.style.willChange = 'transform';
+    // The actual item stays in its slot while a viewport-level copy follows the
+    // pointer. Keeping the copy outside the clipped inventory panel makes a
+    // ground drop visible and targetable anywhere in the game view.
+    const cursorItem = document.createElement('div');
+    cursorItem.className = 'inventory-drag-cursor';
+    cursorItem.setAttribute('aria-hidden', 'true');
+    cursorItem.append(itemElement.cloneNode(true));
+    this.element.append(cursorItem);
+    this.dragCursorItem = cursorItem;
     this.positionDraggedItem(event.clientX, event.clientY);
     document.addEventListener('pointermove', this.handlePointerMove, true);
     document.addEventListener('pointerup', this.handlePointerUp, true);
@@ -363,19 +339,11 @@ export class InventoryOverlay {
       return;
     }
     const sourceIndex = this.draggingIndex;
-    const wasCraftOutput = this.draggingCraftOutput;
-    const pendingCraft = this.pendingCraft;
     const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-inventory-slot]');
     const targetIndex = target ? Number(target.dataset.inventorySlot) : Number.NaN;
     let changed = false;
 
-    if (wasCraftOutput && pendingCraft && Number.isInteger(targetIndex)) {
-      if (this.inventory.canPlaceInSlot(targetIndex, pendingCraft.output, 1)
-        && this.onClaimCraft(pendingCraft, targetIndex)) {
-        this.pendingCraft = null;
-        changed = true;
-      }
-    } else if (sourceIndex !== null && targetIndex === sourceIndex && !this.dragHasMoved) {
+    if (sourceIndex !== null && targetIndex === sourceIndex && !this.dragHasMoved) {
       const slot = this.inventory.getSlots()[sourceIndex];
       if (slot && isToolId(slot.item)) {
         this.onEquipTool(this.equippedTool() === slot.item ? null : slot.item);
@@ -415,18 +383,10 @@ export class InventoryOverlay {
       this.dragSourceSlot.releasePointerCapture(this.activePointerId);
     }
     this.dragSourceSlot?.classList.remove('is-dragging');
-    if (this.dragItemElement) {
-      this.dragItemElement.style.removeProperty('width');
-      this.dragItemElement.style.removeProperty('height');
-      this.dragItemElement.style.removeProperty('z-index');
-      this.dragItemElement.style.removeProperty('pointer-events');
-      this.dragItemElement.style.removeProperty('transform');
-      this.dragItemElement.style.removeProperty('will-change');
-    }
+    this.dragCursorItem?.remove();
     this.dragSourceSlot = null;
-    this.dragItemElement = null;
+    this.dragCursorItem = null;
     this.draggingIndex = null;
-    this.draggingCraftOutput = false;
     this.activePointerId = null;
     this.dragOriginX = 0;
     this.dragOriginY = 0;
@@ -436,12 +396,74 @@ export class InventoryOverlay {
   }
 
   private positionDraggedItem(clientX: number, clientY: number): void {
-    if (!this.dragItemElement) {
+    if (!this.dragCursorItem) {
       return;
     }
-    const x = clientX - this.dragGrabOffsetX - this.dragOriginX;
-    const y = clientY - this.dragGrabOffsetY - this.dragOriginY;
-    this.dragItemElement.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0) scale(1.12)`;
+    const x = clientX - this.dragGrabOffsetX;
+    const y = clientY - this.dragGrabOffsetY;
+    this.dragCursorItem.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
+  }
+
+  // Crafting is a click-to-carry action rather than a second drag operation. Ingredients stay
+  // untouched until the next click places the carried tool into a valid inventory slot.
+  private startCraftCursor(recipe: CraftingRecipe, clientX: number, clientY: number): void {
+    this.cancelCraftCursor(false);
+    const item = document.createElement('div');
+    item.className = 'crafting-cursor-item';
+    item.setAttribute('aria-hidden', 'true');
+    item.append(this.createItemIcon(recipe.output));
+    this.element.append(item);
+    this.craftCursorItem = item;
+    this.positionCraftCursor(clientX, clientY);
+    document.addEventListener('pointermove', this.handleCraftCursorMove, true);
+    document.addEventListener('pointerdown', this.handleCraftCursorDrop, true);
+  }
+
+  private readonly handleCraftCursorMove = (event: PointerEvent): void => {
+    this.positionCraftCursor(event.clientX, event.clientY);
+  };
+
+  private readonly handleCraftCursorDrop = (event: PointerEvent): void => {
+    const recipe = this.pendingCraft;
+    if (!recipe || event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-inventory-slot]');
+    const targetIndex = target ? Number(target.dataset.inventorySlot) : Number.NaN;
+    if (
+      !Number.isInteger(targetIndex)
+      || !this.inventory.canPlaceInSlot(targetIndex, recipe.output, 1)
+      || !this.onClaimCraft(recipe, targetIndex)
+    ) {
+      this.craftCursorItem?.classList.add('is-rejected');
+      return;
+    }
+
+    this.pendingCraft = null;
+    this.cancelCraftCursor(false);
+    this.onChanged();
+    this.render();
+  };
+
+  private cancelCraftCursor(clearPending = true): void {
+    document.removeEventListener('pointermove', this.handleCraftCursorMove, true);
+    document.removeEventListener('pointerdown', this.handleCraftCursorDrop, true);
+    this.craftCursorItem?.remove();
+    this.craftCursorItem = null;
+    if (clearPending) {
+      this.pendingCraft = null;
+    }
+  }
+
+  private positionCraftCursor(clientX: number, clientY: number): void {
+    if (!this.craftCursorItem) {
+      return;
+    }
+    this.craftCursorItem.classList.remove('is-rejected');
+    this.craftCursorItem.style.transform = `translate3d(${Math.round(clientX - 28)}px, ${Math.round(clientY - 28)}px, 0)`;
   }
 
   private itemLabel(item: InventoryItem): string {

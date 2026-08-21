@@ -8,9 +8,9 @@ export const CAVE_SPAWN_CHANCE_BY_BIOME: Readonly<Record<Biome, number>> = {
   [Biome.Plains]: 0.000012,
   [Biome.Forest]: 0.000018,
   [Biome.Desert]: 0.00001,
-  [Biome.Swamp]: 0.000006,
-  [Biome.Hills]: 0.00011,
-  [Biome.Mountains]: 0.00036,
+  [Biome.Swamp]: 0.000000,
+  [Biome.Hills]: 0.000010,
+  [Biome.Mountains]: 0.00016,
   [Biome.Snow]: 0.00005,
 };
 

@@ -2,7 +2,7 @@
 
 Wildbound is a desktop-first 2D adventure game foundation built with TypeScript, Phaser, Electron, and Electron Forge. Windows is the current release target.
 
-Current release: `1.4.0` - Performance, Inventory, Player, and Persistence Polish.
+Current release: `1.6.0` - Terrain streaming, cave exploration, tools, crafting, and interaction polish.
 
 ## Windows installation
 

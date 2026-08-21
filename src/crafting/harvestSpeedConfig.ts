@@ -1,8 +1,47 @@
 import { ToolId } from './toolConfig';
 import { TerrainFeatureType } from '../world/generation/featureGenerator';
+import type { CaveOreType } from '../world/caves/caveOreGenerationConfig';
 
 export type HarvestMethodId = 'hand' | ToolId;
 export type FeatureHarvestSpeeds = Readonly<Record<TerrainFeatureType, number>>;
+
+// Mining progression is kept with the harvest balance rather than cave generation or UI code.
+// The required pickaxe is the *minimum* tier; a higher-tier pickaxe remains valid. `null` means
+// that the target can be harvested with the hand or any selected non-tool resource.
+export const SURFACE_MINING_REQUIREMENTS: Readonly<Partial<Record<TerrainFeatureType, ToolId>>> = {
+  [TerrainFeatureType.Rock]: ToolId.WoodenPickaxe,
+  [TerrainFeatureType.SnowyRock]: ToolId.WoodenPickaxe
+};
+
+export const CAVE_ORE_MINING_REQUIREMENTS: Readonly<Partial<Record<CaveOreType, ToolId>>> = {
+  iron: ToolId.StonePickaxe,
+  gold: ToolId.IronPickaxe,
+  diamond: ToolId.GoldPickaxe
+};
+
+const PICKAXE_TIER: Readonly<Partial<Record<ToolId, number>>> = {
+  [ToolId.WoodenPickaxe]: 1,
+  [ToolId.StonePickaxe]: 2,
+  [ToolId.IronPickaxe]: 3,
+  [ToolId.GoldPickaxe]: 4,
+  [ToolId.DiamondPickaxe]: 5
+};
+
+export const miningRequirementForFeature = (feature: TerrainFeatureType): ToolId | null =>
+  SURFACE_MINING_REQUIREMENTS[feature] ?? null;
+
+export const miningRequirementForCaveOre = (ore: CaveOreType): ToolId | null =>
+  CAVE_ORE_MINING_REQUIREMENTS[ore] ?? null;
+
+export const meetsMiningRequirement = (toolId: ToolId | null, requiredTool: ToolId | null): boolean => {
+  if (!requiredTool) {
+    return true;
+  }
+
+  const equippedTier = toolId ? PICKAXE_TIER[toolId] ?? 0 : 0;
+  const requiredTier = PICKAXE_TIER[requiredTool] ?? Number.POSITIVE_INFINITY;
+  return equippedTier >= requiredTier;
+};
 
 // Harvest balance lives here rather than in terrain generation or UI code. Values are speed
 // multipliers: 1 is the normal hand pace, values above 1 harvest faster, and values below 1

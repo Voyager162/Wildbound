@@ -112,6 +112,7 @@ const ensureLilyPadTexture = (scene: Phaser.Scene): void => {
 export class SwampWaterDecorationManager {
   private readonly pads = new Map<string, LilyPad>();
   private visiblePadIds = new Set<string>();
+  private visiblePads: LilyPad[] = [];
   private lastChunkX = Number.NaN;
   private lastChunkY = Number.NaN;
 
@@ -146,8 +147,7 @@ export class SwampWaterDecorationManager {
       return;
     }
 
-    const visiblePads = Array.from(this.visiblePadIds, (id) => this.pads.get(id)).filter((pad): pad is LilyPad => Boolean(pad));
-    visiblePads.forEach((pad) => this.integratePad(
+    this.visiblePads.forEach((pad) => this.integratePad(
       pad,
       time,
       dt,
@@ -157,14 +157,15 @@ export class SwampWaterDecorationManager {
       playerVelocityY,
       playerIsSwimming
     ));
-    this.resolvePadContacts(visiblePads);
-    visiblePads.forEach((pad) => this.updatePadArt(pad, time));
+    this.resolvePadContacts(this.visiblePads);
+    this.visiblePads.forEach((pad) => this.updatePadArt(pad, time));
   }
 
   destroy(): void {
     this.pads.forEach((pad) => pad.image.destroy());
     this.pads.clear();
     this.visiblePadIds.clear();
+    this.visiblePads = [];
   }
 
   private syncCandidates(chunkX: number, chunkY: number): void {
@@ -218,6 +219,7 @@ export class SwampWaterDecorationManager {
     });
 
     this.visiblePadIds = desired;
+    this.visiblePads = Array.from(desired, (id) => this.pads.get(id)).filter((pad): pad is LilyPad => Boolean(pad));
   }
 
   private collectCandidates(chunkX: number, chunkY: number): LilyCandidate[] {

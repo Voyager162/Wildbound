@@ -17,7 +17,7 @@ export const CAVE_GOLD_START_DEPTH = 610;
 export const CAVE_DIAMOND_START_DEPTH = 900;
 
 export const CAVE_ORE_SPAWN_RULES: Readonly<Record<CaveOreType, CaveOreSpawnRule>> = {
-  coal: { startDepth: CAVE_COAL_START_DEPTH, chance: 0.1 },
+  coal: { startDepth: CAVE_COAL_START_DEPTH, chance: 0.065 },
   iron: { startDepth: CAVE_IRON_START_DEPTH, chance: 0.065 },
   gold: { startDepth: CAVE_GOLD_START_DEPTH, chance: 0.036 },
   diamond: { startDepth: CAVE_DIAMOND_START_DEPTH, chance: 0.018, requiresDeepCave: true },

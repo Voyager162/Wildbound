@@ -6,11 +6,11 @@ export type CaveSystemDepth = (typeof CAVE_SYSTEM_DEPTHS)[number];
 // Global cave scale. This deliberately has no upper cap: increasing it expands both each
 // system's footprint and the amount of connected tunnel work it generates. Very large values
 // naturally need more generation time and memory when a cave is entered.
-export const CAVE_SYSTEM_SIZE_SCALE = 1.6;
+export const CAVE_SYSTEM_SIZE_SCALE = 2.5;
 
 // Geological thresholds below use this designer-facing depth scale rather than fractions.
 // Set any start value from 1 (near an entrance) to 1000 (the deepest reachable passage).
-export const CAVE_DEPTH_SCALE_MAX = 1_000;
+export const CAVE_DEPTH_SCALE_MAX = 1000;
 
 export interface CaveSystemProfile {
   readonly width: number;
@@ -26,10 +26,10 @@ export interface CaveSystemProfile {
 // extensive trees of narrow passages. Large chambers are intentionally scarce landmarks,
 // rather than the material from which the whole cave is built.
 export const CAVE_SYSTEM_DEPTH_WEIGHTS: Readonly<Record<CaveSystemDepth, number>> = {
-  shallow: 0.2,
-  medium: 0.34,
-  deep: 0.31,
-  abyssal: 0.15
+  shallow: .1,
+  medium: .2,
+  deep: .5,
+  abyssal: .3
 };
 
 export const CAVE_SYSTEM_PROFILES: Readonly<Record<CaveSystemDepth, CaveSystemProfile>> = {
@@ -41,7 +41,7 @@ export const CAVE_SYSTEM_PROFILES: Readonly<Record<CaveSystemDepth, CaveSystemPr
 
 // A secondary surface outlet is only available in non-compact cave systems. It is deliberately
 // uncommon so finding one feels like discovering a true cross-country cave passage.
-export const CAVE_LINKED_SYSTEM_CHANCE = 0.22;
+export const CAVE_LINKED_SYSTEM_CHANCE = 1;
 export const CAVE_LINKED_SYSTEM_DISTANCE_TILES: readonly number[] = [42, 58, 76];
 
 // Mineral formations begin well below the shallow cave strata; magma is reserved for the

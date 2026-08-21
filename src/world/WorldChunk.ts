@@ -60,6 +60,7 @@ import {
   CAVE_MOUTH_STALACTITE_COUNT_MIN,
   CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE,
 } from './caves/caveGenerationConfig';
+import { requestTerrainBake } from './terrainBakeService';
 
 // Terrain is sampled in compact 8px cells, then bilinearly painted into one continuous canvas.
 // This keeps chunk generation bounded while avoiding a visible grid in the world itself.
@@ -197,12 +198,33 @@ export class WorldChunk {
   private harvestingTileKey: string | null = null;
   private harvestOffset = 0;
 
+  // Only the deterministic, no-cave base terrain is sent through the worker. Cave entrances
+  // deliberately stay on the established path because their terrain-integrated geometry is
+  // layered into the base canvas as part of that bake.
+  static async create(
+    scene: Phaser.Scene,
+    seed: string,
+    sessionState: SessionWorldState,
+    x: number,
+    y: number
+  ): Promise<WorldChunk> {
+    let preBakedTerrainPixels: Uint8ClampedArray | null = null;
+    try {
+      preBakedTerrainPixels = await requestTerrainBake(scene, seed, x, y);
+    } catch {
+      // The synchronous renderer remains a safe fallback if a browser cannot create workers.
+      // Do not make chunk streaming depend on a platform feature outside Phaser's control.
+    }
+    return new WorldChunk(scene, seed, sessionState, x, y, preBakedTerrainPixels);
+  }
+
   constructor(
     private readonly scene: Phaser.Scene,
     private readonly seed: string,
     private readonly sessionState: SessionWorldState,
     readonly x: number,
-    readonly y: number
+    readonly y: number,
+    private readonly preBakedTerrainPixels: Uint8ClampedArray | null = null
   ) {
     this.key = `${x},${y}`;
     this.textureKey = `terrain:v${TOPOGRAPHY_GENERATION_VERSION}:${seed}:${x}:${y}`;
@@ -265,6 +287,16 @@ export class WorldChunk {
 
     this.groundGrassVisible = visible;
     this.animatedGroundGrass.forEach((patch) => patch.image.setVisible(this.renderVisible && visible));
+  }
+
+  // Surface interaction only needs entrances already represented by loaded terrain. Exposing this
+  // compact immutable list avoids recalculating procedural cave candidates around the player.
+  getCaveEntrances(): readonly CaveEntrance[] {
+    return this.caveEntrances;
+  }
+
+  getFeatures(): readonly TerrainFeature[] {
+    return this.features;
   }
 
   updateFoliage(time: number): void {
@@ -492,8 +524,14 @@ export class WorldChunk {
     const worldX = this.x * CHUNK_SIZE_PIXELS;
     const worldY = this.y * CHUNK_SIZE_PIXELS;
     const waveCandidates: Array<WaterWave & { priority: number }> = [];
-    const terrainVertexColors = this.createTerrainVertexColors();
-    this.paintContinuousTerrain(context, terrainVertexColors, this.caveTerrainInfluences);
+    if (this.preBakedTerrainPixels && this.caveTerrainInfluences.length === 0) {
+      const imageData = context.createImageData(TERRAIN_TEXTURE_SIZE, TERRAIN_TEXTURE_SIZE);
+      imageData.data.set(this.preBakedTerrainPixels);
+      context.putImageData(imageData, 0, 0);
+    } else {
+      const terrainVertexColors = this.createTerrainVertexColors();
+      this.paintContinuousTerrain(context, terrainVertexColors, this.caveTerrainInfluences);
+    }
     // Compact alpha masks are built once while the baked terrain is sampled. The two TileSprites
     // above them can then flow across all water pixels without rebuilding a chunk canvas each tick.
     const waterMaskSize = CHUNK_SIZE_PIXELS / VISUAL_TERRAIN_CELL_SIZE;
@@ -1084,6 +1122,8 @@ export class WorldChunk {
     const imageData = context.createImageData(TERRAIN_TEXTURE_SIZE, TERRAIN_TEXTURE_SIZE);
     const pixels = imageData.data;
     const cellsPerChunk = CHUNK_SIZE_PIXELS / VISUAL_TERRAIN_CELL_SIZE;
+    const chunkWorldX = this.x * CHUNK_SIZE_PIXELS;
+    const chunkWorldY = this.y * CHUNK_SIZE_PIXELS;
     const channel = (color: number, shift: number): number => (color >> shift) & 0xff;
     const clampChannel = (value: number): number => Math.max(0, Math.min(255, Math.round(value)));
     const materials = {
@@ -1119,26 +1159,111 @@ export class WorldChunk {
       + coherentNoise(this.seed, sampleX - 67, sampleY + 211, 9, 0x6145df) * 0.18
       + coherentNoise(this.seed, sampleX + 23, sampleY + 41, 3.5, 0x2f3ca1) * 0.06
     );
+    // Cave rock lighting is sampled at full resolution. Cache the exact deterministic height
+    // field and Voronoi cell data for the affected part of this one-time texture bake, rather
+    // than recalculating the same neighbours for each normal and surface facet pixel.
+    let cavePixelBounds: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
+    caveInfluences.forEach((cave) => {
+      const reach = cave.radiusPixels * 1.7;
+      const minX = Math.max(0, Math.floor(cave.centerWorldX - reach - chunkWorldX + TERRAIN_TEXTURE_PADDING));
+      const minY = Math.max(0, Math.floor(cave.centerWorldY - reach - chunkWorldY + TERRAIN_TEXTURE_PADDING));
+      const maxX = Math.min(TERRAIN_TEXTURE_SIZE - 1, Math.ceil(cave.centerWorldX + reach - chunkWorldX + TERRAIN_TEXTURE_PADDING));
+      const maxY = Math.min(TERRAIN_TEXTURE_SIZE - 1, Math.ceil(cave.centerWorldY + reach - chunkWorldY + TERRAIN_TEXTURE_PADDING));
+      if (minX > maxX || minY > maxY) {
+        return;
+      }
+      cavePixelBounds = cavePixelBounds
+        ? {
+          minX: Math.min(cavePixelBounds.minX, minX),
+          minY: Math.min(cavePixelBounds.minY, minY),
+          maxX: Math.max(cavePixelBounds.maxX, maxX),
+          maxY: Math.max(cavePixelBounds.maxY, maxY)
+        }
+        : { minX, minY, maxX, maxY };
+    });
+    // TypeScript does not track assignments made from within the callback above. Freeze the
+    // completed bounds for the cache construction that follows.
+    const calculatedCavePixelBounds = cavePixelBounds as { minX: number; minY: number; maxX: number; maxY: number } | null;
+    const caveHeightPadding = 3;
+    const caveHeightMinX = calculatedCavePixelBounds ? calculatedCavePixelBounds.minX - caveHeightPadding : 0;
+    const caveHeightMinY = calculatedCavePixelBounds ? calculatedCavePixelBounds.minY - caveHeightPadding : 0;
+    const caveHeightMaxX = calculatedCavePixelBounds ? calculatedCavePixelBounds.maxX + caveHeightPadding : -1;
+    const caveHeightMaxY = calculatedCavePixelBounds ? calculatedCavePixelBounds.maxY + caveHeightPadding : -1;
+    const caveHeightWidth = caveHeightMaxX - caveHeightMinX + 1;
+    const caveHeightValues = calculatedCavePixelBounds
+      ? new Float64Array(caveHeightWidth * (caveHeightMaxY - caveHeightMinY + 1))
+      : null;
+    if (caveHeightValues) {
+      let index = 0;
+      for (let pixelY = caveHeightMinY; pixelY <= caveHeightMaxY; pixelY += 1) {
+        const worldY = chunkWorldY + pixelY - TERRAIN_TEXTURE_PADDING;
+        for (let pixelX = caveHeightMinX; pixelX <= caveHeightMaxX; pixelX += 1) {
+          caveHeightValues[index] = caveRockHeightAt(chunkWorldX + pixelX - TERRAIN_TEXTURE_PADDING, worldY);
+          index += 1;
+        }
+      }
+    }
+    const caveRockHeightAtTexturePixel = (pixelX: number, pixelY: number): number => {
+      if (!caveHeightValues) {
+        return caveRockHeightAt(
+          chunkWorldX + pixelX - TERRAIN_TEXTURE_PADDING,
+          chunkWorldY + pixelY - TERRAIN_TEXTURE_PADDING
+        );
+      }
+      return caveHeightValues[(pixelY - caveHeightMinY) * caveHeightWidth + pixelX - caveHeightMinX];
+    };
+    const caveCellSize = 22;
+    const caveCellMinX = calculatedCavePixelBounds
+      ? Math.floor((chunkWorldX + calculatedCavePixelBounds.minX - TERRAIN_TEXTURE_PADDING) / caveCellSize) - 1
+      : 0;
+    const caveCellMinY = calculatedCavePixelBounds
+      ? Math.floor((chunkWorldY + calculatedCavePixelBounds.minY - TERRAIN_TEXTURE_PADDING) / caveCellSize) - 1
+      : 0;
+    const caveCellMaxX = calculatedCavePixelBounds
+      ? Math.floor((chunkWorldX + calculatedCavePixelBounds.maxX - TERRAIN_TEXTURE_PADDING) / caveCellSize) + 1
+      : -1;
+    const caveCellMaxY = calculatedCavePixelBounds
+      ? Math.floor((chunkWorldY + calculatedCavePixelBounds.maxY - TERRAIN_TEXTURE_PADDING) / caveCellSize) + 1
+      : -1;
+    const caveCellWidth = caveCellMaxX - caveCellMinX + 1;
+    const caveCellCentersX = calculatedCavePixelBounds
+      ? new Float64Array(caveCellWidth * (caveCellMaxY - caveCellMinY + 1))
+      : null;
+    const caveCellCentersY = calculatedCavePixelBounds
+      ? new Float64Array(caveCellWidth * (caveCellMaxY - caveCellMinY + 1))
+      : null;
+    const caveCellFaceTones = calculatedCavePixelBounds
+      ? new Float64Array(caveCellWidth * (caveCellMaxY - caveCellMinY + 1))
+      : null;
+    if (caveCellCentersX && caveCellCentersY && caveCellFaceTones) {
+      let index = 0;
+      for (let cellY = caveCellMinY; cellY <= caveCellMaxY; cellY += 1) {
+        for (let cellX = caveCellMinX; cellX <= caveCellMaxX; cellX += 1) {
+          caveCellCentersX[index] = (cellX + 0.16 + randomAtTile(this.seed, cellX, cellY, 0x42d1) * 0.68) * caveCellSize;
+          caveCellCentersY[index] = (cellY + 0.16 + randomAtTile(this.seed, cellX, cellY, 0x42f1) * 0.68) * caveCellSize;
+          caveCellFaceTones[index] = (randomAtTile(this.seed, cellX, cellY, 0x4311) - 0.5) * 11;
+          index += 1;
+        }
+      }
+    }
     const caveRockCellToneAt = (sampleX: number, sampleY: number): number => {
-      const cellSize = 22;
-      const cellX = Math.floor(sampleX / cellSize);
-      const cellY = Math.floor(sampleY / cellSize);
+      const cellX = Math.floor(sampleX / caveCellSize);
+      const cellY = Math.floor(sampleY / caveCellSize);
       let closestDistanceSquared = Number.POSITIVE_INFINITY;
       let nextDistanceSquared = Number.POSITIVE_INFINITY;
-      let closestCellX = cellX;
-      let closestCellY = cellY;
+      let closestCellIndex = 0;
       for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
         for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
           const candidateX = cellX + offsetX;
           const candidateY = cellY + offsetY;
-          const centerX = (candidateX + 0.16 + randomAtTile(this.seed, candidateX, candidateY, 0x42d1) * 0.68) * cellSize;
-          const centerY = (candidateY + 0.16 + randomAtTile(this.seed, candidateX, candidateY, 0x42f1) * 0.68) * cellSize;
+          const candidateIndex = (candidateY - caveCellMinY) * caveCellWidth + candidateX - caveCellMinX;
+          const centerX = caveCellCentersX![candidateIndex];
+          const centerY = caveCellCentersY![candidateIndex];
           const distanceSquared = (sampleX - centerX) ** 2 + (sampleY - centerY) ** 2;
           if (distanceSquared < closestDistanceSquared) {
             nextDistanceSquared = closestDistanceSquared;
             closestDistanceSquared = distanceSquared;
-            closestCellX = candidateX;
-            closestCellY = candidateY;
+            closestCellIndex = candidateIndex;
           } else if (distanceSquared < nextDistanceSquared) {
             nextDistanceSquared = distanceSquared;
           }
@@ -1146,8 +1271,8 @@ export class WorldChunk {
       }
       const closestDistance = Math.sqrt(closestDistanceSquared);
       const edgeDistance = Math.sqrt(nextDistanceSquared) - closestDistance;
-      const faceTone = (randomAtTile(this.seed, closestCellX, closestCellY, 0x4311) - 0.5) * 11;
-      const faceCenterLift = Math.max(-3, Math.min(4, (0.56 - closestDistance / cellSize) * 12));
+      const faceTone = caveCellFaceTones![closestCellIndex];
+      const faceCenterLift = Math.max(-3, Math.min(4, (0.56 - closestDistance / caveCellSize) * 12));
       const seamShadow = Math.max(0, Math.min(4, (1.35 - edgeDistance) * 3));
       return faceTone + faceCenterLift - seamShadow;
     };
@@ -1352,9 +1477,9 @@ export class WorldChunk {
               // Build a real height field for the exposed face. Its sampled gradient produces
               // crisp light and shadow across ridges, mounds, and small breaks in the stone;
               // it is still generated once into the chunk texture, never per animation frame.
-              const rockHeight = caveRockHeightAt(worldPixelX, worldPixelY);
-              const slopeX = caveRockHeightAt(worldPixelX + 3, worldPixelY) - caveRockHeightAt(worldPixelX - 3, worldPixelY);
-              const slopeY = caveRockHeightAt(worldPixelX, worldPixelY + 3) - caveRockHeightAt(worldPixelX, worldPixelY - 3);
+              const rockHeight = caveRockHeightAtTexturePixel(pixelX, textureY);
+              const slopeX = caveRockHeightAtTexturePixel(pixelX + 3, textureY) - caveRockHeightAtTexturePixel(pixelX - 3, textureY);
+              const slopeY = caveRockHeightAtTexturePixel(pixelX, textureY + 3) - caveRockHeightAtTexturePixel(pixelX, textureY - 3);
               const bedrockTone = (rockHeight - 0.5) * 34 - slopeX * 28 - slopeY * 19
                 + caveRockCellToneAt(worldPixelX, worldPixelY);
               red = cave.rockRed + bedrockTone * 1.08;

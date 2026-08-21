@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import type { InventorySlot } from '../player/Inventory';
 import { HOTBAR_SLOT_COUNT, Inventory, INVENTORY_SLOT_COUNT } from '../player/Inventory';
-import { FacingDirection, getInteractionTarget } from '../player/interaction';
+import { FacingDirection } from '../player/interaction';
 import { PLAYER_SPEED_SCALE } from '../player/playerConfig';
 import type { InteractionTarget } from '../player/interaction';
 import { isSaveGameData, type SaveGameData } from '../save/SaveGameData';
@@ -40,7 +40,13 @@ import { TERRAIN_MATERIAL_ASSETS } from '../world/terrainMaterialConfig';
 import { type CraftingRecipe } from '../crafting/recipeConfig';
 import { TOOL_DEFINITIONS, TOOL_HEAD_PALETTES, isToolId, type ToolId } from '../crafting/toolConfig';
 import { craftRecipeIntoSlot as applyCraftingRecipe } from '../crafting/craftingService';
-import { caveOreMiningSpeedForTool, harvestSpeedForFeature } from '../crafting/harvestSpeedConfig';
+import {
+  caveOreMiningSpeedForTool,
+  harvestSpeedForFeature,
+  meetsMiningRequirement,
+  miningRequirementForCaveOre,
+  miningRequirementForFeature
+} from '../crafting/harvestSpeedConfig';
 import {
   caveEntranceAtTile,
   caveTerrainContainsPoint,
@@ -72,12 +78,14 @@ const CAMERA_WORLD_VIEW_WIDTH = 2560;
 const CAMERA_WORLD_VIEW_HEIGHT = 1440;
 const DEBUG_UPDATE_INTERVAL_MS = 250;
 const DROP_INTERACTION_INTERVAL_MS = 120;
-const SAVE_INTERVAL_MS = 900;
+// Saving remains automatic, but serializing the growing explored-world state every movement
+// second can compete with chunk streaming on the renderer thread.
+const SAVE_INTERVAL_MS = 5000;
 const MINIMAP_UPDATE_INTERVAL_MS = 80;
 const NIGHT_AMBIENT_LIGHT_UPDATE_INTERVAL_MS = 33;
 const MINIMAP_TILES_PER_CELL = Math.max(1, Math.round(16 * (MINIMAP_AREA_SCALE / 50)));
 const CAVE_ENTRANCE_INTERACTION_RADIUS_PIXELS = 84;
-const CAVE_ENTRANCE_SEARCH_RADIUS_TILES = 6;
+const CAVE_INTERACTION_BUCKET_SIZE_TILES = 6;
 // Kept visual-only: designers can reshape the cave wall art without changing layouts or
 // collision. The clamp also protects the renderer from accidental extreme configuration.
 const CAVE_WALL_PUFFINESS = Math.max(0.25, Math.min(2, CAVE_WALL_PUFFINESS_SCALE));
@@ -98,6 +106,7 @@ interface ActiveCave {
   readonly entrance: CaveEntrance;
   readonly layout: CaveLayout;
   readonly origin: CaveWorldOrigin;
+  readonly oreBuckets: ReadonlyMap<string, readonly CaveOre[]>;
   readonly returnWorldX: number;
   readonly returnWorldY: number;
   readonly entrySurfaceExitId: string;
@@ -113,6 +122,25 @@ interface CaveExitVisual extends CaveRenderPoint {
   readonly wallNormalX: number;
   readonly wallNormalY: number;
 }
+
+const caveOreBucketKey = (bucketX: number, bucketY: number): string => `${bucketX}:${bucketY}`;
+
+const createCaveOreBuckets = (ores: readonly CaveOre[]): ReadonlyMap<string, readonly CaveOre[]> => {
+  const buckets = new Map<string, CaveOre[]>();
+  ores.forEach((ore) => {
+    const key = caveOreBucketKey(
+      Math.floor(ore.tileX / CAVE_INTERACTION_BUCKET_SIZE_TILES),
+      Math.floor(ore.tileY / CAVE_INTERACTION_BUCKET_SIZE_TILES)
+    );
+    const bucket = buckets.get(key);
+    if (bucket) {
+      bucket.push(ore);
+    } else {
+      buckets.set(key, [ore]);
+    }
+  });
+  return buckets;
+};
 
 export class AdventureScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Rectangle;
@@ -130,6 +158,10 @@ export class AdventureScene extends Phaser.Scene {
   private nightAmbientOverlay!: NightAmbientOverlay;
   private worldMapOverlay!: WorldMapOverlay;
   private debugElement!: HTMLPreElement;
+  private loadingOverlay!: HTMLDivElement;
+  private loadingProgressBar!: HTMLDivElement;
+  private loadingProgressFill!: HTMLDivElement;
+  private loadingProgressText!: HTMLSpanElement;
   private interactionHighlight!: Phaser.GameObjects.Arc;
   private dropHighlight!: Phaser.GameObjects.Ellipse;
   private dropHintPanel!: Phaser.GameObjects.Graphics;
@@ -197,6 +229,12 @@ export class AdventureScene extends Phaser.Scene {
   private lastCaveEntranceTileY = Number.NaN;
   private lastCaveLavaFrame = Number.NEGATIVE_INFINITY;
   private lastCaveEntranceLightFrame = Number.NEGATIVE_INFINITY;
+  private movementSampleStartedAt = Number.NaN;
+  private movementSampleFrameCount = 0;
+  private movementSampleWorstFrameMs = 0;
+  private movingFps = 0;
+  private movingWorstFrameMs = 0;
+  private renderBackend = 'Detecting renderer…';
 
   constructor() {
     super('adventure');
@@ -209,6 +247,7 @@ export class AdventureScene extends Phaser.Scene {
   create(): void {
     this.sessionWorldState = new SessionWorldState();
     this.inventory = new Inventory();
+    this.renderBackend = this.describeRenderBackend();
     this.player = this.add.rectangle(WORLD_TILE_SIZE / 2, WORLD_TILE_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE).setVisible(false);
     this.playerAvatar = this.add.graphics().setDepth(10).setScale(PLAYER_AVATAR_SCALE);
     this.harvestProgressGraphics = this.add.graphics().setDepth(15);
@@ -279,6 +318,7 @@ export class AdventureScene extends Phaser.Scene {
       throw new Error('Wildbound game container was not found.');
     }
 
+    this.createLoadingOverlay(gameElement);
     this.createDebugElement(gameElement);
     this.hotbarOverlay = new HotbarOverlay(
       gameElement,
@@ -340,6 +380,7 @@ export class AdventureScene extends Phaser.Scene {
     const horizontal = Number(this.isDown('right')) - Number(this.isDown('left'));
     const vertical = Number(this.isDown('down')) - Number(this.isDown('up'));
     const isMoving = horizontal !== 0 || vertical !== 0;
+    this.sampleMovementPerformance(time, delta, isMoving);
     let playerVelocityX = 0;
     let playerVelocityY = 0;
 
@@ -428,8 +469,11 @@ export class AdventureScene extends Phaser.Scene {
 
     this.chunkManager = new ChunkManager(this, this.worldSeed, this.sessionWorldState);
     this.dropManager = new DropManager(this, this.sessionWorldState);
-    this.chunkManager.prime(this.player.x, this.player.y);
+    await this.chunkManager.prime(this.player.x, this.player.y, (progress) => {
+      this.updateLoadingProgress(progress.completed, progress.total);
+    });
     this.worldReady = true;
+    this.loadingOverlay.classList.add('is-hidden');
     this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
     this.terrainSurface = this.currentTopography.surface;
     this.updateSwimmingState(true);
@@ -509,9 +553,43 @@ export class AdventureScene extends Phaser.Scene {
     const camera = this.cameras.main;
     camera.removeBounds();
     camera.setBackgroundColor('#16261f');
-    camera.setRoundPixels(true);
+    // Terrain and characters use high-resolution painted artwork, rather than a fixed pixel
+    // grid. Rounding the camera converts time-based sub-pixel movement into a repeating
+    // 1px/2px cadence, which reads as a stop-and-go walk even when the simulation is smooth.
+    camera.setRoundPixels(false);
     this.updateCameraZoom();
-    camera.startFollow(this.player, true, 0.1, 0.1);
+    // The previous 10% follow lerp made the camera visibly catch up after every movement step.
+    // The player is already moved from time-based deltas, so direct following keeps terrain
+    // motion continuous without changing zoom, sprite sharpness, or world coordinates.
+    camera.startFollow(this.player, true, 1, 1);
+  }
+
+  private describeRenderBackend(): string {
+    const renderer = this.game.renderer;
+    if (!(renderer instanceof Phaser.Renderer.WebGL.WebGLRenderer)) {
+      return 'Canvas fallback (GPU unavailable)';
+    }
+
+    const gl = renderer.gl;
+    const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+    if (!debugInfo) {
+      return 'WebGL · hardware adapter';
+    }
+
+    const adapter = String(gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL));
+    if (adapter.includes('NVIDIA')) {
+      return 'WebGL · NVIDIA GPU';
+    }
+    if (adapter.includes('AMD') || adapter.includes('Radeon')) {
+      return 'WebGL · AMD GPU';
+    }
+    if (adapter.includes('Intel')) {
+      return 'WebGL · Intel GPU';
+    }
+    if (adapter.includes('Microsoft Basic')) {
+      return 'WebGL · Microsoft Basic (software)';
+    }
+    return 'WebGL · hardware adapter';
   }
 
   private updateCameraZoom(): void {
@@ -524,6 +602,41 @@ export class AdventureScene extends Phaser.Scene {
     this.debugElement = document.createElement('pre');
     this.debugElement.className = 'debug-overlay';
     gameElement.append(this.debugElement);
+  }
+
+  private createLoadingOverlay(gameElement: HTMLElement): void {
+    this.loadingOverlay = document.createElement('div');
+    this.loadingOverlay.className = 'world-loading-overlay';
+    this.loadingOverlay.setAttribute('role', 'status');
+    this.loadingOverlay.setAttribute('aria-live', 'polite');
+    const title = document.createElement('strong');
+    title.textContent = 'Preparing wilderness';
+    this.loadingProgressText = document.createElement('span');
+    this.loadingProgressText.className = 'world-loading-overlay__progress-text';
+    const track = document.createElement('div');
+    track.className = 'world-loading-overlay__progress';
+    track.setAttribute('role', 'progressbar');
+    track.setAttribute('aria-label', 'Nearby terrain generation');
+    track.setAttribute('aria-valuemin', '0');
+    track.setAttribute('aria-valuemax', '100');
+    track.setAttribute('aria-valuenow', '0');
+    this.loadingProgressBar = track;
+    this.loadingProgressFill = document.createElement('div');
+    this.loadingProgressFill.className = 'world-loading-overlay__progress-fill';
+    track.append(this.loadingProgressFill);
+    this.loadingOverlay.append(title, this.loadingProgressText, track);
+    this.updateLoadingProgress(0, 1);
+    gameElement.append(this.loadingOverlay);
+  }
+
+  private updateLoadingProgress(completed: number, total: number): void {
+    const safeTotal = Math.max(1, total);
+    const ratio = Phaser.Math.Clamp(completed / safeTotal, 0, 1);
+    const percentage = Math.round(ratio * 100);
+    this.loadingProgressText.textContent = `Building the nearby terrain… ${percentage}%`;
+    this.loadingProgressBar.setAttribute('aria-valuenow', String(percentage));
+    this.loadingProgressBar.setAttribute('aria-valuetext', `${percentage}% of nearby terrain prepared`);
+    this.loadingProgressFill.style.transform = `scaleX(${ratio})`;
   }
 
   private toggleDebug(): void {
@@ -664,6 +777,7 @@ export class AdventureScene extends Phaser.Scene {
     this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     window.removeEventListener('beforeunload', this.handleBeforeUnload);
     this.debugElement.remove();
+    this.loadingOverlay.remove();
     this.inventoryOverlay.destroy();
     this.hotbarOverlay.destroy();
     this.minimapOverlay.destroy();
@@ -1180,22 +1294,14 @@ export class AdventureScene extends Phaser.Scene {
 
     this.lastCaveEntranceTileX = tileX;
     this.lastCaveEntranceTileY = tileY;
-    let nearest: CaveEntrance | null = null;
-    let nearestDistanceSquared = CAVE_ENTRANCE_INTERACTION_RADIUS_PIXELS ** 2;
-    for (let candidateY = tileY - CAVE_ENTRANCE_SEARCH_RADIUS_TILES; candidateY <= tileY + CAVE_ENTRANCE_SEARCH_RADIUS_TILES; candidateY += 1) {
-      for (let candidateX = tileX - CAVE_ENTRANCE_SEARCH_RADIUS_TILES; candidateX <= tileX + CAVE_ENTRANCE_SEARCH_RADIUS_TILES; candidateX += 1) {
-        const entrance = caveEntranceAtTile(this.worldSeed, candidateX, candidateY);
-        if (!entrance) {
-          continue;
-        }
-        const mouth = caveMouthCenter(entrance);
-        const distanceSquared = Phaser.Math.Distance.Squared(this.player.x, this.player.y, mouth.x, mouth.y);
-        if (distanceSquared < nearestDistanceSquared) {
-          nearest = entrance;
-          nearestDistanceSquared = distanceSquared;
-        }
-      }
-    }
+    // A cave that can be entered is necessarily part of a loaded terrain chunk. Querying those
+    // existing formations is exact, but avoids a 13 x 13 procedural scan (including reverse
+    // linked-cave lookup) each time the player crosses a tile.
+    const nearest = this.chunkManager.findNearbyCaveEntrance(
+      this.player.x,
+      this.player.y,
+      CAVE_ENTRANCE_INTERACTION_RADIUS_PIXELS
+    );
 
     this.nearbyCaveEntrance = nearest;
     if (!nearest) {
@@ -1250,7 +1356,16 @@ export class AdventureScene extends Phaser.Scene {
       exit.surfaceTileX === entrance.tileX && exit.surfaceTileY === entrance.tileY
     ))?.id ?? layout.entrance.id;
     const exitVisuals = this.createCaveExitVisuals(layout, origin);
-    this.activeCave = { entrance, layout, origin, returnWorldX, returnWorldY, entrySurfaceExitId, exitVisuals };
+    this.activeCave = {
+      entrance,
+      layout,
+      origin,
+      oreBuckets: createCaveOreBuckets(layout.ores),
+      returnWorldX,
+      returnWorldY,
+      entrySurfaceExitId,
+      exitVisuals
+    };
     this.lastCaveVisibilityWorldX = Number.NaN;
     this.lastCaveVisibilityWorldY = Number.NaN;
     const spawn = caveWorldTilePosition(origin, layout.spawnTileX, layout.spawnTileY);
@@ -2082,6 +2197,7 @@ export class AdventureScene extends Phaser.Scene {
     const horizontal = Number(this.isDown('right')) - Number(this.isDown('left'));
     const vertical = Number(this.isDown('down')) - Number(this.isDown('up'));
     const isMoving = horizontal !== 0 || vertical !== 0;
+    this.sampleMovementPerformance(time, delta, isMoving);
     this.updateFacing(horizontal, vertical);
     if (isMoving) {
       const length = Math.hypot(horizontal, vertical);
@@ -2145,17 +2261,27 @@ export class AdventureScene extends Phaser.Scene {
     this.caveExitNearby = nearbyExit !== null;
     let nearest: CaveOre | null = null;
     let nearestDistanceSquared = 84 * 84;
-    cave.layout.ores.forEach((ore) => {
-      if (this.sessionWorldState.isCaveOreHarvested(ore.id)) {
-        return;
+    const localTileX = Math.floor((this.player.x - cave.origin.x) / WORLD_TILE_SIZE);
+    const localTileY = Math.floor((this.player.y - cave.origin.y) / WORLD_TILE_SIZE);
+    const bucketX = Math.floor(localTileX / CAVE_INTERACTION_BUCKET_SIZE_TILES);
+    const bucketY = Math.floor(localTileY / CAVE_INTERACTION_BUCKET_SIZE_TILES);
+    // Ore layouts in huge caves can contain thousands of formations. A fixed local 3 x 3 bucket
+    // query preserves the same interaction radius while keeping the per-frame cave work bounded.
+    for (let candidateBucketY = bucketY - 1; candidateBucketY <= bucketY + 1; candidateBucketY += 1) {
+      for (let candidateBucketX = bucketX - 1; candidateBucketX <= bucketX + 1; candidateBucketX += 1) {
+        cave.oreBuckets.get(caveOreBucketKey(candidateBucketX, candidateBucketY))?.forEach((ore) => {
+          if (this.sessionWorldState.isCaveOreHarvested(ore.id)) {
+            return;
+          }
+          const position = caveWorldTilePosition(cave.origin, ore.tileX, ore.tileY);
+          const distanceSquared = Phaser.Math.Distance.Squared(this.player.x, this.player.y, position.x, position.y);
+          if (distanceSquared < nearestDistanceSquared) {
+            nearest = ore;
+            nearestDistanceSquared = distanceSquared;
+          }
+        });
       }
-      const position = caveWorldTilePosition(cave.origin, ore.tileX, ore.tileY);
-      const distanceSquared = Phaser.Math.Distance.Squared(this.player.x, this.player.y, position.x, position.y);
-      if (distanceSquared < nearestDistanceSquared) {
-        nearest = ore;
-        nearestDistanceSquared = distanceSquared;
-      }
-    });
+    }
     this.caveOreTarget = nearest;
 
     if (nearbyExit) {
@@ -2189,6 +2315,19 @@ export class AdventureScene extends Phaser.Scene {
         this.harvestElapsedMs = 0;
         this.harvestProgressGraphics.clear();
       }
+      return;
+    }
+    const requirement = miningRequirementForCaveOre(this.caveOreTarget.type);
+    if (!meetsMiningRequirement(this.equippedTool, requirement)) {
+      this.caveHarvestOre = null;
+      this.harvestElapsedMs = 0;
+      this.harvestProgressGraphics.clear();
+      this.harvestRequiresMouseRelease = true;
+      this.showWorldFeedback(
+        this.player.x,
+        this.player.y - 28,
+        `Requires ${TOOL_DEFINITIONS[requirement!].label}`
+      );
       return;
     }
     if (!this.caveHarvestOre || this.caveHarvestOre.id !== this.caveOreTarget.id) {
@@ -2246,10 +2385,10 @@ export class AdventureScene extends Phaser.Scene {
 
     this.lastInteractionTileX = tileX;
     this.lastInteractionTileY = tileY;
-    this.interactionTarget = getInteractionTarget(
-      this.worldSeed,
+    this.interactionTarget = this.chunkManager.findNearbyFeature(
       this.player.x,
       this.player.y,
+      96,
       (candidateX, candidateY) => !this.sessionWorldState.isFeatureHarvested(candidateX, candidateY)
         && !this.chunkManager.isCaveFormationAtTile(candidateX, candidateY)
     );
@@ -2345,6 +2484,18 @@ export class AdventureScene extends Phaser.Scene {
 
     if (this.inventoryOpen || this.craftingOpen || !this.input.activePointer.leftButtonDown() || !this.interactionTarget) {
       this.cancelHarvesting();
+      return;
+    }
+
+    const requirement = miningRequirementForFeature(this.interactionTarget.feature);
+    if (!meetsMiningRequirement(this.equippedTool, requirement)) {
+      this.cancelHarvesting();
+      this.harvestRequiresMouseRelease = true;
+      this.showWorldFeedback(
+        this.player.x,
+        this.player.y - 28,
+        `Requires ${TOOL_DEFINITIONS[requirement!].label}`
+      );
       return;
     }
 
@@ -2634,6 +2785,8 @@ export class AdventureScene extends Phaser.Scene {
         `Target      ${this.caveOreTarget?.type ?? (this.caveExitNearby ? 'exit' : 'none')}`,
         `Ores        ${remainingOres} remaining / ${this.sessionWorldState.harvestedCaveOreCount} harvested`,
         `Tool        ${this.equippedTool ? TOOL_DEFINITIONS[this.equippedTool].label : 'hand'}`,
+        `Renderer    ${this.renderBackend}`,
+        `Moving FPS  ${this.movingFps > 0 ? this.movingFps.toFixed(0) : '--'} (${this.movingWorstFrameMs.toFixed(1)}ms worst)`,
         `FPS         ${this.game.loop.actualFps.toFixed(0)}`
       ].join('\n');
       return;
@@ -2670,11 +2823,43 @@ export class AdventureScene extends Phaser.Scene {
       `Drops       ${this.sessionWorldState.dropCount}`,
       `Inventory   ${usedInventorySlots}/${INVENTORY_SLOT_COUNT} slots`,
       `Tool        ${this.equippedTool ? TOOL_DEFINITIONS[this.equippedTool].label : 'none'}`,
+      `Renderer    ${this.renderBackend}`,
       `Seed        ${this.worldSeed}`,
       `Chunk       ${this.chunkManager.currentChunkX}, ${this.chunkManager.currentChunkY}`,
       `Loaded      ${this.chunkManager.loadedChunkCount} chunks`,
       `Landmarks   ${this.chunkManager.loadedLandmarkCount} nearby`,
+      `Moving FPS  ${this.movingFps > 0 ? this.movingFps.toFixed(0) : '--'} (${this.movingWorstFrameMs.toFixed(1)}ms worst)`,
       `FPS         ${this.game.loop.actualFps.toFixed(0)}`
     ].join('\n');
+  }
+
+  private sampleMovementPerformance(time: number, delta: number, isMoving: boolean): void {
+    // The sampler is only active while F3 is visible. It reports movement-specific throughput
+    // and the worst recent movement frame, so a chunk-build hitch cannot be hidden by idle FPS.
+    if (!this.isDebugVisible) {
+      return;
+    }
+    if (!isMoving) {
+      this.movementSampleStartedAt = Number.NaN;
+      this.movementSampleFrameCount = 0;
+      this.movementSampleWorstFrameMs = 0;
+      return;
+    }
+    if (!Number.isFinite(this.movementSampleStartedAt)) {
+      this.movementSampleStartedAt = time;
+      this.movementSampleFrameCount = 0;
+      this.movementSampleWorstFrameMs = 0;
+    }
+    this.movementSampleFrameCount += 1;
+    this.movementSampleWorstFrameMs = Math.max(this.movementSampleWorstFrameMs, delta);
+    const elapsed = time - this.movementSampleStartedAt;
+    if (elapsed < 1000) {
+      return;
+    }
+    this.movingFps = this.movementSampleFrameCount * 1000 / elapsed;
+    this.movingWorstFrameMs = this.movementSampleWorstFrameMs;
+    this.movementSampleStartedAt = time;
+    this.movementSampleFrameCount = 0;
+    this.movementSampleWorstFrameMs = 0;
   }
 }

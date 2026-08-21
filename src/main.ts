@@ -3,6 +3,9 @@ import { AdventureScene } from './scenes/AdventureScene';
 import './styles.css';
 
 const config: Phaser.Types.Core.GameConfig = {
+  // Wildbound's terrain, foliage shaders, and texture compositing are designed for WebGL. Ask
+  // Chromium for its high-performance adapter, while AUTO retains Phaser's safe Canvas fallback
+  // if a device genuinely cannot create a WebGL context.
   type: Phaser.AUTO,
   parent: 'game',
   width: 960,
@@ -17,6 +20,10 @@ const config: Phaser.Types.Core.GameConfig = {
   scale: {
     mode: Phaser.Scale.RESIZE,
     autoCenter: Phaser.Scale.CENTER_BOTH
+  },
+  render: {
+    powerPreference: 'high-performance',
+    roundPixels: false
   },
   scene: [AdventureScene]
 };
