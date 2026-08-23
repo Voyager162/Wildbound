@@ -1,4 +1,6 @@
+import { PLACEABLE_DEFINITIONS, isPlaceableId } from '../crafting/placeableConfig';
 import { TOOL_DEFINITIONS, isToolId } from '../crafting/toolConfig';
+import { POTION_DEFINITIONS, isPotionId } from '../crafting/potionConfig';
 import { HOTBAR_SLOT_COUNT, type Inventory, type InventoryItem, type InventorySlot } from '../player/Inventory';
 import { resourceLabel } from '../world/resources';
 
@@ -92,7 +94,10 @@ export class HotbarOverlay {
   };
 
   private itemLabel(item: InventoryItem): string {
-    return isToolId(item) ? TOOL_DEFINITIONS[item].label : resourceLabel(item);
+    if (isToolId(item)) return TOOL_DEFINITIONS[item].label;
+    if (isPlaceableId(item)) return PLACEABLE_DEFINITIONS[item].label;
+    if (isPotionId(item)) return POTION_DEFINITIONS[item].label;
+    return resourceLabel(item);
   }
 
   private createItemIcon(item: InventoryItem): HTMLSpanElement {
@@ -100,10 +105,20 @@ export class HotbarOverlay {
     if (isToolId(item)) {
       const tool = TOOL_DEFINITIONS[item];
       icon.className = `tool-icon tool-icon--${tool.kind} tool-icon--${tool.headMaterial}`;
+    } else if (isPlaceableId(item)) {
+      icon.className = `placeable-icon placeable-icon--${item.replaceAll(' ', '-')}`;
+    } else if (isPotionId(item)) {
+      icon.className = `potion-icon potion-icon--${item.replaceAll(' ', '-')}`;
     } else {
       icon.className = `resource-icon resource-icon--${item.replaceAll(' ', '-')}`;
     }
     icon.setAttribute('aria-hidden', 'true');
+    if (isPotionId(item)) {
+      const label = document.createElement('span');
+      label.className = 'potion-icon__label';
+      label.textContent = POTION_DEFINITIONS[item].shortLabel;
+      icon.append(label);
+    }
     const detail = document.createElement('span');
     detail.className = 'resource-icon__detail';
     icon.append(detail);

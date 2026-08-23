@@ -1,27 +1,42 @@
 import Phaser from 'phaser';
-import type { InventorySlot } from '../player/Inventory';
+import type { InventoryItem, InventorySlot } from '../player/Inventory';
 import { HOTBAR_SLOT_COUNT, Inventory, INVENTORY_SLOT_COUNT } from '../player/Inventory';
 import { FacingDirection } from '../player/interaction';
 import { PLAYER_SPEED_SCALE } from '../player/playerConfig';
 import type { InteractionTarget } from '../player/interaction';
 import { isSaveGameData, type SaveGameData } from '../save/SaveGameData';
+import { MAX_WORLD_SEED_LENGTH, isWorldMode, type WorldMode } from '../save/WorldLibrary';
+import {
+  CONTROL_ACTIONS,
+  createDefaultGameSettings,
+  isMouseBinding,
+  normalizeGameSettings,
+  type ControlAction,
+  type ControlBinding,
+  type GameSettings
+} from '../settings/GameSettings';
 import { DayNightOverlay } from '../ui/DayNightOverlay';
 import { InventoryOverlay } from '../ui/InventoryOverlay';
 import { HotbarOverlay } from '../ui/HotbarOverlay';
 import { MinimapOverlay } from '../ui/MinimapOverlay';
 import { NightAmbientOverlay } from '../ui/NightAmbientOverlay';
+import { PlacedLightOverlay } from '../ui/PlacedLightOverlay';
+import { PauseMenuOverlay } from '../ui/PauseMenuOverlay';
+import { PlacedObjectOverlay } from '../ui/PlacedObjectOverlay';
+import { PotionEffectOverlay } from '../ui/PotionEffectOverlay';
 import { WorldMapOverlay } from '../ui/WorldMapOverlay';
 import { MINIMAP_AREA_SCALE } from '../ui/uiConfig';
 import { ChunkManager } from '../world/ChunkManager';
 import { DropManager } from '../world/DropManager';
+import { PlaceableManager } from '../world/PlaceableManager';
 import { biomeAtTile, climateAtTile } from '../world/generation/biomeGenerator';
 import { featureAtTile } from '../world/generation/featureGenerator';
 import { randomAtTile } from '../world/generation/noise';
-import { isTraversableWaterAt } from '../world/generation/terrainGenerator';
+import { isTraversableWaterAt, surfaceAtTile } from '../world/generation/terrainGenerator';
 import type { TopographySample } from '../world/generation/topographyGenerator';
 import { RESOURCE_COLORS, ResourceType, resourceForFeature, resourceLabel } from '../world/resources';
 import { SessionWorldState } from '../world/SessionWorldState';
-import type { DroppedItem } from '../world/SessionWorldState';
+import type { DroppedItem, PlacedObject } from '../world/SessionWorldState';
 import { normalizeWorldTime, sampleDayNight, worldTimeForHour } from '../world/dayNight';
 import { ambientLightScheduleAmount } from '../world/ambientLightScheduleConfig';
 import {
@@ -38,6 +53,8 @@ import { landmarkAtTile, landmarksIntersectingTiles } from '../world/generation/
 import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
 import { TERRAIN_MATERIAL_ASSETS } from '../world/terrainMaterialConfig';
 import { type CraftingRecipe } from '../crafting/recipeConfig';
+import { PLACEABLE_DEFINITIONS, PlaceableId, isPlaceableId } from '../crafting/placeableConfig';
+import { POTION_DEFINITIONS, isPotionId, type PotionEffect, type PotionId } from '../crafting/potionConfig';
 import { TOOL_DEFINITIONS, TOOL_HEAD_PALETTES, isToolId, type ToolId } from '../crafting/toolConfig';
 import { craftRecipeIntoSlot as applyCraftingRecipe } from '../crafting/craftingService';
 import {
@@ -74,6 +91,7 @@ const PLAYER_SIZE = 32;
 const PLAYER_AVATAR_SCALE = 1.32;
 const HARVEST_DURATION_MS = 1000;
 const HARVEST_RING_RADIUS = 16;
+const TONIC_DRINK_DURATION_MS = 1500;
 const CAMERA_WORLD_VIEW_WIDTH = 2560;
 const CAMERA_WORLD_VIEW_HEIGHT = 1440;
 const DEBUG_UPDATE_INTERVAL_MS = 250;
@@ -96,11 +114,35 @@ const CAVE_WALL_FACE_SCALE = 0.72 + CAVE_WALL_PUFFINESS * 0.28;
 // tile-by-tile sight polygon. It still limits how much of a tunnel is known at once, while
 // keeping nearby cave walls and floor details legible.
 const CAVE_PLAYER_VISION_RADIUS_TILES = 10.5;
-const CAVE_LAVA_LIGHT_RADIUS_TILES = 7;
-const CAVE_SURFACE_EXIT_LIGHT_RADIUS_TILES = 4.2;
+// Cave exit shafts are cave-local art. They intentionally remain fixed instead of sampling
+// the surface clock, so entering a cave never changes its lighting at sunrise or nightfall.
+const CAVE_EXIT_LIGHT_LEVEL = 0.72;
+
+// Placement follows the visible world, not an invisible collision grid.  Keep these reasons
+// narrow and explicit so a clear patch of ground never becomes unexpectedly unavailable.
+type PlacementBlocker = 'water' | 'feature' | 'cave' | 'landmark' | 'placed-object';
+
+interface PlacementTarget {
+  readonly tileX: number;
+  readonly tileY: number;
+  readonly valid: boolean;
+  readonly blocker: PlacementBlocker | null;
+}
 const CAVE_VISIBILITY_REFRESH_DISTANCE_PIXELS = 5;
 
-type MovementKeys = Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
+type MovementDirection = 'up' | 'down' | 'left' | 'right';
+type ControlKeys = Record<ControlAction, Phaser.Input.Keyboard.Key | null>;
+
+const keyCodeForBinding = (binding: ControlBinding): number | null => {
+  if (isMouseBinding(binding)) {
+    return null;
+  }
+  const keyCodes = Phaser.Input.Keyboard.KeyCodes as unknown as Record<string, number>;
+  const keyName = binding.startsWith('Key') ? binding.slice(3)
+    : binding.startsWith('Digit') ? ['ZERO', 'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE'][Number(binding.slice(5))]
+      : ({ ArrowUp: 'UP', ArrowDown: 'DOWN', ArrowLeft: 'LEFT', ArrowRight: 'RIGHT', Escape: 'ESC', Space: 'SPACE', ControlLeft: 'CTRL', ControlRight: 'CTRL', ShiftLeft: 'SHIFT', ShiftRight: 'SHIFT', AltLeft: 'ALT', AltRight: 'ALT' } as Record<string, string>)[binding] ?? binding;
+  return typeof keyCodes[keyName] === 'number' ? keyCodes[keyName] : null;
+};
 
 interface ActiveCave {
   readonly entrance: CaveEntrance;
@@ -145,10 +187,10 @@ const createCaveOreBuckets = (ores: readonly CaveOre[]): ReadonlyMap<string, rea
 export class AdventureScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Rectangle;
   private playerAvatar!: Phaser.GameObjects.Graphics;
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private movementKeys!: MovementKeys;
+  private controlKeys!: ControlKeys;
   private chunkManager!: ChunkManager;
   private dropManager!: DropManager;
+  private placeableManager!: PlaceableManager;
   private sessionWorldState!: SessionWorldState;
   private inventory!: Inventory;
   private inventoryOverlay!: InventoryOverlay;
@@ -156,17 +198,26 @@ export class AdventureScene extends Phaser.Scene {
   private minimapOverlay!: MinimapOverlay;
   private dayNightOverlay!: DayNightOverlay;
   private nightAmbientOverlay!: NightAmbientOverlay;
+  private placedLightOverlay!: PlacedLightOverlay;
+  private potionEffectOverlay!: PotionEffectOverlay;
   private worldMapOverlay!: WorldMapOverlay;
+  private pauseMenuOverlay!: PauseMenuOverlay;
+  private placedObjectOverlay!: PlacedObjectOverlay;
   private debugElement!: HTMLPreElement;
   private loadingOverlay!: HTMLDivElement;
   private loadingProgressBar!: HTMLDivElement;
   private loadingProgressFill!: HTMLDivElement;
   private loadingProgressText!: HTMLSpanElement;
   private interactionHighlight!: Phaser.GameObjects.Arc;
+  private placedObjectHighlight!: Phaser.GameObjects.Arc;
   private dropHighlight!: Phaser.GameObjects.Ellipse;
   private dropHintPanel!: Phaser.GameObjects.Graphics;
   private dropHint!: Phaser.GameObjects.Text;
+  private placedObjectHintPanel!: Phaser.GameObjects.Graphics;
+  private placedObjectHint!: Phaser.GameObjects.Text;
   private harvestProgressGraphics!: Phaser.GameObjects.Graphics;
+  private placementPreviewGraphics!: Phaser.GameObjects.Graphics;
+  private placementHint!: Phaser.GameObjects.Text;
   private caveGraphics!: Phaser.GameObjects.Graphics;
   private caveLavaGraphics!: Phaser.GameObjects.Graphics;
   private caveEntranceLightGraphics!: Phaser.GameObjects.Graphics;
@@ -174,16 +225,16 @@ export class AdventureScene extends Phaser.Scene {
   private caveFogMaskBase!: SVGRectElement;
   private caveFogDarkness!: SVGRectElement;
   private caveFogPlayerLight!: SVGCircleElement;
-  private caveFogLavaLights: SVGCircleElement[] = [];
-  private caveFogEntranceLights: SVGCircleElement[] = [];
-  private caveHintPanel!: Phaser.GameObjects.Graphics;
-  private caveHint!: Phaser.GameObjects.Text;
   private isDebugVisible = false;
   private inventoryOpen = false;
   private craftingOpen = false;
   private worldMapOpen = false;
+  private pauseMenuOpen = false;
+  private returningToMainMenu = false;
   private worldReady = false;
   private worldSeed = WORLD_SEED;
+  private worldId: string | null = null;
+  private worldMode: WorldMode = 'survival';
   private facing = FacingDirection.Down;
   private isSwimming = false;
   private terrainSurface = 'ground';
@@ -198,9 +249,14 @@ export class AdventureScene extends Phaser.Scene {
   private lastCaveVisibilityWorldX = Number.NaN;
   private lastCaveVisibilityWorldY = Number.NaN;
   private nearbyDrop: DroppedItem | null = null;
+  private nearbyPlacedObject: PlacedObject | null = null;
+  private placementPreview: (PlacementTarget & { readonly placeable: PlaceableId }) | null = null;
   private harvestTarget: InteractionTarget | null = null;
   private harvestElapsedMs = 0;
-  private harvestRequiresMouseRelease = false;
+  private harvestRequiresControlRelease = false;
+  private drinkingPotion: { readonly id: PotionId; readonly slotIndex: number } | null = null;
+  private tonicDrinkElapsedMs = 0;
+  private tonicDrinkRequiresRelease = false;
   private lastInteractionTileX = Number.NaN;
   private lastInteractionTileY = Number.NaN;
   private lastSwimmingTileX = Number.NaN;
@@ -220,6 +276,7 @@ export class AdventureScene extends Phaser.Scene {
   private worldTimeMs = DAY_NIGHT_INITIAL_TIME_MS;
   private nightAmount = 0;
   private ambientLightAmount = 0;
+  private readonly activePotionEffects = new Map<PotionEffect, number>();
   private equippedTool: ToolId | null = null;
   private activeHotbarSlot = 0;
   private lastMinimapUpdateMs = Number.NEGATIVE_INFINITY;
@@ -234,10 +291,42 @@ export class AdventureScene extends Phaser.Scene {
   private movementSampleWorstFrameMs = 0;
   private movingFps = 0;
   private movingWorstFrameMs = 0;
+  private frameSampleStartedAt = Number.NaN;
+  private frameSampleCount = 0;
+  private renderedFps = 0;
   private renderBackend = 'Detecting renderer…';
+  private gameSettings: GameSettings = createDefaultGameSettings();
+  private settingsSaveChain: Promise<void> = Promise.resolve();
 
   constructor() {
     super('adventure');
+  }
+
+  init(data: unknown): void {
+    const selection = data as { id?: unknown; seed?: unknown; mode?: unknown } | undefined;
+    const hasValidSelection = typeof selection?.id === 'string'
+      && /^world-[1-9]\d*$/.test(selection.id)
+      && typeof selection.seed === 'string'
+      && selection.seed.length > 0
+      && selection.seed.length <= MAX_WORLD_SEED_LENGTH;
+    this.worldId = hasValidSelection ? selection.id as string : null;
+    this.worldSeed = hasValidSelection ? selection.seed as string : WORLD_SEED;
+    this.worldMode = hasValidSelection && isWorldMode(selection?.mode) ? selection.mode : 'survival';
+    // Phaser reuses scene instances after returning to the main menu. Reset transient play state
+    // here so a newly selected world never inherits a paused flag, cave context, or UI state.
+    this.worldReady = false;
+    this.inventoryOpen = false;
+    this.craftingOpen = false;
+    this.worldMapOpen = false;
+    this.pauseMenuOpen = false;
+    this.returningToMainMenu = false;
+    this.activeCave = null;
+    this.activePotionEffects.clear();
+    this.drinkingPotion = null;
+    this.tonicDrinkElapsedMs = 0;
+    this.tonicDrinkRequiresRelease = false;
+    this.saveDirty = false;
+    this.savePending = false;
   }
 
   preload(): void {
@@ -247,10 +336,24 @@ export class AdventureScene extends Phaser.Scene {
   create(): void {
     this.sessionWorldState = new SessionWorldState();
     this.inventory = new Inventory();
+    this.placeableManager = new PlaceableManager(this, this.sessionWorldState);
     this.renderBackend = this.describeRenderBackend();
     this.player = this.add.rectangle(WORLD_TILE_SIZE / 2, WORLD_TILE_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE).setVisible(false);
     this.playerAvatar = this.add.graphics().setDepth(10).setScale(PLAYER_AVATAR_SCALE);
     this.harvestProgressGraphics = this.add.graphics().setDepth(15);
+    this.placementPreviewGraphics = this.add.graphics().setDepth(14).setVisible(false);
+    this.placementHint = this.add
+      .text(0, 0, '', {
+        fontFamily: 'Cascadia Mono, Consolas, system-ui, sans-serif',
+        fontSize: '12px',
+        color: '#efffe8',
+        fontStyle: '700',
+        backgroundColor: '#102019dd',
+        padding: { x: 7, y: 4 }
+      })
+      .setOrigin(0.5)
+      .setDepth(16)
+      .setVisible(false);
     this.caveGraphics = this.add.graphics().setDepth(2).setVisible(false);
     this.caveLavaGraphics = this.add.graphics().setDepth(2.2).setVisible(false);
     this.caveEntranceLightGraphics = this.add.graphics().setDepth(2.1).setVisible(false);
@@ -259,6 +362,11 @@ export class AdventureScene extends Phaser.Scene {
       .circle(0, 0, 62, 0xf5d76e, 0.09)
       .setStrokeStyle(3, 0xffec8b, 0.95)
       .setDepth(8)
+      .setVisible(false);
+    this.placedObjectHighlight = this.add
+      .circle(0, 0, 45, 0x7dd8a4, 0.09)
+      .setStrokeStyle(2.5, 0xb5ffd2, 0.94)
+      .setDepth(8.2)
       .setVisible(false);
     this.dropHighlight = this.add
       .ellipse(0, 0, 30, 30, 0x7de6ff, 0.09)
@@ -276,19 +384,19 @@ export class AdventureScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(11)
       .setVisible(false);
-    this.caveHintPanel = this.add.graphics().setDepth(10.8).setVisible(false);
-    this.caveHint = this.add
+    this.placedObjectHintPanel = this.add.graphics().setDepth(10.8).setVisible(false);
+    this.placedObjectHint = this.add
       .text(0, 0, '', {
         fontFamily: 'Cascadia Mono, Consolas, system-ui, sans-serif',
         fontSize: '12px',
-        color: '#f4fff6',
+        color: '#effff2',
         fontStyle: '700'
       })
       .setOrigin(0.5)
       .setDepth(11)
       .setVisible(false);
     this.tweens.add({
-      targets: [this.interactionHighlight, this.dropHighlight],
+      targets: [this.interactionHighlight, this.placedObjectHighlight, this.dropHighlight],
       alpha: { from: 0.35, to: 0.92 },
       scale: { from: 0.92, to: 1.08 },
       duration: 650,
@@ -300,18 +408,12 @@ export class AdventureScene extends Phaser.Scene {
 
     this.configureCamera();
     this.resizeCaveFog();
-    this.cursors = this.input.keyboard!.createCursorKeys();
-    this.movementKeys = this.input.keyboard!.addKeys({
-      up: Phaser.Input.Keyboard.KeyCodes.W,
-      down: Phaser.Input.Keyboard.KeyCodes.S,
-      left: Phaser.Input.Keyboard.KeyCodes.A,
-      right: Phaser.Input.Keyboard.KeyCodes.D
-    }) as MovementKeys;
-    this.input.keyboard!.on('keydown-F3', this.toggleDebug, this);
-    this.input.keyboard!.on('keydown-E', this.handlePrimaryAction, this);
-    this.input.keyboard!.on('keydown-C', this.handleCraftingKeyDown, this);
-    this.input.keyboard!.on('keydown-F', this.handleWorldMapKeyDown, this);
-    this.input.keyboard!.on('keydown-ESC', this.closeWorldMap, this);
+    this.configureControlKeys();
+    this.input.keyboard!.on('keydown', this.handleGameKeyDown, this);
+    this.input.on('pointerdown', this.handleWorldPointerDown, this);
+    // Mouse2 is a supported binding. Suppress the browser's canvas context menu so it can be
+    // used just as reliably as Mouse0 and Mouse1 during exploration.
+    this.input.mouse?.disableContextMenu();
 
     const gameElement = document.getElementById('game');
     if (!gameElement) {
@@ -320,12 +422,13 @@ export class AdventureScene extends Phaser.Scene {
 
     this.createLoadingOverlay(gameElement);
     this.createDebugElement(gameElement);
+    this.potionEffectOverlay = new PotionEffectOverlay(gameElement);
     this.hotbarOverlay = new HotbarOverlay(
       gameElement,
       this.inventory,
       () => this.activeHotbarSlot,
       (slotIndex) => this.selectHotbarSlot(slotIndex),
-      () => this.worldReady && !this.inventoryOpen && !this.craftingOpen && !this.worldMapOpen
+      () => this.worldReady && !this.inventoryOpen && !this.craftingOpen && !this.worldMapOpen && !this.pauseMenuOpen
     );
     this.inventoryOverlay = new InventoryOverlay(
       gameElement,
@@ -334,12 +437,42 @@ export class AdventureScene extends Phaser.Scene {
       (slot) => this.dropInventorySlot(slot),
       () => this.equippedTool,
       (tool) => this.setEquippedTool(tool),
-      (recipe, destinationIndex) => this.claimCraftedTool(recipe, destinationIndex)
+      (recipe, destinationIndex) => this.claimCraftedTool(recipe, destinationIndex),
+      this.worldMode === 'creative'
     );
+    this.placedObjectOverlay = new PlacedObjectOverlay(gameElement, {
+      getObject: (id) => this.sessionWorldState.getPlacedObject(id),
+      getPlayerSlots: () => this.inventory.getSlots(),
+      movePlayerInventorySlot: (sourceIndex, destinationIndex) => this.inventory.moveSlot(sourceIndex, destinationIndex),
+      movePlayerInventoryAmount: (sourceIndex, destinationIndex, amount) => this.inventory.moveAmount(sourceIndex, destinationIndex, amount),
+      movePlayerSlotToStorage: (objectId, slotIndex, amount) => this.movePlayerSlotToStorage(objectId, slotIndex, amount),
+      moveStorageSlotToPlayer: (objectId, slotIndex, destinationIndex, amount) => this.moveStorageSlotToPlayer(objectId, slotIndex, destinationIndex, amount),
+      movePlayerSlotToBrewing: (objectId, slotIndex, ingredientIndex) => this.movePlayerSlotToBrewing(objectId, slotIndex, ingredientIndex),
+      moveBrewingIngredientToPlayer: (objectId, ingredientIndex, destinationIndex) => this.moveBrewingIngredientToPlayer(objectId, ingredientIndex, destinationIndex),
+      collectBrewingOutput: (objectId, destinationIndex) => this.collectBrewingOutput(objectId, destinationIndex),
+      tryStartBrewing: (objectId) => this.startBrewing(objectId),
+      brewingOutput: (objectId) => this.sessionWorldState.brewingOutput(objectId),
+      movePlayerSlotToFurnace: (objectId, slotIndex, slot, amount) => this.movePlayerSlotToFurnace(objectId, slotIndex, slot, amount),
+      moveFurnaceItemToPlayer: (objectId, slot, destinationIndex, amount) => this.moveFurnaceItemToPlayer(objectId, slot, destinationIndex, amount),
+      collectFurnaceOutput: (objectId, destinationIndex, amount) => this.collectFurnaceOutput(objectId, destinationIndex, amount),
+      furnaceOutput: (objectId) => this.sessionWorldState.furnaceOutput(objectId),
+      furnaceItemAvailableToTake: (objectId, slot) => this.sessionWorldState.furnaceItemAvailableToTake(objectId, slot),
+      onRest: (object) => this.restAtPlacedObject(object),
+      setWaypointLabel: (objectId, label) => this.setWaypointLabel(objectId, label),
+      onChanged: () => this.handleInventoryChanged(),
+      onClose: () => this.updateHotbarVisibility()
+    });
     this.minimapOverlay = new MinimapOverlay(gameElement);
     this.dayNightOverlay = new DayNightOverlay(gameElement);
     this.nightAmbientOverlay = new NightAmbientOverlay(gameElement);
+    this.placedLightOverlay = new PlacedLightOverlay(gameElement);
     this.worldMapOverlay = new WorldMapOverlay(gameElement);
+    this.pauseMenuOverlay = new PauseMenuOverlay(gameElement, this.gameSettings, {
+      onResume: () => this.closePauseMenu(),
+      onReturnToMainMenu: () => this.returnToMainMenu(),
+      onSettingsChanged: (settings) => this.updateGameSettings(settings)
+    });
+    this.applyGameSettings();
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.handleShutdown, this);
     window.addEventListener('beforeunload', this.handleBeforeUnload);
@@ -351,8 +484,25 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
+    this.sampleRenderedFrameRate(time);
+
     this.updateWorldTime(time, delta);
+    this.updatePotionEffects();
+    // Menus are true input pauses. Keep world time/save bookkeeping alive, but never let held
+    // movement keys carry the player while the inventory or settings UI has focus.
+    if (this.pauseMenuOpen) {
+      this.cancelTonicDrinking();
+      this.clearPlacementPreview();
+      this.updatePlayerAvatar(delta, false);
+      this.persistIfNeeded(time);
+      if (this.isDebugVisible && time - this.lastDebugUpdateMs >= DEBUG_UPDATE_INTERVAL_MS) {
+        this.lastDebugUpdateMs = time;
+        this.updateDebugText();
+      }
+      return;
+    }
     if (this.activeCave) {
+      this.clearPlacementPreview();
       this.updateCave(time, delta);
       this.persistIfNeeded(time);
       if (this.isDebugVisible && time - this.lastDebugUpdateMs >= DEBUG_UPDATE_INTERVAL_MS) {
@@ -364,6 +514,8 @@ export class AdventureScene extends Phaser.Scene {
     this.updateExploration();
 
     if (this.worldMapOpen) {
+      this.cancelTonicDrinking();
+      this.clearPlacementPreview();
       this.chunkManager.updateWaterAnimation(time);
       this.chunkManager.updateSwampWaterDecorations(time, delta, this.player.x, this.player.y, 0, 0, this.isSwimming);
       this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.ambientLightAmount);
@@ -377,28 +529,65 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
+    if (this.inventoryOpen || this.craftingOpen) {
+      this.cancelTonicDrinking();
+      this.clearPlacementPreview();
+      this.chunkManager.updateWaterAnimation(time);
+      this.chunkManager.updateSwampWaterDecorations(time, delta, this.player.x, this.player.y, 0, 0, this.isSwimming);
+      this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.ambientLightAmount);
+      this.placeableManager.update(this.player.x, this.player.y);
+      this.updateNightAmbientLighting(time);
+      this.updatePlayerAvatar(delta, false);
+      this.persistIfNeeded(time);
+      if (this.isDebugVisible && time - this.lastDebugUpdateMs >= DEBUG_UPDATE_INTERVAL_MS) {
+        this.lastDebugUpdateMs = time;
+        this.updateDebugText();
+      }
+      return;
+    }
+
+    if (this.placedObjectOverlay.isOpen) {
+      this.cancelTonicDrinking();
+      this.clearPlacementPreview();
+      this.chunkManager.updateWaterAnimation(time);
+      this.chunkManager.updateSwampWaterDecorations(time, delta, this.player.x, this.player.y, 0, 0, this.isSwimming);
+      this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.ambientLightAmount);
+      this.placeableManager.update(this.player.x, this.player.y);
+      this.updateNightAmbientLighting(time);
+      this.placedObjectOverlay.update(time);
+      this.updatePlayerAvatar(delta, false);
+      this.persistIfNeeded(time);
+      return;
+    }
+
     const horizontal = Number(this.isDown('right')) - Number(this.isDown('left'));
     const vertical = Number(this.isDown('down')) - Number(this.isDown('up'));
-    const isMoving = horizontal !== 0 || vertical !== 0;
-    this.sampleMovementPerformance(time, delta, isMoving);
+    const wantsToMove = horizontal !== 0 || vertical !== 0;
+    let isMoving = wantsToMove;
+    this.sampleMovementPerformance(time, delta, wantsToMove);
     let playerVelocityX = 0;
     let playerVelocityY = 0;
 
     this.updateFacing(horizontal, vertical);
-    if (isMoving) {
-      const currentTopography = this.currentTopography
-        ?? this.chunkManager.getTopographyAt(this.player.x, this.player.y);
+    if (wantsToMove) {
       const length = Math.hypot(horizontal, vertical);
-      const speed = PLAYER_SPEED * (this.isSwimming ? SWIM_SPEED_MULTIPLIER : 1);
+      const speed = PLAYER_SPEED * this.potionSpeedMultiplier() * (this.isSwimming ? SWIM_SPEED_MULTIPLIER : 1);
       const movementX = (horizontal / length) * speed * (delta / 1000);
       const movementY = (vertical / length) * speed * (delta / 1000);
-      this.movePlayer(movementX, movementY);
-      const elapsedSeconds = Math.max(0.001, delta / 1000);
-      playerVelocityX = movementX / elapsedSeconds;
-      playerVelocityY = movementY / elapsedSeconds;
-      this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
-      this.terrainSurface = this.currentTopography.surface;
-      this.markSaveDirty();
+      const previousPlayerX = this.player.x;
+      const previousPlayerY = this.player.y;
+      if (this.movePlayer(movementX, movementY, time)) {
+        const elapsedSeconds = Math.max(0.001, delta / 1000);
+        playerVelocityX = (this.player.x - previousPlayerX) / elapsedSeconds;
+        playerVelocityY = (this.player.y - previousPlayerY) / elapsedSeconds;
+        this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
+        this.terrainSurface = this.currentTopography.surface;
+        this.markSaveDirty();
+      } else {
+        // A boundary is held only while its presentation window finishes preparing. Keep the
+        // avatar idle rather than animating a walk against terrain the player cannot yet enter.
+        isMoving = false;
+      }
     }
 
     this.updateSwimmingState();
@@ -415,10 +604,14 @@ export class AdventureScene extends Phaser.Scene {
       this.isSwimming
     );
     this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.ambientLightAmount);
+    this.placeableManager.update(this.player.x, this.player.y);
     this.updateNightAmbientLighting(time);
     this.updateInteractionTarget();
     this.updateCaveEntranceInteraction();
     this.updateDropInteraction(time);
+    this.updatePlacedObjectInteraction();
+    this.updatePlacementPreview();
+    this.updateTonicDrinking(delta);
     this.updateHarvesting(delta);
     this.updatePlayerAvatar(delta, isMoving);
     this.updateMinimap(time);
@@ -434,8 +627,10 @@ export class AdventureScene extends Phaser.Scene {
     let savedGame: SaveGameData | null = null;
     let savedActiveCave: SaveGameData['activeCave'] | undefined;
 
+    await this.loadGameSettings();
+
     try {
-      const loaded = await window.wildboundSave?.load();
+      const loaded = this.worldId ? await window.wildboundWorlds?.load(this.worldId) : null;
       savedGame = isSaveGameData(loaded) ? loaded : null;
     } catch (error) {
       console.warn('Wildbound could not load its local save.', error);
@@ -443,7 +638,11 @@ export class AdventureScene extends Phaser.Scene {
 
     if (savedGame) {
       this.worldSeed = savedGame.seed;
+      if (isWorldMode(savedGame.mode)) {
+        this.worldMode = savedGame.mode;
+      }
       this.inventory.restore(savedGame.inventory);
+      this.restorePotionEffects(savedGame.effects);
       const savedTool = savedGame.equipment?.equippedTool;
       this.equippedTool = isToolId(savedTool) && this.inventory.get(savedTool) > 0 ? savedTool : null;
       const savedHotbarSlot = savedGame.equipment?.activeHotbarSlot;
@@ -468,6 +667,7 @@ export class AdventureScene extends Phaser.Scene {
     this.sessionWorldState.setWorldTimeMs(this.worldTimeMs);
 
     this.chunkManager = new ChunkManager(this, this.worldSeed, this.sessionWorldState);
+    this.chunkManager.applyVideoSettings(this.gameSettings.video);
     this.dropManager = new DropManager(this, this.sessionWorldState);
     await this.chunkManager.prime(this.player.x, this.player.y, (progress) => {
       this.updateLoadingProgress(progress.completed, progress.total);
@@ -476,6 +676,7 @@ export class AdventureScene extends Phaser.Scene {
     this.loadingOverlay.classList.add('is-hidden');
     this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
     this.terrainSurface = this.currentTopography.surface;
+    this.placeableManager.refresh(this.player.x, this.player.y);
     this.updateSwimmingState(true);
     this.updatePlayerAvatar(0, false);
     this.inventoryOverlay.refresh();
@@ -502,6 +703,11 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private updateSwimmingState(force = false): void {
+    if (this.activeCave) {
+      this.updateCaveSwimmingState(force);
+      return;
+    }
+
     // Sample the player's actual feet rather than a floored tile corner. Terrain is rendered
     // at sub-tile resolution, so this keeps the swim state precisely on the visible waterline.
     const sampleTileX = this.player.x / WORLD_TILE_SIZE;
@@ -518,11 +724,123 @@ export class AdventureScene extends Phaser.Scene {
     this.isSwimming = waterAtFeet;
   }
 
-  private movePlayer(deltaX: number, deltaY: number): void {
-    this.player.setPosition(this.player.x + deltaX, this.player.y + deltaY);
+  private updateCaveSwimmingState(force = false): void {
+    const tileX = Math.floor(this.player.x / WORLD_TILE_SIZE);
+    const tileY = Math.floor((this.player.y + 9) / WORLD_TILE_SIZE);
+    const lavaAtFeet = this.isCaveLavaAt(this.player.x, this.player.y + 9);
+    if (!force && tileX === this.lastSwimmingTileX && tileY === this.lastSwimmingTileY && lavaAtFeet === this.isSwimming) {
+      return;
+    }
+
+    this.lastSwimmingTileX = tileX;
+    this.lastSwimmingTileY = tileY;
+    this.isSwimming = lavaAtFeet;
   }
-  private isDown(direction: keyof MovementKeys): boolean {
-    return Boolean(this.cursors[direction]?.isDown || this.movementKeys[direction].isDown);
+
+  private isCaveLavaAt(worldX: number, worldY: number): boolean {
+    const cave = this.activeCave;
+    if (!cave) {
+      return false;
+    }
+
+    // Use the exact seeded pool outline for both the surface art and swim state, keeping the
+    // transition at the visible lava edge instead of an invisible circular hitbox.
+    return cave.layout.lavaPools.some((pool) => Phaser.Geom.Polygon.Contains(
+      new Phaser.Geom.Polygon(this.caveLavaPoints(pool, cave.origin)),
+      worldX,
+      worldY
+    ));
+  }
+
+  private movePlayer(deltaX: number, deltaY: number, time: number): boolean {
+    const nextX = this.player.x + deltaX;
+    const nextY = this.player.y + deltaY;
+    if (this.chunkManager.canEnterPosition(nextX, nextY, time)) {
+      this.player.setPosition(nextX, nextY);
+      return true;
+    }
+
+    // If a diagonal step reaches an unprepared edge, keep the already-ready axis responsive.
+    // This avoids a whole-character freeze at a chunk corner and does not let the player enter
+    // a terrain or grass chunk that has not finished preparing.
+    let moved = false;
+    let resolvedX = this.player.x;
+    let resolvedY = this.player.y;
+    if (deltaX !== 0 && this.chunkManager.canEnterPosition(nextX, resolvedY, time)) {
+      resolvedX = nextX;
+      moved = true;
+    }
+    if (deltaY !== 0 && this.chunkManager.canEnterPosition(resolvedX, nextY, time)) {
+      resolvedY = nextY;
+      moved = true;
+    }
+    if (moved) {
+      this.player.setPosition(resolvedX, resolvedY);
+    }
+    return moved;
+  }
+
+  private configureControlKeys(): void {
+    const keyboard = this.input.keyboard;
+    if (!keyboard) {
+      return;
+    }
+
+    // Game input is handled by `handleGameKeyDown`, which only prevents a browser default after
+    // it has established that no text control owns the event. Phaser's default `addKey` capture
+    // does the opposite: it calls preventDefault for W/A/S/D/E/F before a waypoint input can
+    // receive the character. Clear any old captured bindings before rebuilding controls and let
+    // the scene decide when a gameplay shortcut should consume a key.
+    keyboard.removeAllKeys(true, true);
+    this.controlKeys = {} as ControlKeys;
+    CONTROL_ACTIONS.forEach((action) => {
+      const keyCode = keyCodeForBinding(this.gameSettings.controls[action]);
+      this.controlKeys[action] = keyCode === null ? null : keyboard.addKey(keyCode, false);
+    });
+  }
+
+  private isControlDown(action: ControlAction): boolean {
+    const binding = this.gameSettings.controls[action];
+    if (!isMouseBinding(binding)) {
+      return Boolean(this.controlKeys[action]?.isDown);
+    }
+    const pointer = this.input.activePointer;
+    if (binding === 'Mouse0') return pointer.leftButtonDown();
+    if (binding === 'Mouse1') return pointer.middleButtonDown();
+    return pointer.rightButtonDown();
+  }
+
+  private matchesControl(action: ControlAction, event: KeyboardEvent): boolean {
+    const binding = this.gameSettings.controls[action];
+    return !isMouseBinding(binding) && binding === event.code;
+  }
+
+  private matchesPointerControl(action: ControlAction, pointer: Phaser.Input.Pointer): boolean {
+    if (pointer.button < 0 || pointer.button > 2) {
+      return false;
+    }
+    const binding = this.gameSettings.controls[action];
+    return isMouseBinding(binding) && binding === `Mouse${pointer.button}`;
+  }
+
+  private isTypingIntoTextControl(event: KeyboardEvent): boolean {
+    const isTextControl = (target: EventTarget | null): boolean => target instanceof HTMLInputElement
+      || target instanceof HTMLTextAreaElement
+      || (target instanceof HTMLElement && target.isContentEditable);
+    // Phaser can forward a keyboard event through its own input manager. Keep the active element
+    // as a second source of truth so a DOM text field retains ownership even if that forwarding
+    // layer reports the canvas as the event target.
+    return isTextControl(event.target) || isTextControl(document.activeElement);
+  }
+
+  private isDown(direction: MovementDirection): boolean {
+    const actions: Record<MovementDirection, readonly [ControlAction, ControlAction]> = {
+      up: ['moveUp', 'moveUpAlternate'],
+      down: ['moveDown', 'moveDownAlternate'],
+      left: ['moveLeft', 'moveLeftAlternate'],
+      right: ['moveRight', 'moveRightAlternate']
+    };
+    return actions[direction].some((action) => this.isControlDown(action));
   }
 
   private updateFacing(horizontal: number, vertical: number): void {
@@ -639,6 +957,78 @@ export class AdventureScene extends Phaser.Scene {
     this.loadingProgressFill.style.transform = `scaleX(${ratio})`;
   }
 
+  private async loadGameSettings(): Promise<void> {
+    try {
+      const settings = await window.wildboundSettings?.load();
+      const normalized = normalizeGameSettings(settings);
+      if (normalized) {
+        this.gameSettings = normalized;
+      }
+    } catch (error) {
+      console.warn('Wildbound could not load local settings.', error);
+    }
+    this.applyGameSettings();
+    this.pauseMenuOverlay.setSettings(this.gameSettings);
+  }
+
+  private updateGameSettings(settings: GameSettings): void {
+    const normalized = normalizeGameSettings(settings);
+    if (!normalized) {
+      return;
+    }
+    this.gameSettings = normalized;
+    this.applyGameSettings();
+    this.pauseMenuOverlay.setSettings(normalized);
+    const settingsApi = window.wildboundSettings;
+    if (!settingsApi) {
+      return;
+    }
+    const snapshot = normalized;
+    this.settingsSaveChain = this.settingsSaveChain
+      .catch(() => undefined)
+      .then(() => settingsApi.save(snapshot))
+      .catch((error: unknown) => console.warn('Wildbound could not save local settings.', error));
+  }
+
+  private applyGameSettings(): void {
+    // Phaser's `stepLimitFPS` drops whole requestAnimationFrame callbacks. At common 120 / 144 Hz
+    // refresh rates, a 60 cap then alternates between two and three refreshes (or falls to 40/48),
+    // which is visible as camera jitter while walking. For capped modes, drive the normal TimeStep
+    // at the requested steady rate; Unlimited returns to the browser's VSync scheduler.
+    const loop = this.game.loop as Phaser.Core.TimeStep & {
+      _limitRate: number;
+      _target: number;
+      forceSetTimeOut: boolean;
+    };
+    const frameRate = this.gameSettings.video.performance.maxFps;
+    const isCapped = frameRate > 0;
+    const targetInterval = 1000 / (isCapped ? frameRate : 60);
+    const needsSchedulerRestart = loop.forceSetTimeOut !== isCapped
+      || Math.abs(loop._target - targetInterval) > 0.01
+      || loop.hasFpsLimit;
+
+    // The scheduler sets the actual cadence, so deliberately use the regular TimeStep callback
+    // instead of its accumulator limiter. Simulation remains time-based through Phaser's delta.
+    loop.fpsLimit = 0;
+    loop.hasFpsLimit = false;
+    loop._limitRate = 0;
+    loop.smoothStep = false;
+    loop.forceSetTimeOut = isCapped;
+    loop._target = targetInterval;
+
+    if (needsSchedulerRestart && loop.running) {
+      loop.sleep();
+      loop.wake(true);
+    }
+    this.configureControlKeys();
+    this.chunkManager?.applyVideoSettings(this.gameSettings.video);
+    this.nightAmbientOverlay?.setEnabled(this.gameSettings.video.quality.showNightLights && !this.activeCave);
+    this.nightAmbientOverlay?.setRenderScale(this.gameSettings.video.quality.nightLightResolution);
+    if (this.activeCave) {
+      this.updateCaveLava(this.gameSettings.video.quality.animateLava ? this.time.now : 0, true);
+    }
+  }
+
   private toggleDebug(): void {
     this.isDebugVisible = !this.isDebugVisible;
     this.debugElement.classList.toggle('is-visible', this.isDebugVisible);
@@ -648,57 +1038,120 @@ export class AdventureScene extends Phaser.Scene {
     }
   }
 
-  private handlePrimaryAction(event: KeyboardEvent): void {
+  private handleGameKeyDown(event: KeyboardEvent): void {
     if (event.repeat) {
       return;
     }
-    event.preventDefault();
-    if (!this.worldReady || this.worldMapOpen) {
+
+    // A focused text field owns every key. In particular, a waypoint name containing E, F, or
+    // another rebound game key must not close a menu or trigger a world action while typing.
+    if (this.isTypingIntoTextControl(event)) {
       return;
     }
 
-    if (this.craftingOpen) {
-      this.craftingOpen = false;
-      this.inventoryOpen = false;
-      this.cancelHarvesting();
-      this.inventoryOverlay.setCraftingOpen(false);
-      this.inventoryOverlay.setOpen(false);
-      this.updateHotbarVisibility();
+    if (this.returningToMainMenu) {
       return;
     }
 
-    if (this.inventoryOpen) {
-      this.toggleInventory();
+    if (this.pauseMenuOpen) {
       return;
     }
 
-    if (this.activeCave) {
-      // A resource on the cave floor is an interaction before the nearby surface outlet. This
-      // keeps E dependable at a crowded entrance and mirrors pickup behavior outdoors.
-      if (this.pickupNearbyDrop()) {
-        return;
+    if (this.matchesControl('pauseMenu', event)) {
+      event.preventDefault();
+      this.openPauseMenu();
+      return;
+    }
+    if (this.matchesControl('debugOverlay', event)) {
+      event.preventDefault();
+      this.toggleDebug();
+      return;
+    }
+    if (!this.worldReady) {
+      return;
+    }
+    if (this.matchesControl('worldMap', event)) {
+      event.preventDefault();
+      this.toggleWorldMap();
+      return;
+    }
+    if (this.worldMapOpen) {
+      return;
+    }
+    this.handleContextualAction(event);
+  }
+
+  private handleContextualAction(event: KeyboardEvent): void {
+    if (this.placedObjectOverlay.isOpen) {
+      if (this.matchesControl('openInventory', event)) {
+        this.placedObjectOverlay.close();
       }
-      if (this.caveExitNearby) {
-        this.exitCave(this.caveExitTarget ?? undefined);
-      } else {
+      return;
+    }
+    if (this.craftingOpen) {
+      if (this.matchesControl('openInventory', event)) {
+        this.craftingOpen = false;
+        this.inventoryOpen = false;
+        this.cancelHarvesting();
+        this.inventoryOverlay.setCraftingOpen(false);
+        this.inventoryOverlay.setOpen(false);
+        this.updateHotbarVisibility();
+      }
+      return;
+    }
+    if (this.inventoryOpen) {
+      if (this.matchesControl('openInventory', event)) {
         this.toggleInventory();
       }
       return;
     }
 
-    if (this.nearbyCaveEntrance) {
+    if (this.activeCave) {
+      // A floor drop remains the priority for shared default bindings, matching the original E
+      // interaction. Rebound actions can intentionally separate drop pickup from cave travel.
+      if (this.matchesControl('pickUpItem', event) && this.pickupNearbyDrop()) {
+        return;
+      }
+      if (this.matchesControl('enterExitCave', event) && this.caveExitNearby) {
+        this.exitCave(this.caveExitTarget ?? undefined);
+        return;
+      }
+      if (this.matchesControl('openInventory', event)) {
+        this.toggleInventory();
+      }
+      return;
+    }
+
+    if (this.matchesControl('enterExitCave', event) && this.nearbyCaveEntrance) {
       this.enterCave(this.nearbyCaveEntrance, this.player.x, this.player.y);
       return;
     }
-
-    if (this.pickupNearbyDrop()) {
+    if (this.matchesControl('pickUpItem', event) && this.pickupNearbyDrop()) {
       return;
     }
-
-    this.toggleInventory();
+    if (this.matchesControl('pickUpUtility', event) && this.pickupNearbyPlacedObject()) {
+      return;
+    }
+    if (this.matchesControl('placeUtility', event) && this.heldPlaceable()) {
+      this.tryPlaceHeldObject();
+      return;
+    }
+    if (this.matchesControl('accessUtility', event)
+      && this.nearbyPlacedObject?.placeable !== PlaceableId.TrailLantern
+      && this.nearbyPlacedObject) {
+      this.openPlacedObject(this.nearbyPlacedObject);
+      return;
+    }
+    if (this.matchesControl('openInventory', event)) {
+      this.toggleInventory();
+    }
   }
 
   private toggleInventory(): void {
+    this.cancelTonicDrinking();
+    if (this.placedObjectOverlay.isOpen) {
+      this.placedObjectOverlay.close();
+    }
     this.inventoryOpen = !this.inventoryOpen;
     if (this.inventoryOpen && this.craftingOpen) {
       this.craftingOpen = false;
@@ -708,20 +1161,427 @@ export class AdventureScene extends Phaser.Scene {
     this.updateHotbarVisibility();
   }
 
-  private handleCraftingKeyDown(event: KeyboardEvent): void {
-    if (!event.repeat) {
-      this.toggleCrafting();
+  private readonly handleWorldPointerDown = (pointer: Phaser.Input.Pointer): void => {
+    if (!this.worldReady || this.inventoryOpen || this.craftingOpen || this.worldMapOpen
+      || this.pauseMenuOpen || this.placedObjectOverlay.isOpen) {
+      return;
+    }
+    // Non-harvest controls are normally keyboard actions, but they are fully data-driven and
+    // can now be assigned to Mouse0/1/2 as well. Preserve the same priority as keyboard input.
+    if (this.matchesPointerControl('pauseMenu', pointer)) {
+      this.openPauseMenu();
+      return;
+    }
+    if (this.matchesPointerControl('debugOverlay', pointer)) {
+      this.toggleDebug();
+      return;
+    }
+    if (this.matchesPointerControl('worldMap', pointer)) {
+      this.toggleWorldMap();
+      return;
+    }
+    if (this.activeCave) {
+      if (this.matchesPointerControl('pickUpItem', pointer) && this.pickupNearbyDrop()) {
+        return;
+      }
+      if (this.matchesPointerControl('enterExitCave', pointer) && this.caveExitNearby) {
+        this.exitCave(this.caveExitTarget ?? undefined);
+        return;
+      }
+      if (this.matchesPointerControl('openInventory', pointer)) {
+        this.toggleInventory();
+      }
+      return;
+    }
+    if (this.matchesPointerControl('enterExitCave', pointer) && this.nearbyCaveEntrance) {
+      this.enterCave(this.nearbyCaveEntrance, this.player.x, this.player.y);
+      return;
+    }
+    if (this.matchesPointerControl('pickUpItem', pointer) && this.pickupNearbyDrop()) {
+      return;
+    }
+    if (this.matchesPointerControl('pickUpUtility', pointer) && this.pickupNearbyPlacedObject()) {
+      return;
+    }
+    if (this.matchesPointerControl('openInventory', pointer)) {
+      this.toggleInventory();
+      return;
+    }
+    const heldPlaceable = this.heldPlaceable();
+    if (heldPlaceable && this.matchesPointerControl('placeUtility', pointer)) {
+      this.tryPlaceHeldObject();
+      return;
+    }
+    if (this.nearbyPlacedObject && this.nearbyPlacedObject.placeable !== PlaceableId.TrailLantern
+      && this.matchesPointerControl('accessUtility', pointer)) {
+      this.openPlacedObject(this.nearbyPlacedObject);
+    }
+  };
+
+  private heldPlaceable(): PlaceableId | null {
+    if (this.equippedTool) {
+      return null;
+    }
+    const item = this.inventory.getSlots()[this.activeHotbarSlot]?.item;
+    return item && isPlaceableId(item) ? item : null;
+  }
+
+  private placementTarget(placeable: PlaceableId): PlacementTarget {
+    const definition = PLACEABLE_DEFINITIONS[placeable];
+    const pointer = this.input.activePointer;
+    const tileX = Math.floor(pointer.worldX / WORLD_TILE_SIZE - definition.footprint[0] / 2);
+    const tileY = Math.floor(pointer.worldY / WORLD_TILE_SIZE - definition.footprint[1] / 2);
+
+    for (let y = tileY; y < tileY + definition.footprint[1]; y += 1) {
+      for (let x = tileX; x < tileX + definition.footprint[0]; x += 1) {
+        const surface = surfaceAtTile(this.worldSeed, x + 0.5, y + 0.5);
+        // isSwampWater is also water today, but testing it explicitly preserves the intended
+        // placement rule if swamp traversal is ever given its own behavior.
+        if (surface.isWater || surface.isSwampWater) {
+          return { tileX, tileY, valid: false, blocker: 'water' };
+        }
+        if (featureAtTile(this.worldSeed, x, y) && !this.sessionWorldState.isFeatureHarvested(x, y)) {
+          return { tileX, tileY, valid: false, blocker: 'feature' };
+        }
+        if (this.chunkManager.isCaveFormationAtTile(x, y)) {
+          return { tileX, tileY, valid: false, blocker: 'cave' };
+        }
+        if (landmarkAtTile(this.worldSeed, x, y)) {
+          return { tileX, tileY, valid: false, blocker: 'landmark' };
+        }
+      }
+    }
+
+    // Placed objects retain their own footprint collision. This is the only non-terrain guard:
+    // without it, two chests or stations could occupy one location and become impossible to use.
+    const blocker = this.placeableManager.canPlace(placeable, tileX, tileY) ? null : 'placed-object';
+    return {
+      tileX,
+      tileY,
+      valid: blocker === null,
+      blocker
+    };
+  }
+
+  private placementBlockerHint(blocker: PlacementBlocker | null): string {
+    switch (blocker) {
+      case 'water':
+        return 'Cannot place in water';
+      case 'feature':
+        return 'Harvest the feature first';
+      case 'cave':
+        return 'Cannot build on cave terrain';
+      case 'landmark':
+        return 'Cannot build on a landmark';
+      case 'placed-object':
+        return 'A placed object occupies this space';
+      default:
+        return 'Choose a valid placement spot';
     }
   }
 
-  private toggleCrafting(): void {
-    if (!this.worldReady || this.worldMapOpen) {
+  private updatePlacementPreview(): void {
+    const placeable = this.heldPlaceable();
+    if (!placeable) {
+      this.clearPlacementPreview();
       return;
     }
+    const target = this.placementTarget(placeable);
+    this.placementPreview = { placeable, ...target };
+    const definition = PLACEABLE_DEFINITIONS[placeable];
+    const x = target.tileX * WORLD_TILE_SIZE;
+    const y = target.tileY * WORLD_TILE_SIZE;
+    const width = definition.footprint[0] * WORLD_TILE_SIZE;
+    const height = definition.footprint[1] * WORLD_TILE_SIZE;
+    const color = target.valid ? 0x7deca2 : 0xef7668;
+    this.placementPreviewGraphics.clear();
+    this.placementPreviewGraphics.fillStyle(color, 0.14);
+    this.placementPreviewGraphics.fillRoundedRect(x + 2, y + 2, width - 4, height - 4, 6);
+    this.placementPreviewGraphics.lineStyle(2.5, color, 0.96);
+    this.placementPreviewGraphics.strokeRoundedRect(x + 2, y + 2, width - 4, height - 4, 6);
+    this.placementPreviewGraphics.setVisible(true);
+    this.placementHint.setText(target.valid
+      ? `Left click to place ${definition.label}`
+      : this.placementBlockerHint(target.blocker))
+      .setPosition(x + width / 2, y - 13)
+      .setVisible(true);
+  }
 
-    // Crafting lives beside the inventory now, so C opens the same combined workspace instead
-    // of replacing the inventory panel with a separate screen.
-    this.toggleInventory();
+  private clearPlacementPreview(): void {
+    this.placementPreview = null;
+    this.placementPreviewGraphics?.clear().setVisible(false);
+    this.placementHint?.setVisible(false);
+  }
+
+  private tryPlaceHeldObject(): void {
+    const placeable = this.heldPlaceable();
+    const preview = this.placementPreview;
+    if (!placeable || !preview || preview.placeable !== placeable || !preview.valid) {
+      this.showWorldFeedback(this.player.x, this.player.y - 28, this.placementBlockerHint(preview?.blocker ?? null));
+      this.harvestRequiresControlRelease = true;
+      return;
+    }
+    const source = this.inventory.takeSlot(this.activeHotbarSlot);
+    if (!source || source.item !== placeable) {
+      return;
+    }
+    const placed = this.placeableManager.place(placeable, preview.tileX, preview.tileY, this.player.x, this.player.y);
+    if (!placed) {
+      this.inventory.placeInSlot(this.activeHotbarSlot, source.item, source.amount);
+      this.showWorldFeedback(this.player.x, this.player.y - 28, 'That space is occupied');
+      this.harvestRequiresControlRelease = true;
+      return;
+    }
+    if (source.amount > 1) {
+      this.inventory.placeInSlot(this.activeHotbarSlot, source.item, source.amount - 1);
+    }
+    this.harvestRequiresControlRelease = true;
+    this.handleInventoryChanged();
+    this.inventoryOverlay.refresh();
+    this.clearPlacementPreview();
+    if (placeable === PlaceableId.Waypoint) {
+      this.updateMinimap(0, true);
+      this.updateWorldMap();
+    }
+    this.showWorldFeedback(this.player.x, this.player.y - 28, `Placed ${PLACEABLE_DEFINITIONS[placeable].label}`);
+  }
+
+  private updatePlacedObjectInteraction(): void {
+    const heldPlaceable = this.heldPlaceable();
+    this.nearbyPlacedObject = heldPlaceable ? null : this.placeableManager.nearest(this.player.x, this.player.y);
+    const object = this.nearbyPlacedObject;
+    if (!object) {
+      this.placedObjectHighlight.setVisible(false);
+      this.placedObjectHintPanel.clear().setVisible(false);
+      this.placedObjectHint.setVisible(false);
+      return;
+    }
+    const definition = PLACEABLE_DEFINITIONS[object.placeable];
+    const centerX = (object.tileX + definition.footprint[0] / 2) * WORLD_TILE_SIZE;
+    const centerY = (object.tileY + definition.footprint[1] / 2) * WORLD_TILE_SIZE;
+    this.placedObjectHighlight.setPosition(centerX, centerY).setVisible(true);
+    // Keep the world hover treatment clean. Utilities are still fully interactable; their
+    // menus and controls communicate available actions once the player opens one.
+    const label = definition.label;
+    const hintY = centerY - definition.footprint[1] * WORLD_TILE_SIZE / 2 - 20;
+    this.placedObjectHint.setText(label).setPosition(centerX, hintY).setVisible(true);
+    const width = this.placedObjectHint.width + 20;
+    const height = this.placedObjectHint.height + 10;
+    this.placedObjectHintPanel.clear();
+    this.placedObjectHintPanel.fillStyle(0x07130f, 0.9);
+    this.placedObjectHintPanel.fillRoundedRect(centerX - width / 2, hintY - height / 2, width, height, 7);
+    this.placedObjectHintPanel.lineStyle(1.5, 0xb5ffd2, 0.88);
+    this.placedObjectHintPanel.strokeRoundedRect(centerX - width / 2, hintY - height / 2, width, height, 7);
+    this.placedObjectHintPanel.setVisible(true);
+  }
+
+  private openPlacedObject(object: PlacedObject): void {
+    this.cancelTonicDrinking();
+    this.cancelHarvesting();
+    this.harvestRequiresControlRelease = true;
+    this.placedObjectOverlay.open(object);
+    this.updateHotbarVisibility();
+  }
+
+  private movePlayerSlotToStorage(objectId: string, slotIndex: number, requestedAmount?: number): boolean {
+    const source = this.inventory.getSlots()[slotIndex];
+    const amount = Math.min(source?.amount ?? 0, requestedAmount ?? source?.amount ?? 0);
+    if (!source || amount < 1 || !this.sessionWorldState.storageCanAccept(objectId, source.item, amount)) {
+      return false;
+    }
+    const transferred = this.inventory.takeFromSlot(slotIndex, amount);
+    if (!transferred) {
+      return false;
+    }
+    const stored = this.sessionWorldState.storeInObject(objectId, transferred.item, transferred.amount);
+    if (stored !== transferred.amount) {
+      this.inventory.placeInSlot(slotIndex, transferred.item, transferred.amount);
+      return false;
+    }
+    return true;
+  }
+
+  private moveStorageSlotToPlayer(
+    objectId: string,
+    slotIndex: number,
+    destinationIndex: number,
+    requestedAmount?: number
+  ): boolean {
+    const object = this.sessionWorldState.getPlacedObject(objectId);
+    const slot = object?.storage?.[slotIndex] ?? null;
+    const amount = Math.min(slot?.amount ?? 0, requestedAmount ?? slot?.amount ?? 0);
+    if (!slot || amount < 1 || !this.inventory.canPlaceInSlot(destinationIndex, slot.item, amount)) {
+      return false;
+    }
+    const taken = this.sessionWorldState.takeFromObject(objectId, slotIndex, amount);
+    if (!taken) {
+      return false;
+    }
+    return this.inventory.placeInSlot(destinationIndex, taken.item, taken.amount);
+  }
+
+  private movePlayerSlotToBrewing(objectId: string, slotIndex: number, ingredientIndex: number): boolean {
+    const slot = this.inventory.getSlots()[slotIndex];
+    if (!slot || !Object.values(ResourceType).includes(slot.item as ResourceType)) {
+      return false;
+    }
+    const ingredient = this.inventory.takeFromSlot(slotIndex, 1);
+    if (!ingredient) {
+      return false;
+    }
+    if (this.sessionWorldState.putBrewingIngredient(objectId, ingredientIndex, ingredient)) {
+      return true;
+    }
+    this.inventory.placeInSlot(slotIndex, ingredient.item, ingredient.amount);
+    return false;
+  }
+
+  private moveBrewingIngredientToPlayer(objectId: string, ingredientIndex: number, destinationIndex: number): boolean {
+    const brewing = this.sessionWorldState.getBrewingState(objectId);
+    const ingredient = brewing?.ingredients[ingredientIndex] ?? null;
+    if (!ingredient || !this.inventory.canPlaceInSlot(destinationIndex, ingredient.item, ingredient.amount)) {
+      return false;
+    }
+    const taken = this.sessionWorldState.takeBrewingIngredient(objectId, ingredientIndex);
+    return Boolean(taken && this.inventory.placeInSlot(destinationIndex, taken.item, taken.amount));
+  }
+
+  private startBrewing(objectId: string): PotionId | null {
+    const potion = this.sessionWorldState.startBrewing(objectId);
+    if (potion) {
+      this.markSaveDirty();
+    }
+    return potion;
+  }
+
+  private collectBrewingOutput(objectId: string, destinationIndex: number): boolean {
+    const potion = this.sessionWorldState.brewingOutput(objectId);
+    if (!potion || !this.inventory.canPlaceInSlot(destinationIndex, potion, 1)) {
+      return false;
+    }
+    const collected = this.sessionWorldState.collectBrewingOutput(objectId);
+    return Boolean(collected && this.inventory.placeInSlot(destinationIndex, collected, 1));
+  }
+
+  private movePlayerSlotToFurnace(
+    objectId: string,
+    slotIndex: number,
+    furnaceSlot: 'fuel' | 'ore',
+    requestedAmount?: number
+  ): boolean {
+    const source = this.inventory.getSlots()[slotIndex];
+    if (!source) {
+      return false;
+    }
+    const capacity = this.sessionWorldState.furnaceItemCapacity(objectId, furnaceSlot, source.item);
+    const amount = Math.min(source.amount, capacity, requestedAmount ?? source.amount);
+    const ingredient = this.inventory.takeFromSlot(slotIndex, amount);
+    if (!ingredient) {
+      return false;
+    }
+    if (this.sessionWorldState.putFurnaceItem(objectId, furnaceSlot, ingredient)) {
+      return true;
+    }
+    this.inventory.placeInSlot(slotIndex, ingredient.item, ingredient.amount);
+    return false;
+  }
+
+  private moveFurnaceItemToPlayer(
+    objectId: string,
+    furnaceSlot: 'fuel' | 'ore',
+    destinationIndex: number,
+    requestedAmount?: number
+  ): boolean {
+    const item = this.sessionWorldState.furnaceItemAvailableToTake(objectId, furnaceSlot);
+    const amount = Math.min(item?.amount ?? 0, requestedAmount ?? item?.amount ?? 0);
+    if (!item || amount < 1 || !this.inventory.canPlaceInSlot(destinationIndex, item.item, amount)) {
+      return false;
+    }
+    const taken = this.sessionWorldState.takeFurnaceItem(objectId, furnaceSlot, amount);
+    return Boolean(taken && this.inventory.placeInSlot(destinationIndex, taken.item, taken.amount));
+  }
+
+  private collectFurnaceOutput(objectId: string, destinationIndex: number, requestedAmount?: number): boolean {
+    const output = this.sessionWorldState.furnaceOutput(objectId);
+    const amount = Math.min(output?.amount ?? 0, requestedAmount ?? output?.amount ?? 0);
+    if (!output || amount < 1 || !this.inventory.canPlaceInSlot(destinationIndex, output.item, amount)) {
+      return false;
+    }
+    const collected = this.sessionWorldState.collectFurnaceOutput(objectId, Date.now(), amount);
+    if (!collected) {
+      return false;
+    }
+    const stored = this.inventory.placeInSlot(destinationIndex, collected.item, collected.amount);
+    if (stored) {
+      this.markSaveDirty();
+      this.placeableManager.refresh(this.player.x, this.player.y);
+    }
+    return stored;
+  }
+
+  private pickupReason(object: PlacedObject): string | null {
+    if (!this.inventory.canAdd(object.placeable, 1)) {
+      return 'Make room in your inventory before packing this placed object.';
+    }
+    if (object.storage?.some((slot) => slot !== null)) {
+      return 'Empty its storage before picking up this placed object.';
+    }
+    if (object.brewing?.job) {
+      return 'Collect the finished brew before picking up this placed object.';
+    }
+    if (object.brewing?.ingredients.some((slot) => slot !== null)) {
+      return 'Remove the ingredients before picking up this placed object.';
+    }
+    if (object.furnace?.job) {
+      return 'Collect the refined material before picking up this placed object.';
+    }
+    if (object.furnace?.fuel || object.furnace?.ore || object.furnace?.output) {
+      return 'Remove the furnace materials before picking up this placed object.';
+    }
+    return null;
+  }
+
+  private pickUpPlacedObject(object: PlacedObject): { success: boolean; message: string } {
+    const reason = this.pickupReason(object);
+    if (reason) {
+      return { success: false, message: reason };
+    }
+    const removed = this.placeableManager.remove(object.id, this.player.x, this.player.y);
+    if (!removed || this.inventory.add(removed.placeable, 1) !== 1) {
+      return { success: false, message: 'This placed object could not be packed right now.' };
+    }
+    this.handleInventoryChanged();
+    this.inventoryOverlay.refresh();
+    if (removed.placeable === PlaceableId.Waypoint) {
+      this.updateMinimap(0, true);
+      this.updateWorldMap();
+    }
+    this.showWorldFeedback(this.player.x, this.player.y - 28, `Picked up ${PLACEABLE_DEFINITIONS[removed.placeable].label}`);
+    this.updatePlacedObjectInteraction();
+    return { success: true, message: '' };
+  }
+
+  private restAtPlacedObject(object: PlacedObject): void {
+    this.worldTimeMs = worldTimeForHour(6);
+    this.sessionWorldState.setWorldTimeMs(this.worldTimeMs);
+    this.lastDayNightOverlayUpdateMs = Number.NEGATIVE_INFINITY;
+    this.lastNightAmbientLightingUpdateMs = Number.NEGATIVE_INFINITY;
+    this.dayNightOverlay.update(this.worldTimeMs);
+    this.nightAmount = sampleDayNight(this.worldTimeMs).nightAmount;
+    this.ambientLightAmount = ambientLightScheduleAmount(this.worldTimeMs);
+    this.placedObjectOverlay.close();
+    this.markSaveDirty();
+    this.showWorldFeedback(this.player.x, this.player.y - 28, `Rested at ${PLACEABLE_DEFINITIONS[object.placeable].label}`);
+  }
+
+  private setWaypointLabel(objectId: string, label: string): boolean {
+    const changed = this.sessionWorldState.setWaypointLabel(objectId, label);
+    if (changed) {
+      this.markSaveDirty();
+      this.updateMinimap(0, true);
+      this.updateWorldMap();
+    }
+    return changed;
   }
 
   private toggleWorldMap(): void {
@@ -729,7 +1589,11 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
+    this.cancelTonicDrinking();
     this.worldMapOpen = !this.worldMapOpen;
+    if (this.worldMapOpen && this.placedObjectOverlay.isOpen) {
+      this.placedObjectOverlay.close();
+    }
     if (this.worldMapOpen && this.inventoryOpen) {
       this.toggleInventory();
     }
@@ -747,24 +1611,55 @@ export class AdventureScene extends Phaser.Scene {
     }
   }
 
-  private handleWorldMapKeyDown(event: KeyboardEvent): void {
-    if (!event.repeat) {
-      this.toggleWorldMap();
-    }
-  }
-
-  private closeWorldMap(): void {
-    if (!this.worldMapOpen) {
+  private openPauseMenu(): void {
+    if (!this.worldReady || this.pauseMenuOpen || this.returningToMainMenu) {
       return;
     }
-
-    this.worldMapOpen = false;
-    this.worldMapOverlay.setOpen(false);
+    this.pauseMenuOpen = true;
+    this.cancelTonicDrinking();
+    this.cancelHarvesting();
+    this.harvestRequiresControlRelease = this.isControlDown('harvestAttack');
+    if (this.placedObjectOverlay.isOpen) {
+      this.placedObjectOverlay.close();
+    }
+    if (this.inventoryOpen || this.craftingOpen) {
+      this.inventoryOpen = false;
+      this.craftingOpen = false;
+      this.inventoryOverlay.setCraftingOpen(false);
+      this.inventoryOverlay.setOpen(false);
+    }
+    if (this.worldMapOpen) {
+      this.worldMapOpen = false;
+      this.worldMapOverlay.setOpen(false);
+    }
+    this.pauseMenuOverlay.setOpen(true);
     this.updateHotbarVisibility();
+  }
+
+  private closePauseMenu(): void {
+    if (!this.pauseMenuOpen) {
+      return;
+    }
+    this.pauseMenuOpen = false;
+    this.pauseMenuOverlay.setOpen(false);
+    this.updateHotbarVisibility();
+  }
+
+  private returnToMainMenu(): void {
+    if (!this.pauseMenuOpen || this.returningToMainMenu) {
+      return;
+    }
+    this.returningToMainMenu = true;
+    this.closePauseMenu();
+    if (this.worldReady && this.sessionWorldState.setWorldTimeMs(this.worldTimeMs)) {
+      this.markSaveDirty();
+    }
+    void this.persistSave().finally(() => this.scene.start('main-menu'));
   }
 
   private handleResize(): void {
     this.updateCameraZoom();
+    this.chunkManager?.handleViewportChanged();
     this.resizeCaveFog();
     this.lastCaveVisibilityWorldX = Number.NaN;
     this.lastCaveVisibilityWorldY = Number.NaN;
@@ -775,17 +1670,24 @@ export class AdventureScene extends Phaser.Scene {
 
   private handleShutdown(): void {
     this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
+    this.input.keyboard?.off('keydown', this.handleGameKeyDown, this);
+    this.input.off('pointerdown', this.handleWorldPointerDown, this);
     window.removeEventListener('beforeunload', this.handleBeforeUnload);
     this.debugElement.remove();
     this.loadingOverlay.remove();
     this.inventoryOverlay.destroy();
+    this.placedObjectOverlay.destroy();
     this.hotbarOverlay.destroy();
     this.minimapOverlay.destroy();
     this.dayNightOverlay.destroy();
     this.nightAmbientOverlay.destroy();
+    this.placedLightOverlay.destroy();
+    this.potionEffectOverlay.destroy();
     this.worldMapOverlay.destroy();
+    this.pauseMenuOverlay.destroy();
     this.chunkManager?.destroy();
     this.dropManager?.destroy();
+    this.placeableManager?.destroy();
     this.caveFogOverlay.remove();
   }
 
@@ -801,7 +1703,7 @@ export class AdventureScene extends Phaser.Scene {
     this.nightAmount = sampleDayNight(this.worldTimeMs).nightAmount;
     this.ambientLightAmount = ambientLightScheduleAmount(this.worldTimeMs);
 
-    if (time - this.lastDayNightOverlayUpdateMs >= DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS) {
+    if (!this.activeCave && time - this.lastDayNightOverlayUpdateMs >= DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS) {
       this.lastDayNightOverlayUpdateMs = time;
       this.dayNightOverlay.update(this.worldTimeMs);
     }
@@ -815,9 +1717,28 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private updateNightAmbientLighting(time: number): void {
-    // The DOM glow canvas is intentionally updated every frame once light is visible, but doing
-    // a full transparent canvas clear at 60 Hz during daylight is pure overhead—particularly in
-    // a foliage-dense forest where the game otherwise has no active night lights.
+    // Surface ambience and placed lights must never leak into cave rendering. Caves use their
+    // own static fog, wall shading, exit shafts, and lava glow, independent of world time.
+    if (this.activeCave) {
+      this.placedLightOverlay.update(this.cameras.main, []);
+      this.nightAmbientOverlay.setEnabled(false);
+      return;
+    }
+
+    if (!this.gameSettings.video.quality.showNightLights) {
+      this.placedLightOverlay.update(this.cameras.main, []);
+      return;
+    }
+    // Lanterns are projected directly every rendered frame from their exact flame coordinate.
+    // This is a tiny, bounded list and does not involve terrain or chunk work.
+    this.placedLightOverlay.update(this.cameras.main, this.placeableManager.getNightLights());
+    // The expensive Canvas 2D gradients refresh at a controlled cadence, while this lightweight
+    // compositor transform runs every scene update. Glows therefore track camera motion smoothly
+    // instead of snapping relative to the player at the source-refresh rate.
+    this.nightAmbientOverlay.followCamera(this.cameras.main);
+    // Sampling and drawing the radial sources more often than this is unnecessary because the
+    // camera-follow pass above already moves the composited glow every frame. During daylight,
+    // a sparse clear prevents an otherwise invisible canvas from consuming frame time.
     const updateInterval = this.ambientLightAmount <= 0 ? 250 : NIGHT_AMBIENT_LIGHT_UPDATE_INTERVAL_MS;
     if (time - this.lastNightAmbientLightingUpdateMs < updateInterval) {
       return;
@@ -829,6 +1750,23 @@ export class AdventureScene extends Phaser.Scene {
       this.cameras.main,
       this.chunkManager.getNightAmbientLights(time)
     );
+  }
+
+  private setCaveLightingActive(active: boolean): void {
+    this.dayNightOverlay.setEnabled(!active);
+    this.nightAmbientOverlay.setEnabled(!active && this.gameSettings.video.quality.showNightLights);
+    this.lastDayNightOverlayUpdateMs = Number.NEGATIVE_INFINITY;
+    this.lastNightAmbientLightingUpdateMs = Number.NEGATIVE_INFINITY;
+
+    if (active) {
+      this.placedLightOverlay.update(this.cameras.main, []);
+      return;
+    }
+
+    // Repaint the normal surface overlays immediately on exit instead of waiting for their
+    // throttled refresh cadence.
+    this.dayNightOverlay.update(this.worldTimeMs);
+    this.updateNightAmbientLighting(this.time.now);
   }
 
   private updateExploration(force = false): void {
@@ -900,7 +1838,14 @@ export class AdventureScene extends Phaser.Scene {
       playerTileY: this.player.y / WORLD_TILE_SIZE,
       regions,
       reveals,
-      landmarks: Array.from(landmarksById.values())
+      landmarks: Array.from(landmarksById.values()),
+      waypoints: this.sessionWorldState.getWaypoints()
+        .map((waypoint) => ({
+          id: waypoint.id,
+          tileX: waypoint.tileX + 0.5,
+          tileY: waypoint.tileY + 0.5,
+          label: waypoint.label
+        }))
     });
   }
 
@@ -917,7 +1862,9 @@ export class AdventureScene extends Phaser.Scene {
       : 0;
     const harvestAnimationFrame = this.harvestTarget || this.caveHarvestOre ? Math.floor(this.harvestElapsedMs / 45) % 8 : -1;
     const heldResource = this.heldHotbarResource();
-    const state = `${this.facing}:${this.isSwimming}:${animationFrame}:${harvestAnimationFrame}:${this.equippedTool ?? 'none'}:${heldResource ?? 'none'}`;
+    const heldPlaceable = this.heldPlaceable();
+    const heldTonic = this.heldTonic();
+    const state = `${this.facing}:${this.isSwimming}:${animationFrame}:${harvestAnimationFrame}:${this.equippedTool ?? 'none'}:${heldResource ?? 'none'}:${heldPlaceable ?? 'none'}:${heldTonic?.id ?? 'none'}:${this.drinkingPotion?.id ?? 'none'}`;
 
     if (state !== this.lastAvatarState) {
       this.lastAvatarState = state;
@@ -934,6 +1881,8 @@ export class AdventureScene extends Phaser.Scene {
     const harvestSwing = this.harvestSwingAmount();
     const isUnarmedHarvesting = !this.equippedTool && (this.harvestTarget !== null || this.caveHarvestOre !== null);
     const heldResource = this.heldHotbarResource();
+    const heldPlaceable = this.heldPlaceable();
+    const heldTonic = this.heldTonic();
 
     avatar.clear();
     avatar.fillStyle(this.isSwimming ? 0x4ca7bd : 0x152129, this.isSwimming ? 0.45 : 0.32);
@@ -957,8 +1906,15 @@ export class AdventureScene extends Phaser.Scene {
         if (heldResource) {
           this.drawHeldResource(direction, stride, heldResource, this.harvestStrikeReach());
         }
+        if (heldTonic) {
+          this.drawHeldTonic(direction, stride, heldTonic.id);
+        }
       } else if (!this.equippedTool && heldResource) {
         this.drawHeldResource(direction, stride, heldResource);
+      } else if (!this.equippedTool && heldPlaceable) {
+        this.drawHeldPlaceable(direction, stride, heldPlaceable);
+      } else if (!this.equippedTool && heldTonic) {
+        this.drawHeldTonic(direction, stride, heldTonic.id);
       }
       this.drawDirectionalHead(direction, true);
       return;
@@ -989,8 +1945,15 @@ export class AdventureScene extends Phaser.Scene {
       if (heldResource) {
         this.drawHeldResource(direction, stride, heldResource, this.harvestStrikeReach());
       }
+      if (heldTonic) {
+        this.drawHeldTonic(direction, stride, heldTonic.id);
+      }
     } else if (!this.equippedTool && heldResource) {
       this.drawHeldResource(direction, stride, heldResource);
+    } else if (!this.equippedTool && heldPlaceable) {
+      this.drawHeldPlaceable(direction, stride, heldPlaceable);
+    } else if (!this.equippedTool && heldTonic) {
+      this.drawHeldTonic(direction, stride, heldTonic.id);
     }
     this.drawDirectionalHead(direction, false);
   }
@@ -1037,8 +2000,8 @@ export class AdventureScene extends Phaser.Scene {
     avatar.lineStyle(1, 0xc89252, 0.9);
     avatar.lineBetween(handX + toolPerpendicularX, handY + toolPerpendicularY, headX + toolPerpendicularX, headY + toolPerpendicularY);
 
+    const { fill: headColor, edge: edgeColor } = TOOL_HEAD_PALETTES[tool.headMaterial];
     if (tool.kind === 'axe') {
-      const { fill: headColor, edge: edgeColor } = TOOL_HEAD_PALETTES[tool.headMaterial];
       avatar.fillStyle(edgeColor, 1);
       avatar.fillTriangle(
         headX - toolDirectionX * 2 + toolPerpendicularX * 6.4,
@@ -1057,8 +2020,7 @@ export class AdventureScene extends Phaser.Scene {
         headX + toolDirectionX * 5.5 + toolPerpendicularX * 4,
         headY + toolDirectionY * 5.5 + toolPerpendicularY * 4
       );
-    } else {
-      const { fill: headColor, edge: edgeColor } = TOOL_HEAD_PALETTES[tool.headMaterial];
+    } else if (tool.kind === 'pickaxe') {
       avatar.lineStyle(5.6, edgeColor, 1);
       avatar.lineBetween(
         headX - toolPerpendicularX * 7.5,
@@ -1089,6 +2051,60 @@ export class AdventureScene extends Phaser.Scene {
         headY + toolPerpendicularY * 4.5 - toolDirectionY * 3,
         headX + toolPerpendicularX * 4.5 + toolDirectionX * 2,
         headY + toolPerpendicularY * 4.5 + toolDirectionY * 2
+      );
+    } else if (tool.kind === 'hoe') {
+      avatar.lineStyle(5, edgeColor, 1);
+      avatar.lineBetween(
+        headX - toolPerpendicularX * 7,
+        headY - toolPerpendicularY * 7,
+        headX + toolPerpendicularX * 7,
+        headY + toolPerpendicularY * 7
+      );
+      avatar.lineStyle(2.8, headColor, 1);
+      avatar.lineBetween(
+        headX - toolPerpendicularX * 6.5,
+        headY - toolPerpendicularY * 6.5,
+        headX + toolPerpendicularX * 6.5,
+        headY + toolPerpendicularY * 6.5
+      );
+      avatar.fillStyle(headColor, 1);
+      avatar.fillTriangle(
+        headX + toolPerpendicularX * 7,
+        headY + toolPerpendicularY * 7,
+        headX + toolPerpendicularX * 2 + toolDirectionX * 5,
+        headY + toolPerpendicularY * 2 + toolDirectionY * 5,
+        headX + toolPerpendicularX * 2 - toolDirectionX * 2,
+        headY + toolPerpendicularY * 2 - toolDirectionY * 2
+      );
+    } else {
+      // Swords retain the normal forearm anchor, but their blade extends in the direction of
+      // the swing instead of using a harvesting head. Combat can build on this visual later.
+      const bladeTipX = headX + toolDirectionX * 9;
+      const bladeTipY = headY + toolDirectionY * 9;
+      avatar.fillStyle(edgeColor, 1);
+      avatar.fillTriangle(
+        headX - toolPerpendicularX * 3.5,
+        headY - toolPerpendicularY * 3.5,
+        bladeTipX,
+        bladeTipY,
+        headX + toolPerpendicularX * 3.5,
+        headY + toolPerpendicularY * 3.5
+      );
+      avatar.fillStyle(headColor, 1);
+      avatar.fillTriangle(
+        headX - toolPerpendicularX * 2,
+        headY - toolPerpendicularY * 2,
+        bladeTipX - toolDirectionX * 2,
+        bladeTipY - toolDirectionY * 2,
+        headX + toolPerpendicularX * 2,
+        headY + toolPerpendicularY * 2
+      );
+      avatar.lineStyle(3.3, edgeColor, 1);
+      avatar.lineBetween(
+        handX - toolPerpendicularX * 5,
+        handY - toolPerpendicularY * 5,
+        handX + toolPerpendicularX * 5,
+        handY + toolPerpendicularY * 5
       );
     }
   }
@@ -1138,7 +2154,7 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     const item = this.inventory.getSlots()[this.activeHotbarSlot]?.item;
-    return item && !isToolId(item) ? item : null;
+    return item && Object.values(ResourceType).includes(item as ResourceType) ? item as ResourceType : null;
   }
 
   private drawHeldResource(
@@ -1171,6 +2187,8 @@ export class AdventureScene extends Phaser.Scene {
       case ResourceType.Coal:
       case ResourceType.Iron:
       case ResourceType.Gold:
+      case ResourceType.IronIngot:
+      case ResourceType.GoldIngot:
       case ResourceType.Diamond:
         avatar.fillStyle(outline, 1);
         avatar.fillTriangle(handX, handY - 6, handX + 6, handY - 1, handX + 3, handY + 5);
@@ -1195,12 +2213,87 @@ export class AdventureScene extends Phaser.Scene {
         avatar.fillStyle(RESOURCE_COLORS[resource], 1);
         avatar.fillRoundedRect(handX - 2.3, handY - 5, 4.6, 10, 2);
         break;
-      case ResourceType.IceShard:
-        avatar.fillStyle(outline, 1);
-        avatar.fillTriangle(handX, handY - 7, handX + 4.5, handY + 5, handX - 4.5, handY + 5);
-        avatar.fillStyle(RESOURCE_COLORS[resource], 1);
-        avatar.fillTriangle(handX, handY - 5.5, handX + 3, handY + 3.8, handX - 3, handY + 3.8);
-        break;
+    }
+  }
+
+  private drawHeldTonic(direction: Phaser.Math.Vector2, stride: number, tonic: PotionId): void {
+    const avatar = this.playerAvatar;
+    const drinking = this.drinkingPotion?.id === tonic;
+    const shoulderX = 7 + direction.x * 2;
+    const shoulderY = (this.isSwimming ? 0 : 1) + direction.y * 2;
+    const handX = drinking
+      ? direction.x * 5 + direction.y * 3
+      : 11 + direction.x * 4 + direction.y * 2;
+    const handY = drinking
+      ? -8 + direction.y * 2 - direction.x * 2
+      : (this.isSwimming ? 1 : 2) + direction.y * 4 - direction.x * 2 - stride * 0.35;
+    const color = POTION_DEFINITIONS[tonic].color;
+    avatar.lineStyle(4.6, 0xe1ae86, 1);
+    avatar.lineBetween(shoulderX, shoulderY, handX, handY);
+    avatar.fillStyle(0xe1ae86, 1);
+    avatar.fillCircle(handX, handY, 3.2);
+    avatar.fillStyle(0x24353a, 1);
+    avatar.fillRoundedRect(handX - 4, handY - 9, 8, 11, 3);
+    avatar.fillStyle(color, 1);
+    avatar.fillRoundedRect(handX - 2.8, handY - 7.6, 5.6, 7.2, 2);
+    avatar.fillStyle(0xded8b6, 1);
+    avatar.fillRect(handX - 1.8, handY - 11, 3.6, 3);
+    avatar.fillStyle(0xffffff, 0.55);
+    avatar.fillRect(handX - 1.4, handY - 6.4, 1.4, 3.2);
+  }
+
+  private drawHeldPlaceable(direction: Phaser.Math.Vector2, stride: number, placeable: PlaceableId): void {
+    const avatar = this.playerAvatar;
+    const handX = 12 + direction.x * 5 + direction.y * 2;
+    const handY = (this.isSwimming ? 0 : 2) + direction.y * 4 - direction.x * 2 - stride * 0.35;
+    const outline = 0x24332a;
+    const definition = PLACEABLE_DEFINITIONS[placeable];
+    avatar.lineStyle(4.8, 0xe1ae86, 1);
+    avatar.lineBetween(7 + direction.x * 2, 1 + direction.y * 2, handX, handY);
+    avatar.fillStyle(0xe1ae86, 1);
+    avatar.fillCircle(handX, handY, 3.5);
+
+    if (definition.interaction === 'light') {
+      avatar.fillStyle(outline, 1);
+      avatar.fillRoundedRect(handX - 5, handY - 10, 10, 12, 3);
+      avatar.fillStyle(0xffca61, 1);
+      avatar.fillRoundedRect(handX - 3.5, handY - 8.5, 7, 7, 2);
+      avatar.fillStyle(0xffffbd, 0.9);
+      avatar.fillCircle(handX, handY - 5, 1.7);
+      return;
+    }
+    if (definition.interaction === 'waypoint') {
+      avatar.lineStyle(3, 0x425e63, 1);
+      avatar.lineBetween(handX, handY + 5, handX, handY - 8);
+      avatar.fillStyle(0x3f9bcd, 1);
+      avatar.fillTriangle(handX, handY - 12, handX + 9, handY - 8, handX, handY - 4);
+      avatar.lineStyle(1, 0xc9efff, 0.9);
+      avatar.strokeTriangle(handX, handY - 12, handX + 9, handY - 8, handX, handY - 4);
+      return;
+    }
+    if (definition.interaction === 'storage') {
+      avatar.fillStyle(outline, 1);
+      avatar.fillRoundedRect(handX - 8, handY - 7, 16, 13, 3);
+      avatar.fillStyle(placeable === 'diamond vault' ? 0x55b8c5 : placeable === 'reinforced chest' ? 0x758885 : 0xa76a3b, 1);
+      avatar.fillRoundedRect(handX - 6.5, handY - 5.5, 13, 10, 2);
+      avatar.fillStyle(0xffe88c, 1);
+      avatar.fillRect(handX - 1.5, handY - 1, 3, 4);
+      return;
+    }
+    if (definition.interaction === 'rest') {
+      avatar.fillStyle(outline, 1);
+      avatar.fillTriangle(handX - 9, handY + 5, handX, handY - 10, handX + 9, handY + 5);
+      avatar.fillStyle(placeable === 'stone shelter' ? 0x71898a : placeable === 'wooden shelter' ? 0xa46b43 : 0xf07a37, 1);
+      avatar.fillTriangle(handX - 7, handY + 4, handX, handY - 7, handX + 7, handY + 4);
+      return;
+    }
+    avatar.fillStyle(outline, 1);
+    avatar.fillRoundedRect(handX - 8, handY - 5, 16, 10, 3);
+    avatar.fillStyle(placeable === 'furnace' || placeable === 'anvil' ? 0x79898b : 0xa66c40, 1);
+    avatar.fillRoundedRect(handX - 6.5, handY - 3.5, 13, 7, 2);
+    if (placeable === 'upgrade table') {
+      avatar.fillStyle(0x70d8d8, 1);
+      avatar.fillCircle(handX, handY - 7, 3);
     }
   }
 
@@ -1281,7 +2374,9 @@ export class AdventureScene extends Phaser.Scene {
       this.worldSeed,
       this.player.x / WORLD_TILE_SIZE,
       this.player.y / WORLD_TILE_SIZE,
-      MINIMAP_TILES_PER_CELL
+      MINIMAP_TILES_PER_CELL,
+      this.sessionWorldState.getWaypoints()
+        .map((waypoint) => ({ tileX: waypoint.tileX + 0.5, tileY: waypoint.tileY + 0.5 }))
     );
   }
 
@@ -1305,8 +2400,6 @@ export class AdventureScene extends Phaser.Scene {
 
     this.nearbyCaveEntrance = nearest;
     if (!nearest) {
-      this.caveHintPanel.clear().setVisible(false);
-      this.caveHint.setVisible(false);
       return;
     }
 
@@ -1315,27 +2408,6 @@ export class AdventureScene extends Phaser.Scene {
       .setRadius(Math.max(16, nearest.mouthForwardRadiusTiles * WORLD_TILE_SIZE * 0.15))
       .setPosition(mouth.x, mouth.y)
       .setVisible(true);
-    this.drawCaveHint(
-      mouth.x,
-      mouth.y - Math.max(40, nearest.mouthForwardRadiusTiles * WORLD_TILE_SIZE * 0.8),
-      'Press E to enter'
-    );
-  }
-
-  private drawCaveHint(worldX: number, worldY: number, label: string): void {
-    this.caveHint.setText(label).setPosition(worldX, worldY).setVisible(true);
-    const width = Math.max(118, this.caveHint.width + 22);
-    const height = Math.max(28, this.caveHint.height + 10);
-    const left = worldX - width / 2;
-    const top = worldY - height / 2;
-    this.caveHintPanel.clear();
-    this.caveHintPanel.fillStyle(0x090b0d, 0.92);
-    this.caveHintPanel.fillRoundedRect(left, top, width, height, 7);
-    this.caveHintPanel.lineStyle(1.5, 0x91a7b0, 0.92);
-    this.caveHintPanel.strokeRoundedRect(left, top, width, height, 7);
-    this.caveHintPanel.fillStyle(0x11161a, 0.95);
-    this.caveHintPanel.fillTriangle(worldX - 6, top + height - 1, worldX + 6, top + height - 1, worldX, top + height + 7);
-    this.caveHintPanel.setVisible(true);
   }
 
   private enterCave(entrance: CaveEntrance, returnWorldX: number, returnWorldY: number, markDirty = true): void {
@@ -1343,8 +2415,6 @@ export class AdventureScene extends Phaser.Scene {
     this.nearbyCaveEntrance = null;
     this.caveExitTarget = null;
     this.lastCaveLavaFrame = Number.NEGATIVE_INFINITY;
-    this.caveHintPanel.clear().setVisible(false);
-    this.caveHint.setVisible(false);
     this.dropHighlight.setVisible(false);
     this.dropHintPanel.clear().setVisible(false);
     this.dropHint.setVisible(false);
@@ -1366,6 +2436,7 @@ export class AdventureScene extends Phaser.Scene {
       entrySurfaceExitId,
       exitVisuals
     };
+    this.setCaveLightingActive(true);
     this.lastCaveVisibilityWorldX = Number.NaN;
     this.lastCaveVisibilityWorldY = Number.NaN;
     const spawn = caveWorldTilePosition(origin, layout.spawnTileX, layout.spawnTileY);
@@ -1392,6 +2463,7 @@ export class AdventureScene extends Phaser.Scene {
 
     this.cancelHarvesting();
     this.activeCave = null;
+    this.setCaveLightingActive(false);
     this.caveOreTarget = null;
     this.caveExitNearby = false;
     this.caveExitTarget = null;
@@ -1401,8 +2473,6 @@ export class AdventureScene extends Phaser.Scene {
     this.caveFogOverlay.classList.remove('is-visible');
     this.lastCaveVisibilityWorldX = Number.NaN;
     this.lastCaveVisibilityWorldY = Number.NaN;
-    this.caveHintPanel.clear().setVisible(false);
-    this.caveHint.setVisible(false);
     const returnToEntrySurface = !exitTarget || exitTarget.id === cave.entrySurfaceExitId;
     this.player.setPosition(
       returnToEntrySurface ? cave.returnWorldX : (exitTarget.surfaceTileX + 0.5) * WORLD_TILE_SIZE,
@@ -1411,6 +2481,7 @@ export class AdventureScene extends Phaser.Scene {
     this.cameras.main.centerOn(this.player.x, this.player.y);
     this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
     this.terrainSurface = this.currentTopography.surface;
+    this.placeableManager.refresh(this.player.x, this.player.y);
     this.updateSwimmingState(true);
     this.chunkManager.update(this.player.x, this.player.y);
     this.updateInteractionTarget(true);
@@ -1475,7 +2546,7 @@ export class AdventureScene extends Phaser.Scene {
     this.lastCaveLavaFrame = Number.NEGATIVE_INFINITY;
     this.lastCaveEntranceLightFrame = Number.NEGATIVE_INFINITY;
     this.updateCaveEntranceDaylight(this.time.now, true);
-    this.updateCaveLava(this.time.now, true);
+    this.updateCaveLava(this.gameSettings.video.quality.animateLava ? this.time.now : 0, true);
 
     layout.ores.forEach((ore) => {
       if (ore.placement !== 'floor') {
@@ -1733,13 +2804,9 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
     this.lastCaveEntranceLightFrame = frame;
-    const lightLevel = sampleDayNight(this.worldTimeMs).lightLevel;
+    const lightLevel = CAVE_EXIT_LIGHT_LEVEL;
     const graphics = this.caveEntranceLightGraphics;
-    graphics.clear().setVisible(lightLevel > 0.01);
-    if (lightLevel <= 0.01) {
-      this.updateCaveVisibility(true);
-      return;
-    }
+    graphics.clear().setVisible(true);
 
     cave.layout.surfaceExits.forEach((exit) => {
       const visual = this.caveExitVisual(cave, exit);
@@ -1772,7 +2839,6 @@ export class AdventureScene extends Phaser.Scene {
       graphics.fillStyle(0xeeffe6, 0.22 * lightLevel);
       graphics.fillEllipse(visual.x + insideX * 3, visual.y + insideY * 3, 16, 10);
     });
-    this.updateCaveVisibility(true);
   }
 
   private caveLavaPoints(pool: CaveLavaPool, origin: CaveWorldOrigin): CaveRenderPoint[] {
@@ -1794,12 +2860,8 @@ export class AdventureScene extends Phaser.Scene {
   private drawCaveLavaRims(pools: readonly CaveLavaPool[], origin: CaveWorldOrigin): void {
     pools.forEach((pool) => {
       const center = caveWorldTilePosition(origin, pool.tileX, pool.tileY);
-      // A soft baked-in glow reaches just beyond the cooled rim; the animated surface supplies
-      // the brighter movement while this makes lava read as a local light source at rest.
-      this.caveGraphics.fillStyle(0xe84d16, 0.075);
-      this.caveGraphics.fillEllipse(center.x, center.y, pool.radiusX * WORLD_TILE_SIZE * 3.1, pool.radiusY * WORLD_TILE_SIZE * 3.1);
-      this.caveGraphics.fillStyle(0xff8b2d, 0.09);
-      this.caveGraphics.fillEllipse(center.x, center.y, pool.radiusX * WORLD_TILE_SIZE * 2.15, pool.radiusY * WORLD_TILE_SIZE * 2.1);
+      // Lava is a contained liquid surface, not a cave light source. A thin dark mineral rim
+      // anchors it to the floor without spilling any bright haze into neighbouring walls.
       this.drawCaveRockPatch(center.x, center.y, pool.radiusX * WORLD_TILE_SIZE + 8, pool.radiusY * WORLD_TILE_SIZE + 7, pool.tileX, pool.tileY, 0x6d43, 0x1d0b05, 0.96);
       this.fillCavePolygon(this.caveLavaPoints(pool, origin), 0x4a1206, 1);
     });
@@ -1819,32 +2881,36 @@ export class AdventureScene extends Phaser.Scene {
     const seconds = time / 1000;
     const graphics = this.caveLavaGraphics;
     graphics.clear().setVisible(true);
-    cave.layout.lavaPools.forEach((pool, poolIndex) => {
+    cave.layout.lavaPools.forEach((pool) => {
       const center = caveWorldTilePosition(cave.origin, pool.tileX, pool.tileY);
       const points = this.caveLavaPoints(pool, cave.origin);
-      // Keep the moving hot surface inside the same irregular footprint as the cooled rim;
-      // a single glowing ellipse reads like an object icon instead of a pool in the floor.
-      graphics.fillStyle(0xb72b0b, 0.96);
+      // The solid base shares the seeded footprint with collision/swimming. Animated ripples
+      // remain deliberately inset so no moving mark can cross the dark mineral rim.
+      graphics.fillStyle(0x9d260b, 0.98);
       graphics.fillPoints(points as CaveRenderPoint[], true);
-      for (let stream = 0; stream < 4; stream += 1) {
+      for (let stream = 0; stream < 3; stream += 1) {
         const phase = seconds * (0.74 + stream * 0.13) + this.caveVisualRandom(pool.tileX, pool.tileY, 0x6d48 + stream) * Math.PI * 2;
-        const x = center.x + Math.sin(phase * 0.77) * pool.radiusX * WORLD_TILE_SIZE * 0.34;
-        const y = center.y + Math.cos(phase * 1.17) * pool.radiusY * WORLD_TILE_SIZE * 0.3;
-        graphics.fillStyle(stream % 2 ? 0xf05a14 : 0xff7820, 0.3 + (Math.sin(phase * 1.6) + 1) * 0.16);
-        graphics.fillEllipse(x, y, pool.radiusX * WORLD_TILE_SIZE * (0.23 + stream * 0.022), pool.radiusY * WORLD_TILE_SIZE * 0.19);
-        graphics.lineStyle(1.25, 0xffbe45, 0.38 + Math.sin(phase) * 0.16);
-        graphics.strokeEllipse(x, y + Math.sin(phase) * 3, pool.radiusX * WORLD_TILE_SIZE * 0.32, 3.4);
+        const x = center.x + Math.sin(phase * 0.77) * pool.radiusX * WORLD_TILE_SIZE * 0.25;
+        const y = center.y + Math.cos(phase * 1.17) * pool.radiusY * WORLD_TILE_SIZE * 0.22;
+        graphics.fillStyle(stream % 2 ? 0xd94714 : 0xed5c1b, 0.32 + (Math.sin(phase * 1.6) + 1) * 0.12);
+        graphics.fillEllipse(x, y, pool.radiusX * WORLD_TILE_SIZE * (0.15 + stream * 0.018), pool.radiusY * WORLD_TILE_SIZE * 0.12);
       }
-      for (let bubble = 0; bubble < 7; bubble += 1) {
+      for (let ripple = 0; ripple < 4; ripple += 1) {
+        const phase = seconds * (0.56 + ripple * 0.08) + this.caveVisualRandom(pool.tileX, pool.tileY, 0x6d4c + ripple) * Math.PI * 2;
+        const x = center.x + Math.sin(phase * 1.13) * pool.radiusX * WORLD_TILE_SIZE * 0.2;
+        const y = center.y + Math.cos(phase * 0.93) * pool.radiusY * WORLD_TILE_SIZE * 0.18;
+        const spread = 0.12 + (Math.sin(phase * 1.35) + 1) * 0.09;
+        graphics.lineStyle(1.05, ripple % 2 ? 0xf07a28 : 0xffa33c, 0.22 + (Math.sin(phase) + 1) * 0.1);
+        graphics.strokeEllipse(x, y, pool.radiusX * WORLD_TILE_SIZE * spread, pool.radiusY * WORLD_TILE_SIZE * spread * 0.38);
+      }
+      for (let bubble = 0; bubble < 6; bubble += 1) {
         const phase = seconds * (0.72 + bubble * 0.11) + this.caveVisualRandom(pool.tileX, pool.tileY, 0x6d50 + bubble) * Math.PI * 2;
         const x = center.x + Math.sin(phase * 1.21) * pool.radiusX * WORLD_TILE_SIZE * (0.22 + (bubble % 3) * 0.13);
         const y = center.y + Math.cos(phase * 1.73) * pool.radiusY * WORLD_TILE_SIZE * (0.2 + (bubble % 2) * 0.18);
         const size = 1.5 + (Math.sin(phase * 2.1) + 1) * 1.4;
-        graphics.fillStyle(bubble % 2 ? 0xffb13b : 0xffe071, 0.62 + Math.sin(phase) * 0.14);
+        graphics.fillStyle(bubble % 2 ? 0xf48630 : 0xffb052, 0.48 + Math.sin(phase) * 0.12);
         graphics.fillCircle(x, y, size);
       }
-      graphics.lineStyle(1.4, 0xffcf5d, 0.62);
-      graphics.strokeEllipse(center.x, center.y, pool.radiusX * WORLD_TILE_SIZE * (0.86 + Math.sin(seconds + poolIndex) * 0.06), pool.radiusY * WORLD_TILE_SIZE * 0.52);
     });
   }
 
@@ -1921,39 +2987,8 @@ export class AdventureScene extends Phaser.Scene {
     this.lastCaveVisibilityWorldX = this.player.x;
     this.lastCaveVisibilityWorldY = this.player.y;
     this.setCaveLight(this.caveFogPlayerLight, this.player.x, this.player.y, CAVE_PLAYER_VISION_RADIUS_TILES);
-    // Lava adds its own calm, circular local illumination. Unlike the previous ray fan, this
-    // cannot create sharp spikes or accidentally reveal a distant tunnel along one narrow line.
-    while (this.caveFogLavaLights.length < cave.layout.lavaPools.length) {
-      const lavaLight = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      lavaLight.setAttribute('fill', '#000000');
-      this.caveFogPlayerLight.parentElement!.appendChild(lavaLight);
-      this.caveFogLavaLights.push(lavaLight);
-    }
-    this.caveFogLavaLights.forEach((lavaLight, index) => {
-      const pool = cave.layout.lavaPools[index];
-      if (!pool) {
-        lavaLight.setAttribute('r', '0');
-        return;
-      }
-      const position = caveWorldTilePosition(cave.origin, pool.tileX, pool.tileY);
-      this.setCaveLight(lavaLight, position.x, position.y, CAVE_LAVA_LIGHT_RADIUS_TILES);
-    });
-    const daylight = sampleDayNight(this.worldTimeMs).lightLevel;
-    while (this.caveFogEntranceLights.length < cave.layout.surfaceExits.length) {
-      const entranceLight = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      entranceLight.setAttribute('fill', '#000000');
-      this.caveFogPlayerLight.parentElement!.appendChild(entranceLight);
-      this.caveFogEntranceLights.push(entranceLight);
-    }
-    this.caveFogEntranceLights.forEach((entranceLight, index) => {
-      const exit = cave.layout.surfaceExits[index];
-      if (!exit || daylight <= 0.01) {
-        entranceLight.setAttribute('r', '0');
-        return;
-      }
-      const visual = this.caveExitVisual(cave, exit);
-      this.setCaveLight(entranceLight, visual.x, visual.y, CAVE_SURFACE_EXIT_LIGHT_RADIUS_TILES * daylight);
-    });
+    // Only the player reveals cave fog. Lava stays visible within explored space but never
+    // punches a distant circular hole through the darkness.
     this.caveFogOverlay.classList.add('is-visible');
   }
 
@@ -2189,27 +3224,33 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private updateCave(time: number, delta: number): void {
-    if (this.worldMapOpen || this.inventoryOpen || this.craftingOpen) {
+    if (this.worldMapOpen || this.inventoryOpen || this.craftingOpen || this.pauseMenuOpen) {
+      this.cancelTonicDrinking();
       this.updatePlayerAvatar(delta, false);
       return;
     }
 
     const horizontal = Number(this.isDown('right')) - Number(this.isDown('left'));
     const vertical = Number(this.isDown('down')) - Number(this.isDown('up'));
+    this.updateSwimmingState();
     const isMoving = horizontal !== 0 || vertical !== 0;
     this.sampleMovementPerformance(time, delta, isMoving);
     this.updateFacing(horizontal, vertical);
     if (isMoving) {
       const length = Math.hypot(horizontal, vertical);
-      const distance = PLAYER_SPEED * delta / 1000;
+      const distance = PLAYER_SPEED * this.potionSpeedMultiplier() * (this.isSwimming ? SWIM_SPEED_MULTIPLIER : 1) * delta / 1000;
       this.moveCavePlayer(horizontal / length * distance, vertical / length * distance);
       this.markSaveDirty();
     }
-    this.updateCaveLava(time);
+    this.updateSwimmingState();
+    if (this.gameSettings.video.quality.animateLava) {
+      this.updateCaveLava(time);
+    }
     this.updateCaveEntranceDaylight(time);
     this.updateCaveVisibility();
     this.updateCaveInteraction();
     this.updateDropInteraction(time);
+    this.updateTonicDrinking(delta);
     this.updateCaveHarvesting(delta);
     this.updatePlayerAvatar(delta, isMoving);
   }
@@ -2226,13 +3267,9 @@ export class AdventureScene extends Phaser.Scene {
         || !caveTerrainContainsPoint(cave.layout.terrainContours, tileX, tileY)) {
         return false;
       }
-      // Lava remains a visible, impassable floor feature while ordinary collision uses the
-      // exact contour region drawn for the cave floor and its enclosed rock pockets.
-      return !cave.layout.lavaPools.some((pool) => {
-        const normalized = (tileX - pool.tileX) ** 2 / (pool.radiusX * pool.radiusX)
-          + (tileY - pool.tileY) ** 2 / (pool.radiusY * pool.radiusY);
-        return normalized < 0.86;
-      });
+      // Lava is a traversable cave liquid. The exact terrain contour remains the sole wall
+      // boundary, matching the visible cave floor without hidden pool collision.
+      return true;
     };
     if (tryMove(this.player.x + deltaX, this.player.y)) {
       this.player.x += deltaX;
@@ -2288,28 +3325,27 @@ export class AdventureScene extends Phaser.Scene {
       const exit = nearbyExit as CaveSurfaceExit;
       const position = this.caveExitVisual(cave, exit);
       this.interactionHighlight.setRadius(48).setPosition(position.x, position.y).setVisible(true);
-      this.drawCaveHint(position.x, position.y - 33, exit.label);
     } else if (nearest) {
       const ore = nearest as CaveOre;
       const position = caveWorldTilePosition(cave.origin, ore.tileX, ore.tileY);
       this.interactionHighlight.setRadius(36).setPosition(position.x, position.y).setVisible(true);
-      this.caveHintPanel.clear().setVisible(false);
-      this.caveHint.setVisible(false);
     } else {
       this.interactionHighlight.setVisible(false);
-      this.caveHintPanel.clear().setVisible(false);
-      this.caveHint.setVisible(false);
     }
   }
 
   private updateCaveHarvesting(delta: number): void {
-    if (this.harvestRequiresMouseRelease) {
-      if (!this.input.activePointer.leftButtonDown()) {
-        this.harvestRequiresMouseRelease = false;
+    if (this.drinkingPotion) {
+      this.cancelHarvesting(false);
+      return;
+    }
+    if (this.harvestRequiresControlRelease) {
+      if (!this.isControlDown('harvestAttack')) {
+        this.harvestRequiresControlRelease = false;
       }
       return;
     }
-    if (!this.input.activePointer.leftButtonDown() || !this.caveOreTarget) {
+    if (!this.isControlDown('harvestAttack') || !this.caveOreTarget) {
       if (this.caveHarvestOre) {
         this.caveHarvestOre = null;
         this.harvestElapsedMs = 0;
@@ -2322,7 +3358,7 @@ export class AdventureScene extends Phaser.Scene {
       this.caveHarvestOre = null;
       this.harvestElapsedMs = 0;
       this.harvestProgressGraphics.clear();
-      this.harvestRequiresMouseRelease = true;
+      this.harvestRequiresControlRelease = true;
       this.showWorldFeedback(
         this.player.x,
         this.player.y - 28,
@@ -2348,7 +3384,7 @@ export class AdventureScene extends Phaser.Scene {
       this.caveHarvestOre = null;
       this.harvestElapsedMs = 0;
       this.harvestProgressGraphics.clear();
-      this.harvestRequiresMouseRelease = true;
+      this.harvestRequiresControlRelease = true;
       const resource = ore.type === 'coal' ? ResourceType.Coal : ore.type === 'iron' ? ResourceType.Iron
         : ore.type === 'gold' ? ResourceType.Gold : ResourceType.Diamond;
       const amount = caveOreYieldFor(
@@ -2372,7 +3408,7 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private caveMiningSpeed(): number {
-    return caveOreMiningSpeedForTool(this.equippedTool);
+    return caveOreMiningSpeedForTool(this.equippedTool) * this.hasteMultiplier();
   }
 
   private updateInteractionTarget(force = false): void {
@@ -2425,7 +3461,7 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private drawDropHint(drop: DroppedItem): void {
-    const label = `Press E to pick up ${resourceLabel(drop.resource)}`;
+    const label = `Press E to pick up ${this.inventoryItemLabel(drop.item)}`;
     const x = drop.worldX;
     const y = drop.worldY - 34;
     this.dropHint.setText(label).setPosition(x + 4, y).setVisible(true);
@@ -2443,7 +3479,7 @@ export class AdventureScene extends Phaser.Scene {
     this.dropHintPanel.fillRoundedRect(left, top, width, height, 7);
     this.dropHintPanel.lineStyle(1.5, 0xbfe9c6, 0.9);
     this.dropHintPanel.strokeRoundedRect(left, top, width, height, 7);
-    this.dropHintPanel.fillStyle(RESOURCE_COLORS[drop.resource], 1);
+    this.dropHintPanel.fillStyle(this.inventoryItemColor(drop.item), 1);
     this.dropHintPanel.fillCircle(dotX, y, 4);
     this.dropHintPanel.lineStyle(1, 0xffffff, 0.72);
     this.dropHintPanel.strokeCircle(dotX, y, 5.5);
@@ -2457,15 +3493,15 @@ export class AdventureScene extends Phaser.Scene {
       return false;
     }
 
-    if (!this.inventory.canAdd(drop.resource, drop.amount)) {
+    if (!this.inventory.canAdd(drop.item, drop.amount)) {
       this.showWorldFeedback(this.player.x, this.player.y - 28, 'Inventory full');
       return true;
     }
 
     const collected = this.dropManager.collect(drop.id);
     if (collected) {
-      this.inventory.add(collected.resource, collected.amount);
-      this.showWorldFeedback(this.player.x, this.player.y - 28, `+ ${collected.amount} ${resourceLabel(collected.resource)}`);
+      this.inventory.add(collected.item, collected.amount);
+      this.showWorldFeedback(this.player.x, this.player.y - 28, `+ ${collected.amount} ${this.inventoryItemLabel(collected.item)}`);
       this.handleInventoryChanged();
       this.updateDropInteraction(0, true);
     }
@@ -2473,16 +3509,40 @@ export class AdventureScene extends Phaser.Scene {
     return true;
   }
 
+  // Anything the player has placed uses the same safe return path: storage must be empty and a
+  // brewing station cannot be mid-job, but lanterns, shelters, beacons, and every other
+  // placeable can all be packed directly from the world with the normal pickup binding.
+  private pickupNearbyPlacedObject(): boolean {
+    if (this.heldPlaceable()) {
+      return false;
+    }
+    const object = this.nearbyPlacedObject ?? this.placeableManager.nearest(this.player.x, this.player.y);
+    if (!object) {
+      return false;
+    }
+
+    const result = this.pickUpPlacedObject(object);
+    if (!result.success) {
+      this.showWorldFeedback(this.player.x, this.player.y - 28, result.message);
+    }
+    return true;
+  }
+
   private updateHarvesting(delta: number): void {
-    if (this.harvestRequiresMouseRelease) {
-      if (!this.input.activePointer.leftButtonDown()) {
-        this.harvestRequiresMouseRelease = false;
+    if (this.drinkingPotion) {
+      this.cancelHarvesting(false);
+      return;
+    }
+    if (this.harvestRequiresControlRelease) {
+      if (!this.isControlDown('harvestAttack')) {
+        this.harvestRequiresControlRelease = false;
       }
 
       return;
     }
 
-    if (this.inventoryOpen || this.craftingOpen || !this.input.activePointer.leftButtonDown() || !this.interactionTarget) {
+    if (this.inventoryOpen || this.craftingOpen || this.placedObjectOverlay.isOpen || this.heldPlaceable()
+      || !this.isControlDown('harvestAttack') || !this.interactionTarget) {
       this.cancelHarvesting();
       return;
     }
@@ -2490,7 +3550,7 @@ export class AdventureScene extends Phaser.Scene {
     const requirement = miningRequirementForFeature(this.interactionTarget.feature);
     if (!meetsMiningRequirement(this.equippedTool, requirement)) {
       this.cancelHarvesting();
-      this.harvestRequiresMouseRelease = true;
+      this.harvestRequiresControlRelease = true;
       this.showWorldFeedback(
         this.player.x,
         this.player.y - 28,
@@ -2504,7 +3564,7 @@ export class AdventureScene extends Phaser.Scene {
       this.harvestTarget = { ...this.interactionTarget };
     }
 
-    const speedMultiplier = harvestSpeedForFeature(this.equippedTool, this.harvestTarget.feature);
+    const speedMultiplier = harvestSpeedForFeature(this.equippedTool, this.harvestTarget.feature) * this.hasteMultiplier();
     const durationMs = HARVEST_DURATION_MS / speedMultiplier;
     this.harvestElapsedMs = Math.min(this.harvestElapsedMs + delta, durationMs);
     const progress = this.harvestElapsedMs / durationMs;
@@ -2523,7 +3583,7 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     this.cancelHarvesting();
-    this.harvestRequiresMouseRelease = true;
+    this.harvestRequiresControlRelease = true;
     const resource = resourceForFeature(target.feature);
 
     if (!this.inventory.canAdd(resource, 1)) {
@@ -2541,7 +3601,7 @@ export class AdventureScene extends Phaser.Scene {
     this.updateInteractionTarget(true);
   }
 
-  private cancelHarvesting(): void {
+  private cancelHarvesting(clearProgress = true): void {
     if (this.harvestTarget) {
       this.chunkManager.clearHarvestAnimation(this.harvestTarget.tileX, this.harvestTarget.tileY);
     }
@@ -2549,7 +3609,9 @@ export class AdventureScene extends Phaser.Scene {
     this.harvestTarget = null;
     this.caveHarvestOre = null;
     this.harvestElapsedMs = 0;
-    this.harvestProgressGraphics.clear();
+    if (clearProgress) {
+      this.harvestProgressGraphics.clear();
+    }
   }
 
   private drawHarvestProgress(target: InteractionTarget, progress: number): void {
@@ -2588,7 +3650,10 @@ export class AdventureScene extends Phaser.Scene {
       return false;
     }
 
-    this.showWorldFeedback(this.player.x, this.player.y - 28, `Crafted ${TOOL_DEFINITIONS[recipe.output].label}`);
+    const outputLabel = isToolId(recipe.output)
+      ? TOOL_DEFINITIONS[recipe.output].label
+      : PLACEABLE_DEFINITIONS[recipe.output].label;
+    this.showWorldFeedback(this.player.x, this.player.y - 28, `Crafted ${outputLabel}`);
     return true;
   }
 
@@ -2597,6 +3662,9 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
+    if (slotIndex !== this.activeHotbarSlot) {
+      this.cancelTonicDrinking();
+    }
     this.activeHotbarSlot = slotIndex;
     const selectedItem = this.inventory.getSlots()[slotIndex]?.item;
     this.setEquippedTool(selectedItem && isToolId(selectedItem) ? selectedItem : null);
@@ -2625,16 +3693,120 @@ export class AdventureScene extends Phaser.Scene {
     this.markSaveDirty();
   }
 
-  private updateHotbarVisibility(): void {
-    this.hotbarOverlay.setVisible(!this.inventoryOpen && !this.craftingOpen && !this.worldMapOpen);
+  private heldTonic(): { readonly id: PotionId; readonly slotIndex: number } | null {
+    const slot = this.inventory.getSlots()[this.activeHotbarSlot];
+    return slot && isPotionId(slot.item) ? { id: slot.item, slotIndex: this.activeHotbarSlot } : null;
   }
 
-  private dropInventorySlot(slot: InventorySlot): void {
-    if (!this.worldReady) {
+  private updateTonicDrinking(delta: number): void {
+    const tonic = this.heldTonic();
+    const isHoldingConsumeControl = this.isControlDown('consumeTonic');
+    if (this.tonicDrinkRequiresRelease) {
+      if (!isHoldingConsumeControl) {
+        this.tonicDrinkRequiresRelease = false;
+      }
+      return;
+    }
+    if (!tonic || !isHoldingConsumeControl) {
+      this.cancelTonicDrinking();
+      return;
+    }
+    if (!this.drinkingPotion || this.drinkingPotion.id !== tonic.id || this.drinkingPotion.slotIndex !== tonic.slotIndex) {
+      // A tonic is a hand-held item. Clear any stale equipped-tool state that could remain if
+      // the player dragged this bottle into the currently selected hotbar slot.
+      if (this.equippedTool) {
+        this.setEquippedTool(null);
+      }
+      this.cancelHarvesting();
+      this.drinkingPotion = tonic;
+      this.tonicDrinkElapsedMs = 0;
+    }
+
+    this.tonicDrinkElapsedMs = Math.min(TONIC_DRINK_DURATION_MS, this.tonicDrinkElapsedMs + delta);
+    this.drawHarvestProgressAt(this.player.x, this.player.y - 38, this.tonicDrinkElapsedMs / TONIC_DRINK_DURATION_MS);
+    if (this.tonicDrinkElapsedMs < TONIC_DRINK_DURATION_MS) {
       return;
     }
 
-    if (isToolId(slot.item)) {
+    // Validate the active slot again at completion. This keeps drinking deterministic even if a
+    // hotbar change or inventory mutation occurred during the held input.
+    const activeSlot = this.inventory.getSlots()[tonic.slotIndex];
+    if (!activeSlot || activeSlot.item !== tonic.id || !isPotionId(activeSlot.item)) {
+      this.cancelTonicDrinking();
+      return;
+    }
+    const consumed = this.inventory.takeFromSlot(tonic.slotIndex, 1);
+    if (!consumed) {
+      this.cancelTonicDrinking();
+      return;
+    }
+    const definition = POTION_DEFINITIONS[tonic.id];
+    this.activePotionEffects.set(definition.effect, Date.now() + definition.durationMs);
+    this.showWorldFeedback(this.player.x, this.player.y - 28, `${definition.label} · ${definition.detail}`);
+    this.handleInventoryChanged();
+    this.tonicDrinkRequiresRelease = true;
+    this.cancelTonicDrinking();
+  }
+
+  private cancelTonicDrinking(): void {
+    if (!this.drinkingPotion) {
+      return;
+    }
+    this.drinkingPotion = null;
+    this.tonicDrinkElapsedMs = 0;
+    this.harvestProgressGraphics.clear();
+  }
+
+  private restorePotionEffects(savedEffects: SaveGameData['effects'] | undefined): void {
+    this.activePotionEffects.clear();
+    const now = Date.now();
+    savedEffects?.activePotions.forEach((effect) => {
+      if (effect.expiresAtMs > now) {
+        this.activePotionEffects.set(effect.effect, effect.expiresAtMs);
+      }
+    });
+  }
+
+  private updatePotionEffects(): void {
+    const now = Date.now();
+    let expired = false;
+    this.activePotionEffects.forEach((expiresAtMs, effect) => {
+      if (expiresAtMs <= now) {
+        this.activePotionEffects.delete(effect);
+        expired = true;
+      }
+    });
+    if (expired) {
+      this.markSaveDirty();
+    }
+    this.potionEffectOverlay.update(this.activePotionEffects, now);
+  }
+
+  private hasPotionEffect(effect: PotionEffect): boolean {
+    return (this.activePotionEffects.get(effect) ?? 0) > Date.now();
+  }
+
+  private potionSpeedMultiplier(): number {
+    return this.hasPotionEffect('speed') ? 1.35 : 1;
+  }
+
+  private hasteMultiplier(): number {
+    return this.hasPotionEffect('haste') ? 1.45 : 1;
+  }
+
+  private strengthMultiplier(): number {
+    // Combat has deliberately not been introduced yet. Keeping the modifier here means the
+    // future damage system can consume the active strength effect without changing potion saves.
+    return this.hasPotionEffect('strength') ? 1.5 : 1;
+  }
+
+  private updateHotbarVisibility(): void {
+    this.hotbarOverlay.setVisible(!this.inventoryOpen && !this.craftingOpen && !this.worldMapOpen && !this.pauseMenuOpen
+      && !this.placedObjectOverlay.isOpen);
+  }
+
+  private dropInventorySlot(slot: InventorySlot): void {
+    if (!this.worldReady || this.pauseMenuOpen) {
       return;
     }
 
@@ -2649,9 +3821,41 @@ export class AdventureScene extends Phaser.Scene {
       slot.amount
     );
     this.dropManager.add(drop);
-    this.showWorldFeedback(this.player.x, this.player.y - 28, `Dropped ${slot.amount} ${resourceLabel(slot.item)}`);
+    this.showWorldFeedback(this.player.x, this.player.y - 28, `Dropped ${slot.amount} ${this.inventoryItemLabel(slot.item)}`);
     this.markSaveDirty();
     this.updateDropInteraction(0, true);
+  }
+
+  private inventoryItemLabel(item: InventoryItem): string {
+    if (isToolId(item)) {
+      return TOOL_DEFINITIONS[item].label;
+    }
+    if (isPlaceableId(item)) {
+      return PLACEABLE_DEFINITIONS[item].label;
+    }
+    if (isPotionId(item)) {
+      return POTION_DEFINITIONS[item].label;
+    }
+    return resourceLabel(item);
+  }
+
+  private inventoryItemColor(item: InventoryItem): number {
+    if (isToolId(item)) {
+      return TOOL_HEAD_PALETTES[TOOL_DEFINITIONS[item].headMaterial].fill;
+    }
+    if (isPlaceableId(item)) {
+      if (item === PlaceableId.Waypoint) {
+        return 0x45b9ff;
+      }
+      if (item === PlaceableId.TrailLantern) {
+        return 0xffc861;
+      }
+      return PLACEABLE_DEFINITIONS[item].interaction === 'storage' ? 0xa76a3b : 0x9aa5a3;
+    }
+    if (isPotionId(item)) {
+      return POTION_DEFINITIONS[item].color;
+    }
+    return RESOURCE_COLORS[item];
   }
 
   private facingVector(): Phaser.Math.Vector2 {
@@ -2719,8 +3923,8 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
-    const saveApi = window.wildboundSave;
-    if (!saveApi) {
+    const worldApi = window.wildboundWorlds;
+    if (!worldApi || !this.worldId) {
       return;
     }
 
@@ -2733,9 +3937,14 @@ export class AdventureScene extends Phaser.Scene {
     const saveData: SaveGameData = {
       version: 1,
       seed: this.worldSeed,
+      mode: this.worldMode,
       player: { x: this.player.x, y: this.player.y },
       inventory: [...this.inventory.getSlots()],
       equipment: { equippedTool: this.equippedTool, activeHotbarSlot: this.activeHotbarSlot },
+      effects: {
+        activePotions: Array.from(this.activePotionEffects, ([effect, expiresAtMs]) => ({ effect, expiresAtMs }))
+          .filter((effect) => effect.expiresAtMs > Date.now())
+      },
       world: this.sessionWorldState.toSaveData(),
       activeCave: this.activeCave ? {
         entranceTileX: this.activeCave.entrance.tileX,
@@ -2746,7 +3955,7 @@ export class AdventureScene extends Phaser.Scene {
     };
 
     try {
-      await saveApi.save(saveData);
+      await worldApi.save(this.worldId, saveData);
       saveSucceeded = true;
     } catch (error) {
       console.warn('Wildbound could not write its local save.', error);
@@ -2787,7 +3996,7 @@ export class AdventureScene extends Phaser.Scene {
         `Tool        ${this.equippedTool ? TOOL_DEFINITIONS[this.equippedTool].label : 'hand'}`,
         `Renderer    ${this.renderBackend}`,
         `Moving FPS  ${this.movingFps > 0 ? this.movingFps.toFixed(0) : '--'} (${this.movingWorstFrameMs.toFixed(1)}ms worst)`,
-        `FPS         ${this.game.loop.actualFps.toFixed(0)}`
+        `FPS         ${this.renderedFps.toFixed(0)} (${this.frameRateLimitLabel()})`
       ].join('\n');
       return;
     }
@@ -2827,10 +4036,37 @@ export class AdventureScene extends Phaser.Scene {
       `Seed        ${this.worldSeed}`,
       `Chunk       ${this.chunkManager.currentChunkX}, ${this.chunkManager.currentChunkY}`,
       `Loaded      ${this.chunkManager.loadedChunkCount} chunks`,
+      `Streaming   ${this.chunkManager.pendingChunkCount} terrain / ${this.chunkManager.pendingGroundGrassChunkCount} grass pending`,
       `Landmarks   ${this.chunkManager.loadedLandmarkCount} nearby`,
       `Moving FPS  ${this.movingFps > 0 ? this.movingFps.toFixed(0) : '--'} (${this.movingWorstFrameMs.toFixed(1)}ms worst)`,
-      `FPS         ${this.game.loop.actualFps.toFixed(0)}`
+      `FPS         ${this.renderedFps.toFixed(0)} (${this.frameRateLimitLabel()})`
     ].join('\n');
+  }
+
+  // Phaser's TimeStep `actualFps` reports every browser animation callback. When the game is
+  // capped, those callbacks can still arrive at a monitor's higher refresh rate even though the
+  // scene (and therefore rendering/gameplay) only updates at the selected limit. Count this
+  // scene's real updates instead so F3 reports the effective game frame rate.
+  private sampleRenderedFrameRate(time: number): void {
+    if (!Number.isFinite(this.frameSampleStartedAt)) {
+      this.frameSampleStartedAt = time;
+      this.frameSampleCount = 0;
+    }
+
+    this.frameSampleCount += 1;
+    const elapsed = time - this.frameSampleStartedAt;
+    if (elapsed < 1000) {
+      return;
+    }
+
+    this.renderedFps = this.frameSampleCount * 1000 / elapsed;
+    this.frameSampleStartedAt = time;
+    this.frameSampleCount = 0;
+  }
+
+  private frameRateLimitLabel(): string {
+    const limit = this.gameSettings.video.performance.maxFps;
+    return limit > 0 ? `${limit} cap` : 'unlimited';
   }
 
   private sampleMovementPerformance(time: number, delta: number, isMoving: boolean): void {

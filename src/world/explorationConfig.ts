@@ -17,16 +17,22 @@ export const DAY_NIGHT_CYCLE_DURATION_MS = 12 * 60 * 1000;
 // New worlds begin at this hour. To inspect a saved world at a fixed hour, temporarily set the
 // override (for example 22 for night); leave it null for normal save/load behavior.
 export const DAY_NIGHT_INITIAL_HOUR = 8;
-export const DAY_NIGHT_START_HOUR_OVERRIDE: number | null = 8;
+export const DAY_NIGHT_START_HOUR_OVERRIDE: number | null = 20;
 export const DAY_NIGHT_INITIAL_TIME_MS = DAY_NIGHT_CYCLE_DURATION_MS * (DAY_NIGHT_INITIAL_HOUR / 24);
 export const WORLD_TIME_SAVE_INTERVAL_MS = 900;
 export const DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS = 40;
 // Night uses a deep tint, then this bounded glow budget lets biome-specific particles become
 // small local sources of color instead of simply disappearing under the darkness.
 export const DAY_NIGHT_MAX_DARKNESS_ALPHA = 0.74;
-// The glow layer follows the camera every rendered frame. These knobs control its visual budget
-// rather than a timer, keeping moving lights locked to their world particles.
-export const NIGHT_AMBIENT_LIGHT_MAX_COUNT = 36;
+// The glow layer follows the camera every rendered frame. This shared density multiplier applies
+// uniformly to every biome's ambient light chance and maximum visible-light budget. At 0.5,
+// the wilderness keeps the same deterministic visual language with half as many moving lights.
+export const NIGHT_AMBIENT_LIGHT_DENSITY_MULTIPLIER = 0.5;
+const NIGHT_AMBIENT_LIGHT_BASE_MAX_COUNT = 36;
+export const NIGHT_AMBIENT_LIGHT_MAX_COUNT = Math.max(
+  0,
+  Math.round(NIGHT_AMBIENT_LIGHT_BASE_MAX_COUNT * NIGHT_AMBIENT_LIGHT_DENSITY_MULTIPLIER)
+);
 export const NIGHT_AMBIENT_LIGHT_RADIUS_MULTIPLIER = 1.9;
 export const NIGHT_AMBIENT_LIGHT_INTENSITY_MULTIPLIER = 2.35;
 // Glow is intentionally rendered at CSS resolution: it is a soft field, and this avoids a

@@ -47,7 +47,7 @@ export const CAVE_LINKED_SYSTEM_DISTANCE_TILES: readonly number[] = [42, 58, 76]
 // Mineral formations begin well below the shallow cave strata; magma is reserved for the
 // final reaches beyond them, so it is an expedition objective rather than an early landmark.
 export const CAVE_STALAGMITE_START_DEPTH = 660;
-export const CAVE_LAVA_START_DEPTH = 900;
+export const CAVE_LAVA_START_DEPTH = 800;
 export const CAVE_LAVA_MAX_POOLS = 3;
 export const CAVE_STALAGMITE_CHANCE = 0.1;
 

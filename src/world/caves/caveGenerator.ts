@@ -33,7 +33,7 @@ import { CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from '../worldConfig';
 import {
   CAVE_FORMATION_RADIUS_MAX_TILES,
   CAVE_FORMATION_RADIUS_MIN_TILES,
-  CAVE_MIN_SEPARATION_TILES,
+  CAVE_MIN_SEPARATION_CHUNKS,
   CAVE_MOUTH_FORWARD_OFFSET_MAX_SCALE,
   CAVE_MOUTH_FORWARD_OFFSET_MIN_SCALE,
   CAVE_MOUTH_FORWARD_RADIUS_MAX_SCALE,
@@ -194,6 +194,10 @@ export const caveFormationContainsWorldPoint = (
 };
 
 const maximumCaveSpawnChance = Math.max(...Object.values(CAVE_SPAWN_CHANCE_BY_BIOME));
+// Keep the public spacing control in chunks, but perform the deterministic priority test in
+// world tiles where cave candidates are generated. No upper clamp: larger values deliberately
+// create a more widely spaced wilderness.
+const minimumCaveSeparationTiles = Math.max(0, CAVE_MIN_SEPARATION_CHUNKS) * CHUNK_SIZE_TILES;
 const caveChanceAt = (seed: string, x: number, y: number): number => CAVE_SPAWN_CHANCE_BY_BIOME[biomeAtTile(seed, x, y)];
 const isRawCaveCandidate = (seed: string, x: number, y: number): boolean => {
   // Cave probability is always bounded by the largest biome probability. Most tiles can be
@@ -217,8 +221,16 @@ const depthForEntrance = (seed: string, x: number, y: number): CaveDepth => {
 };
 
 const hasNearestCandidatePriority = (seed: string, tileX: number, tileY: number): boolean => {
+  if (minimumCaveSeparationTiles <= 0) {
+    return true;
+  }
+
   const priority = randomAtTile(seed, tileX, tileY, CAVE_PRIORITY_SALT);
-  for (let y = tileY - CAVE_MIN_SEPARATION_TILES; y <= tileY + CAVE_MIN_SEPARATION_TILES; y += 1) for (let x = tileX - CAVE_MIN_SEPARATION_TILES; x <= tileX + CAVE_MIN_SEPARATION_TILES; x += 1) {
+  const radius = Math.ceil(minimumCaveSeparationTiles);
+  const minimumDistanceSquared = minimumCaveSeparationTiles * minimumCaveSeparationTiles;
+  for (let y = tileY - radius; y <= tileY + radius; y += 1) for (let x = tileX - radius; x <= tileX + radius; x += 1) {
+    const distanceSquared = (x - tileX) ** 2 + (y - tileY) ** 2;
+    if (distanceSquared >= minimumDistanceSquared) continue;
     if ((x === tileX && y === tileY) || !isRawCaveCandidate(seed, x, y)) continue;
     const other = randomAtTile(seed, x, y, CAVE_PRIORITY_SALT);
     if (other < priority || (other === priority && (y < tileY || y === tileY && x < tileX))) return false;
@@ -1099,18 +1111,29 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
       ) continue;
       const radiusX = 2.5 + randomAtTile(seed, x, y, CAVE_GRAPH_SALT + 94) * 3.2;
       const radiusY = 1.8 + randomAtTile(seed, x, y, CAVE_GRAPH_SALT + 95) * 2.4;
+      // The drawn pool has a seeded, uneven edge plus a narrow mineral rim. Require its full
+      // conservative envelope to sit on cave floor cells so neither lava nor ripples can appear
+      // through an adjacent wall.
+      const fitsInsideCaveFloor = (() => {
+        const envelopeScale = 1.25;
+        const envelopeRadiusX = radiusX * envelopeScale;
+        const envelopeRadiusY = radiusY * envelopeScale;
+        for (let sampleY = Math.max(1, Math.floor(y - envelopeRadiusY)); sampleY <= Math.min(height - 2, Math.ceil(y + envelopeRadiusY)); sampleY += 1) {
+          for (let sampleX = Math.max(1, Math.floor(x - envelopeRadiusX)); sampleX <= Math.min(width - 2, Math.ceil(x + envelopeRadiusX)); sampleX += 1) {
+            const normalized = (sampleX + 0.5 - x) ** 2 / (envelopeRadiusX * envelopeRadiusX)
+              + (sampleY + 0.5 - y) ** 2 / (envelopeRadiusY * envelopeRadiusY);
+            if (normalized <= 1 && !floorTiles[sampleY][sampleX]) {
+              return false;
+            }
+          }
+        }
+        return true;
+      })();
+      if (!fitsInsideCaveFloor) continue;
       if (lavaPools.some((pool) => Math.hypot(pool.tileX - x, pool.tileY - y) < pool.radiusX + radiusX + 5)) continue;
       lavaPools.push({ id: `${systemEntrance.id}:lava:${x}:${y}`, tileX: x, tileY: y, radiusX, radiusY });
     }
   }
-  lavaPools.forEach((pool) => {
-    for (let y = Math.max(1, Math.floor(pool.tileY - pool.radiusY - 1)); y <= Math.min(height - 2, Math.ceil(pool.tileY + pool.radiusY + 1)); y += 1) {
-      for (let x = Math.max(1, Math.floor(pool.tileX - pool.radiusX - 1)); x <= Math.min(width - 2, Math.ceil(pool.tileX + pool.radiusX + 1)); x += 1) {
-        const normalized = (x + 0.5 - pool.tileX) ** 2 / (pool.radiusX * pool.radiusX) + (y + 0.5 - pool.tileY) ** 2 / (pool.radiusY * pool.radiusY);
-        if (normalized < 0.86) floorTiles[y][x] = false;
-      }
-    }
-  });
 
   const stalagmites: CaveStalagmite[] = [];
   for (let y = 2; y < height - 2; y += 1) for (let x = 2; x < width - 2; x += 1) {

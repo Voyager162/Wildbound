@@ -1,12 +1,16 @@
 ﻿import { RESOURCE_TYPES, ResourceType } from '../world/resources';
 
 import { isToolId, type ToolId } from '../crafting/toolConfig';
+import { isPlaceableId, PlaceableId } from '../crafting/placeableConfig';
+import { isPotionId, type PotionId } from '../crafting/potionConfig';
 
-export const INVENTORY_SLOT_COUNT = 16;
 export const HOTBAR_SLOT_COUNT = 6;
+export const INVENTORY_GRID_COLUMNS = 5;
+export const INVENTORY_GRID_ROWS = 5;
+export const INVENTORY_SLOT_COUNT = HOTBAR_SLOT_COUNT + INVENTORY_GRID_COLUMNS * INVENTORY_GRID_ROWS;
 export const MAX_STACK_SIZE = 10;
 
-export type InventoryItem = ResourceType | ToolId;
+export type InventoryItem = ResourceType | ToolId | PlaceableId | PotionId;
 
 export interface InventorySlot {
   item: InventoryItem;
@@ -16,7 +20,8 @@ export interface InventorySlot {
 const isResourceType = (value: unknown): value is ResourceType =>
   typeof value === 'string' && Object.values(ResourceType).includes(value as ResourceType);
 
-export const isInventoryItem = (value: unknown): value is InventoryItem => isResourceType(value) || isToolId(value);
+export const isInventoryItem = (value: unknown): value is InventoryItem =>
+  isResourceType(value) || isToolId(value) || isPlaceableId(value) || isPotionId(value);
 
 export const inventoryItemStackLimit = (item: InventoryItem): number => isToolId(item) ? 1 : MAX_STACK_SIZE;
 
@@ -44,6 +49,38 @@ const legacySlotItem = (value: unknown): InventorySlot | null => {
     && legacy.amount > 0
     && legacy.amount <= MAX_STACK_SIZE
     ? { item: legacy.resource, amount: legacy.amount }
+    : null;
+};
+
+// Refined stone was briefly part of the experimental furnace progression. It is intentionally
+// no longer a game item, but this one-way migration prevents an existing save from losing it.
+const retiredRefinedStoneSlot = (value: unknown): InventorySlot | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const slot = value as { item?: unknown; amount?: unknown };
+  return slot.item === 'refined stone'
+    && typeof slot.amount === 'number'
+    && Number.isInteger(slot.amount)
+    && slot.amount > 0
+    && slot.amount <= MAX_STACK_SIZE
+    ? { item: ResourceType.Stone, amount: slot.amount }
+    : null;
+};
+
+// Survey beacons became editable waypoints. Preserve the player's crafted items when opening a
+// pre-waypoint save instead of silently discarding an otherwise valid inventory stack.
+const legacySurveyBeaconSlot = (value: unknown): InventorySlot | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const slot = value as { item?: unknown; amount?: unknown };
+  return slot.item === 'survey beacon'
+    && typeof slot.amount === 'number'
+    && Number.isInteger(slot.amount)
+    && slot.amount > 0
+    && slot.amount <= MAX_STACK_SIZE
+    ? { item: PlaceableId.Waypoint, amount: slot.amount }
     : null;
 };
 
@@ -132,6 +169,35 @@ export class Inventory {
     return true;
   }
 
+  /**
+   * Moves part of a stack without changing the identity of either remaining stack. This powers
+   * right-drag splitting in the inventory and deliberately only permits an empty or matching
+   * destination: swapping a single item with an unrelated stack would be surprising.
+   */
+  moveAmount(sourceIndex: number, destinationIndex: number, amount: number): boolean {
+    if (!this.isValidIndex(sourceIndex) || !this.isValidIndex(destinationIndex)
+      || sourceIndex === destinationIndex || !Number.isInteger(amount) || amount < 1) {
+      return false;
+    }
+
+    const source = this.slots[sourceIndex];
+    if (!source || source.amount < amount || !this.canPlaceInSlot(destinationIndex, source.item, amount)) {
+      return false;
+    }
+
+    const destination = this.slots[destinationIndex];
+    source.amount -= amount;
+    if (source.amount === 0) {
+      this.slots[sourceIndex] = null;
+    }
+    if (destination) {
+      destination.amount += amount;
+    } else {
+      this.slots[destinationIndex] = { item: source.item, amount };
+    }
+    return true;
+  }
+
   canPlaceInSlot(index: number, item: InventoryItem, amount: number): boolean {
     if (!this.isValidIndex(index) || !Number.isInteger(amount) || amount < 1) {
       return false;
@@ -170,6 +236,24 @@ export class Inventory {
     return slot ? { ...slot } : null;
   }
 
+  // Utility inputs consume one material at a time. Keeping this operation inside Inventory
+  // avoids taking an entire stack during a drag and trying to reconstruct it afterward.
+  takeFromSlot(index: number, amount: number): InventorySlot | null {
+    if (!this.isValidIndex(index) || !Number.isInteger(amount) || amount < 1) {
+      return null;
+    }
+    const slot = this.slots[index];
+    if (!slot || slot.amount < amount) {
+      return null;
+    }
+    slot.amount -= amount;
+    const taken = { item: slot.item, amount };
+    if (slot.amount === 0) {
+      this.slots[index] = null;
+    }
+    return taken;
+  }
+
   restore(savedSlots: unknown): void {
     this.slots.fill(null);
 
@@ -181,7 +265,7 @@ export class Inventory {
       if (isSlot(slot)) {
         this.slots[index] = { ...slot };
       } else {
-        const legacySlot = legacySlotItem(slot);
+        const legacySlot = retiredRefinedStoneSlot(slot) ?? legacySurveyBeaconSlot(slot) ?? legacySlotItem(slot);
         if (legacySlot) {
           this.slots[index] = legacySlot;
         }

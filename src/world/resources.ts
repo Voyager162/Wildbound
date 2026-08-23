@@ -5,11 +5,12 @@ export enum ResourceType {
   Stone = 'stone',
   Fiber = 'fiber',
   Cactus = 'cactus',
-  IceShard = 'ice shard',
   Coal = 'coal',
   Iron = 'iron',
   Gold = 'gold',
-  Diamond = 'diamond'
+  Diamond = 'diamond',
+  IronIngot = 'iron ingot',
+  GoldIngot = 'gold ingot'
 }
 
 export const RESOURCE_COLORS: Record<ResourceType, number> = {
@@ -17,11 +18,12 @@ export const RESOURCE_COLORS: Record<ResourceType, number> = {
   [ResourceType.Stone]: 0x9aa2aa,
   [ResourceType.Fiber]: 0x8fc45b,
   [ResourceType.Cactus]: 0x55aa5b,
-  [ResourceType.IceShard]: 0xaee7f5,
   [ResourceType.Coal]: 0x48525d,
   [ResourceType.Iron]: 0xc48462,
   [ResourceType.Gold]: 0xe7bd4e,
-  [ResourceType.Diamond]: 0x71dce0
+  [ResourceType.Diamond]: 0x71dce0,
+  [ResourceType.IronIngot]: 0xe39b7b,
+  [ResourceType.GoldIngot]: 0xf1ca55
 };
 
 export const RESOURCE_TYPES = [
@@ -29,11 +31,12 @@ export const RESOURCE_TYPES = [
   ResourceType.Stone,
   ResourceType.Fiber,
   ResourceType.Cactus,
-  ResourceType.IceShard,
   ResourceType.Coal,
   ResourceType.Iron,
   ResourceType.Gold,
-  ResourceType.Diamond
+  ResourceType.Diamond,
+  ResourceType.IronIngot,
+  ResourceType.GoldIngot
 ] as const;
 
 export const resourceForFeature = (feature: TerrainFeatureType): ResourceType => {
@@ -49,8 +52,6 @@ export const resourceForFeature = (feature: TerrainFeatureType): ResourceType =>
     case TerrainFeatureType.WaterReeds:
     case TerrainFeatureType.Grass:
       return ResourceType.Fiber;
-    case TerrainFeatureType.IcePatch:
-      return ResourceType.IceShard;
   }
 };
 

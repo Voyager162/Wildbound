@@ -2,6 +2,8 @@
 import type { SessionWorldStateData } from '../world/SessionWorldState';
 import { HOTBAR_SLOT_COUNT } from '../player/Inventory';
 import { isToolId, type ToolId } from '../crafting/toolConfig';
+import { isPotionEffect, type PotionEffect } from '../crafting/potionConfig';
+import { isWorldMode, type WorldMode } from './WorldLibrary';
 
 export interface ActiveCaveSaveData {
   entranceTileX: number;
@@ -10,9 +12,17 @@ export interface ActiveCaveSaveData {
   returnWorldY: number;
 }
 
+export interface ActivePotionSaveData {
+  effect: PotionEffect;
+  expiresAtMs: number;
+}
+
 export interface SaveGameData {
   version: 1;
   seed: string;
+  // The library index is the primary source of mode. This mirror keeps copied or migrated saves
+  // self-describing without invalidating older survival saves that do not have the field.
+  mode?: WorldMode;
   player: {
     x: number;
     y: number;
@@ -21,6 +31,9 @@ export interface SaveGameData {
   equipment?: {
     equippedTool: ToolId | null;
     activeHotbarSlot?: number;
+  };
+  effects?: {
+    activePotions: ActivePotionSaveData[];
   };
   world: SessionWorldStateData;
   activeCave?: ActiveCaveSaveData;
@@ -34,6 +47,7 @@ export const isSaveGameData = (value: unknown): value is SaveGameData => {
   const save = value as Partial<SaveGameData>;
   return save.version === 1
     && typeof save.seed === 'string'
+    && (save.mode === undefined || isWorldMode(save.mode))
     && Boolean(save.player)
     && Number.isFinite(save.player?.x)
     && Number.isFinite(save.player?.y)
@@ -45,6 +59,9 @@ export const isSaveGameData = (value: unknown): value is SaveGameData => {
           && save.equipment.activeHotbarSlot >= 0
           && save.equipment.activeHotbarSlot < HOTBAR_SLOT_COUNT))
     ))
+    && (!save.effects || (Array.isArray(save.effects.activePotions)
+      && save.effects.activePotions.every((effect) => isPotionEffect(effect?.effect)
+        && typeof effect.expiresAtMs === 'number' && Number.isFinite(effect.expiresAtMs))))
     && Boolean(save.world)
     && (!save.activeCave || (
       Number.isInteger(save.activeCave.entranceTileX)

@@ -10,6 +10,7 @@ const NIGHT_TINT = [5, 13, 32] as const;
 export class DayNightOverlay {
   private readonly element: HTMLDivElement;
   private lastStyle = '';
+  private enabled = true;
 
   constructor(parent: HTMLElement) {
     this.element = document.createElement('div');
@@ -37,6 +38,15 @@ export class DayNightOverlay {
       this.lastStyle = style;
       this.element.style.backgroundColor = style;
     }
+  }
+
+  setEnabled(enabled: boolean): void {
+    if (this.enabled === enabled) {
+      return;
+    }
+
+    this.enabled = enabled;
+    this.element.classList.toggle('is-hidden', !enabled);
   }
 
   destroy(): void {

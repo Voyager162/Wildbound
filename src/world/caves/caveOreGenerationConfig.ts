@@ -14,13 +14,13 @@ export interface CaveOreSpawnRule {
 export const CAVE_COAL_START_DEPTH = 80;
 export const CAVE_IRON_START_DEPTH = 340;
 export const CAVE_GOLD_START_DEPTH = 610;
-export const CAVE_DIAMOND_START_DEPTH = 900;
+export const CAVE_DIAMOND_START_DEPTH = 800;
 
 export const CAVE_ORE_SPAWN_RULES: Readonly<Record<CaveOreType, CaveOreSpawnRule>> = {
   coal: { startDepth: CAVE_COAL_START_DEPTH, chance: 0.065 },
   iron: { startDepth: CAVE_IRON_START_DEPTH, chance: 0.065 },
   gold: { startDepth: CAVE_GOLD_START_DEPTH, chance: 0.036 },
-  diamond: { startDepth: CAVE_DIAMOND_START_DEPTH, chance: 0.018, requiresDeepCave: true },
+  diamond: { startDepth: CAVE_DIAMOND_START_DEPTH, chance: 0.008, requiresDeepCave: true },
 };
 
 // Ores are intentionally limited to clear cave floor so mineral formations never paint over a

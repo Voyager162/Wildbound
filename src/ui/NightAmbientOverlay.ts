@@ -20,6 +20,19 @@ export class NightAmbientOverlay {
   private readonly context: CanvasRenderingContext2D;
   private pixelWidth = 0;
   private pixelHeight = 0;
+  private enabled = true;
+  private renderScale = NIGHT_AMBIENT_LIGHT_RENDER_SCALE;
+  // Gradient fills are deliberately throttled, but a player-follow camera can move every
+  // rendered frame. Keep the camera used for the most recent fill so the already-composited
+  // glow canvas can follow it on the compositor instead of visibly snapping at the fill rate.
+  private renderedScrollX = 0;
+  private renderedScrollY = 0;
+  private renderedZoom = 1;
+  private renderedCameraX = 0;
+  private renderedCameraY = 0;
+  private hasRenderedFrame = false;
+  private appliedOffsetX = Number.NaN;
+  private appliedOffsetY = Number.NaN;
 
   constructor(private readonly parent: HTMLElement) {
     this.canvas = document.createElement('canvas');
@@ -34,8 +47,36 @@ export class NightAmbientOverlay {
     parent.append(this.canvas);
   }
 
+  setEnabled(enabled: boolean): void {
+    if (this.enabled === enabled) {
+      return;
+    }
+    this.enabled = enabled;
+    this.canvas.classList.toggle('is-hidden', !enabled);
+    if (!enabled) {
+      this.context.clearRect(0, 0, this.pixelWidth, this.pixelHeight);
+      this.hasRenderedFrame = false;
+      this.setCameraOffset(0, 0);
+    }
+  }
+
+  setRenderScale(scale: number): void {
+    const nextScale = Math.max(0.25, Math.min(1, scale));
+    if (this.renderScale === nextScale) {
+      return;
+    }
+    this.renderScale = nextScale;
+    // Force a resize on the next lighting update so the canvas never briefly stretches an old
+    // resolution after the player changes this quality setting.
+    this.pixelWidth = 0;
+    this.pixelHeight = 0;
+  }
+
   update(lightAmount: number, camera: Phaser.Cameras.Scene2D.Camera, lights: readonly NightAmbientLight[]): void {
-    const deviceScale = NIGHT_AMBIENT_LIGHT_RENDER_SCALE;
+    if (!this.enabled) {
+      return;
+    }
+    const deviceScale = this.renderScale;
     const cssWidth = Math.max(1, this.parent.clientWidth);
     const cssHeight = Math.max(1, this.parent.clientHeight);
     const nextPixelWidth = Math.round(cssWidth * deviceScale);
@@ -47,29 +88,38 @@ export class NightAmbientOverlay {
       this.canvas.height = nextPixelHeight;
     }
 
+    const scrollX = this.cameraScrollX(camera);
+    const scrollY = this.cameraScrollY(camera);
+    // A fresh fill is already projected against this camera, so remove any compositor offset
+    // left by the previous in-between-frame follow.
+    this.setCameraOffset(0, 0);
+    this.renderedScrollX = scrollX;
+    this.renderedScrollY = scrollY;
+    this.renderedZoom = camera.zoom;
+    this.renderedCameraX = camera.x;
+    this.renderedCameraY = camera.y;
+    this.hasRenderedFrame = true;
+
     const context = this.context;
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, this.pixelWidth, this.pixelHeight);
     // Do not introduce a small-alpha cutoff here: it is visible as an abrupt final frame at
-    // dawn and dusk. The schedule already approaches zero smoothly, so only exact daytime
-    // darkness can skip the gradient work.
-    if (lightAmount <= 0 || lights.length === 0) {
+    // dawn and dusk. A permanent source such as a trail lantern can retain a tiny daylight
+    // presence, so only an empty source list can skip the gradient work completely.
+    if (lights.length === 0) {
       return;
     }
 
     context.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
     context.globalCompositeOperation = 'lighter';
-    const nightStrength = Math.pow(lightAmount, 0.72);
+    const nightStrength = Math.pow(Math.max(0, lightAmount), 0.72);
     // Phaser rounds the rendered camera when roundPixels is enabled. Projecting with the same
     // scroll removes the sub-pixel disagreement that made DOM lights slide and snap over a moving
     // world, especially at the game's low exploration zoom.
-    const scrollX = camera.roundPixels ? Math.round(camera.scrollX) : camera.scrollX;
-    const scrollY = camera.roundPixels ? Math.round(camera.scrollY) : camera.scrollY;
-
     lights.forEach((light) => {
       const screenX = (light.worldX - scrollX) * camera.zoom + camera.x;
       const screenY = (light.worldY - scrollY) * camera.zoom + camera.y;
-      const radius = Math.max(14, light.radius * camera.zoom * NIGHT_AMBIENT_LIGHT_RADIUS_MULTIPLIER);
+      const radius = Math.max(14, light.radius * camera.zoom * (light.radiusMultiplier ?? NIGHT_AMBIENT_LIGHT_RADIUS_MULTIPLIER));
       const edgeDistance = Math.min(
         screenX + radius,
         cssWidth + radius - screenX,
@@ -81,8 +131,15 @@ export class NightAmbientOverlay {
       }
 
       const [red, green, blue] = colorChannels(light.color);
+      // A trail lantern is a physical, always-burning source: its intensity remains fixed. It
+      // naturally looks subtler in daylight because the terrain behind the screen blend is much
+      // brighter, rather than because its glow suddenly turns on at dusk.
+      const sourceStrength = light.alwaysOn ? 1 : nightStrength;
+      if (sourceStrength <= 0) {
+        return;
+      }
       const edgeFade = Math.min(1, edgeDistance / NIGHT_AMBIENT_LIGHT_VIEWPORT_FADE_PIXELS);
-      const alpha = Math.min(0.98, light.intensity * nightStrength * NIGHT_AMBIENT_LIGHT_INTENSITY_MULTIPLIER) * edgeFade;
+      const alpha = Math.min(0.98, light.intensity * sourceStrength * NIGHT_AMBIENT_LIGHT_INTENSITY_MULTIPLIER) * edgeFade;
       const glow = context.createRadialGradient(screenX, screenY, 0, screenX, screenY, radius);
       glow.addColorStop(0, `rgba(${red}, ${green}, ${blue}, ${(alpha * 0.94).toFixed(3)})`);
       glow.addColorStop(0.1, `rgba(${red}, ${green}, ${blue}, ${(alpha * 0.66).toFixed(3)})`);
@@ -96,6 +153,46 @@ export class NightAmbientOverlay {
     });
 
     context.globalCompositeOperation = 'source-over';
+  }
+
+  // Keep lights visually locked to the camera at the display cadence without asking Canvas 2D
+  // to clear and rebuild every radial gradient on every movement frame. This is especially
+  // important during nighttime streaming, where a full glow redraw is much more expensive than
+  // a compositor transform.
+  followCamera(camera: Phaser.Cameras.Scene2D.Camera): void {
+    if (!this.enabled || !this.hasRenderedFrame) {
+      return;
+    }
+
+    const zoomChanged = Math.abs(camera.zoom - this.renderedZoom) > 0.0001;
+    const originChanged = camera.x !== this.renderedCameraX || camera.y !== this.renderedCameraY;
+    if (zoomChanged || originChanged) {
+      // Resizes and camera zooms are uncommon; leave the previous image in place for this one
+      // frame and let the normal scheduled fill reproject it exactly.
+      this.setCameraOffset(0, 0);
+      return;
+    }
+
+    const offsetX = (this.renderedScrollX - this.cameraScrollX(camera)) * this.renderedZoom;
+    const offsetY = (this.renderedScrollY - this.cameraScrollY(camera)) * this.renderedZoom;
+    this.setCameraOffset(offsetX, offsetY);
+  }
+
+  private cameraScrollX(camera: Phaser.Cameras.Scene2D.Camera): number {
+    return camera.roundPixels ? Math.round(camera.scrollX) : camera.scrollX;
+  }
+
+  private cameraScrollY(camera: Phaser.Cameras.Scene2D.Camera): number {
+    return camera.roundPixels ? Math.round(camera.scrollY) : camera.scrollY;
+  }
+
+  private setCameraOffset(offsetX: number, offsetY: number): void {
+    if (Math.abs(offsetX - this.appliedOffsetX) < 0.001 && Math.abs(offsetY - this.appliedOffsetY) < 0.001) {
+      return;
+    }
+    this.appliedOffsetX = offsetX;
+    this.appliedOffsetY = offsetY;
+    this.canvas.style.transform = `translate3d(${offsetX.toFixed(3)}px, ${offsetY.toFixed(3)}px, 0)`;
   }
 
   destroy(): void {

@@ -14,8 +14,11 @@ export const CAVE_SPAWN_CHANCE_BY_BIOME: Readonly<Record<Biome, number>> = {
   [Biome.Snow]: 0.00005,
 };
 
-// Prevents cave formations from clustering. This is in world tiles.
-export const CAVE_MIN_SEPARATION_TILES = 18;
+// Minimum center-to-center spacing between independently generated surface cave entrances,
+// measured in streamed chunks. Four chunks (64 tiles) keeps caves discoverable but prevents
+// neighbouring formations from reading as a cluster. Linked exits from the same cave system
+// remain intentional exceptions so connected cave networks continue to work.
+export const CAVE_MIN_SEPARATION_CHUNKS = 4;
 
 // Surface formation controls: the mouth and exposed rock face are generated directly into the
 // terrain canvas. Larger values make each entrance read as a substantial formation rather than

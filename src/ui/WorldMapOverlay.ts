@@ -30,6 +30,14 @@ export interface WorldMapLandmarkMarker {
   mapColor: number;
 }
 
+/** A player-placed map marker. Unlike generated landmarks, waypoints always retain their label. */
+export interface WorldMapWaypointMarker {
+  id: string;
+  tileX: number;
+  tileY: number;
+  label: string;
+}
+
 export interface WorldMapDrawRequest {
   seed: string;
   playerTileX: number;
@@ -37,6 +45,7 @@ export interface WorldMapDrawRequest {
   regions: readonly ExploredMapRegion[];
   reveals: readonly WorldMapRevealStamp[];
   landmarks: readonly WorldMapLandmarkMarker[];
+  waypoints: readonly WorldMapWaypointMarker[];
 }
 
 interface CanvasDimensions {
@@ -72,6 +81,11 @@ interface NormalizedLandmarks {
   truncated: boolean;
 }
 
+interface NormalizedWaypoints {
+  waypoints: WorldMapWaypointMarker[];
+  truncated: boolean;
+}
+
 interface NormalizedReveals {
   reveals: WorldMapRevealStamp[];
   signature: string;
@@ -85,9 +99,11 @@ interface NormalizedRequest {
   regions: ExploredMapRegion[];
   reveals: WorldMapRevealStamp[];
   landmarks: WorldMapLandmarkMarker[];
+  waypoints: WorldMapWaypointMarker[];
   contentSignature: string;
   regionsTruncated: boolean;
   landmarksTruncated: boolean;
+  waypointsTruncated: boolean;
 }
 
 interface RenderJob {
@@ -128,6 +144,7 @@ const MIN_VIEWPORT_SIZE = 48;
 const MAP_INNER_PADDING = 14;
 const MAX_REGION_INPUT = 60_000;
 const MAX_LANDMARK_INPUT = 1_500;
+const MAX_WAYPOINT_INPUT = 500;
 const MAX_ABSOLUTE_TILE_COORDINATE = 10_000_000;
 const MAX_REGION_SIZE_TILES = 4_096;
 const RENDER_TIME_BUDGET_MS = 4;
@@ -142,6 +159,7 @@ const DEFAULT_TILES_PER_CSS_PIXEL = 1;
 const MIN_TILES_PER_CSS_PIXEL = 0.45;
 const MAX_TILES_PER_CSS_PIXEL = 8;
 const MAX_LANDMARK_LABELS = 16;
+const MAX_WAYPOINT_LABELS = 48;
 const MAX_LANDMARK_LABEL_LENGTH = 32;
 const DEFAULT_LANDMARK_COLOR = 0xf6ca63;
 
@@ -234,7 +252,7 @@ export class WorldMapOverlay {
 
     const controls = document.createElement('p');
     controls.className = 'world-map-controls';
-    controls.textContent = 'Drag to pan | Scroll to zoom | F to close | Cyan ring: you | Diamond: discovered landmark';
+    controls.textContent = 'Drag to pan | Scroll to zoom | F to close | Cyan ring: you | Diamond: landmark | Blue pin: waypoint';
 
     this.viewport = document.createElement('div');
     this.viewport.className = 'world-map-viewport';
@@ -404,6 +422,7 @@ export class WorldMapOverlay {
     const normalizedRegions = this.normalizeRegions(request.regions);
     const normalizedReveals = this.normalizeReveals(request.reveals);
     const normalizedLandmarks = this.normalizeLandmarks(request.landmarks);
+    const normalizedWaypoints = this.normalizeWaypoints(request.waypoints);
     const seed = typeof request.seed === 'string' ? request.seed : '';
 
     return {
@@ -413,9 +432,11 @@ export class WorldMapOverlay {
       regions: normalizedRegions.regions,
       reveals: normalizedReveals.reveals,
       landmarks: normalizedLandmarks.landmarks,
+      waypoints: normalizedWaypoints.waypoints,
       contentSignature: `${seed}\u0000${normalizedRegions.signature}\u0000${normalizedReveals.signature}`,
       regionsTruncated: normalizedRegions.truncated || normalizedReveals.truncated,
-      landmarksTruncated: normalizedLandmarks.truncated
+      landmarksTruncated: normalizedLandmarks.truncated,
+      waypointsTruncated: normalizedWaypoints.truncated
     };
   }
 
@@ -541,6 +562,33 @@ export class WorldMapOverlay {
     }
 
     return { landmarks, truncated: inputLength > limit };
+  }
+
+  private normalizeWaypoints(input: readonly WorldMapWaypointMarker[]): NormalizedWaypoints {
+    const waypoints: WorldMapWaypointMarker[] = [];
+    const uniqueIds = new Set<string>();
+    const inputLength = Array.isArray(input) ? input.length : 0;
+    const limit = Math.min(inputLength, MAX_WAYPOINT_INPUT);
+
+    for (let index = 0; index < limit; index += 1) {
+      const marker = input[index];
+      if (!marker || typeof marker.id !== 'string' || typeof marker.label !== 'string'
+        || !isFiniteNumber(marker.tileX) || !isFiniteNumber(marker.tileY)
+        || Math.abs(marker.tileX) > MAX_ABSOLUTE_TILE_COORDINATE
+        || Math.abs(marker.tileY) > MAX_ABSOLUTE_TILE_COORDINATE
+        || uniqueIds.has(marker.id)) {
+        continue;
+      }
+      uniqueIds.add(marker.id);
+      waypoints.push({
+        id: marker.id,
+        tileX: marker.tileX,
+        tileY: marker.tileY,
+        label: marker.label.trim().slice(0, MAX_LANDMARK_LABEL_LENGTH)
+      });
+    }
+
+    return { waypoints, truncated: inputLength > limit };
   }
 
   private startRenderJob(): void {
@@ -953,17 +1001,30 @@ export class WorldMapOverlay {
     context.clip();
 
     const occupiedLabels: LabelBounds[] = [];
-    let labelsDrawn = 0;
+    let waypointLabelsDrawn = 0;
+    request.waypoints.forEach((marker) => {
+      const point = this.projectTile(geometry, marker.tileX, marker.tileY);
+      if (!this.isInsideGeometry(geometry, point.x, point.y)) {
+        return;
+      }
+      const showLabel = waypointLabelsDrawn < MAX_WAYPOINT_LABELS
+        && this.drawWaypointMarker(context, geometry, marker, point.x, point.y, occupiedLabels);
+      if (showLabel) {
+        waypointLabelsDrawn += 1;
+      }
+    });
+
+    let landmarkLabelsDrawn = 0;
     request.landmarks.forEach((marker) => {
       const point = this.projectTile(geometry, marker.centerTileX, marker.centerTileY);
       if (!this.isInsideGeometry(geometry, point.x, point.y)) {
         return;
       }
 
-      const showLabel = labelsDrawn < MAX_LANDMARK_LABELS
+      const showLabel = landmarkLabelsDrawn < MAX_LANDMARK_LABELS
         && this.drawLandmarkMarker(context, geometry, marker, point.x, point.y, occupiedLabels);
       if (showLabel) {
-        labelsDrawn += 1;
+        landmarkLabelsDrawn += 1;
       }
     });
 
@@ -1040,6 +1101,70 @@ export class WorldMapOverlay {
     return true;
   }
 
+  private drawWaypointMarker(
+    context: CanvasRenderingContext2D,
+    geometry: MapGeometry,
+    marker: WorldMapWaypointMarker,
+    x: number,
+    y: number,
+    occupiedLabels: LabelBounds[]
+  ): boolean {
+    const color = '#45b9ff';
+    context.save();
+    context.shadowColor = 'rgba(0, 0, 0, 0.76)';
+    context.shadowBlur = 5;
+    context.shadowOffsetY = 1;
+    context.fillStyle = color;
+    context.beginPath();
+    context.arc(x, y - 2, 5, Math.PI, 0);
+    context.lineTo(x, y + 7);
+    context.lineTo(x - 5, y - 2);
+    context.closePath();
+    context.fill();
+    context.shadowColor = 'transparent';
+    context.lineWidth = 1.2;
+    context.strokeStyle = '#e8fbff';
+    context.stroke();
+    context.fillStyle = '#e9fbff';
+    context.beginPath();
+    context.arc(x, y - 1.5, 1.35, 0, Math.PI * 2);
+    context.fill();
+    context.restore();
+
+    const label = marker.label;
+    if (!label) {
+      return false;
+    }
+    context.save();
+    context.font = '600 12px system-ui, sans-serif';
+    const textWidth = Math.ceil(context.measureText(label).width);
+    const labelWidth = textWidth + 12;
+    const labelHeight = 21;
+    const labelLeft = clamp(x + 9, geometry.left + 2, geometry.left + geometry.width - labelWidth - 2);
+    const labelTop = clamp(y - labelHeight - 8, geometry.top + 2, geometry.top + geometry.height - labelHeight - 2);
+    const bounds: LabelBounds = {
+      left: labelLeft,
+      top: labelTop,
+      right: labelLeft + labelWidth,
+      bottom: labelTop + labelHeight
+    };
+    if (occupiedLabels.some((occupied) => this.boundsOverlap(occupied, bounds))) {
+      context.restore();
+      return false;
+    }
+    occupiedLabels.push(bounds);
+    context.fillStyle = 'rgba(4, 17, 22, 0.92)';
+    context.fillRect(labelLeft, labelTop, labelWidth, labelHeight);
+    context.lineWidth = 1;
+    context.strokeStyle = color;
+    context.strokeRect(labelLeft + 0.5, labelTop + 0.5, labelWidth - 1, labelHeight - 1);
+    context.fillStyle = '#f1fcff';
+    context.textBaseline = 'middle';
+    context.fillText(label, labelLeft + 6, labelTop + labelHeight / 2 + 0.5);
+    context.restore();
+    return true;
+  }
+
   private drawPlayerMarker(context: CanvasRenderingContext2D, x: number, y: number): void {
     context.save();
     context.shadowColor = 'rgba(0, 0, 0, 0.76)';
@@ -1093,8 +1218,11 @@ export class WorldMapOverlay {
 
     const regions = pluralize(request.regions.length, 'region');
     const landmarks = pluralize(request.landmarks.length, 'landmark');
-    const capped = request.regionsTruncated || request.landmarksTruncated ? ' | view capped for performance' : '';
-    this.status.textContent = `${regions} | ${landmarks}${capped}`;
+    const waypoints = pluralize(request.waypoints.length, 'waypoint');
+    const capped = request.regionsTruncated || request.landmarksTruncated || request.waypointsTruncated
+      ? ' | view capped for performance'
+      : '';
+    this.status.textContent = `${regions} | ${landmarks} | ${waypoints}${capped}`;
   }
 
   private ensureCanvasSize(): boolean {

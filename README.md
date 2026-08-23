@@ -2,7 +2,7 @@
 
 Wildbound is a desktop-first 2D adventure game foundation built with TypeScript, Phaser, Electron, and Electron Forge. Windows is the current release target.
 
-Current release: `1.6.0` - Terrain streaming, cave exploration, tools, crafting, and interaction polish.
+Current release: `1.7.0` - Expanded cave systems, utilities, crafting, configurable controls, and performance polish.
 
 ## Windows installation
 
@@ -17,7 +17,8 @@ Setup, the installed executable, shortcuts, and the application window use the r
 ## Current state
 
 - Phaser runs in a secure Electron renderer. Packaged builds load local files and need no web server or internet connection.
-- The code-generated player moves with WASD or the arrow keys, visually faces all eight movement directions, and has directional walking and swimming animation.
+- The main menu keeps a local library of named worlds. New worlds can be named (or use the faded `New World` default), renamed later, or deleted; leaving the seed blank generates a new random seed.
+- The code-generated player moves with WASD or the arrow keys by default, visually faces all eight movement directions, and has directional walking and swimming animation.
 - Player movement is delta-time based. Swimming begins only when the player's feet cross into traversable ocean or swamp water, at 42% of walking speed.
 - Holding the left mouse button for one real-time second harvests a highlighted nearby feature.
 - A smooth-follow camera maintains a large 2560 x 1440 world view on 16:9 displays in both windowed and fullscreen modes.
@@ -28,9 +29,10 @@ Setup, the installed executable, shortcuts, and the application window use the r
 - A saved day/night clock adds gradual dawn, daylight, dusk, and night lighting. Trees, grasses, reeds, water glints, and biome-sensitive particles provide lightweight ambient motion.
 - Elevation, moisture, and temperature noise deterministically classify ocean, beach, plains, forest, desert, swamp, hills, mountains, and snow biomes.
 - Terrain uses smoothly blended coastline/elevation bands, detailed grass/vegetation/sand/mud/ice/rock marks, rolling hill contours, mountain formations, and subtle animated water glints. These details are baked once into chunk textures.
-- Sparse code-generated trees, cacti, rocks, reeds, snowy rocks, and ice patches highlight when interactable and shake during harvesting.
-- Press `E` to open or close the 16-slot inventory. When a dropped item is in range, `E` picks it up instead; the drop receives a subtle world-space highlight.
-- Press `C` to open the crafting menu. Recipes consume gathered resources and create wooden/stone axes and pickaxes; click a tool in the inventory to equip or unequip it.
+- Sparse code-generated trees, cacti, rocks, reeds, and snowy rocks highlight when interactable and shake during harvesting.
+- Press `E` to open or close the inventory. It has six quick-access slots and a 5 × 5 storage grid. When a dropped item is in range, `E` picks it up instead; nearby cave entrances and exits also use the same default contextual binding.
+- Press `Escape` to pause. The pause menu can return to the main menu or open Controls and Video Options. Controls may be rebound individually; video settings persist locally and apply frame caps, terrain range and streaming pace, effect update rates, particles, foliage, water, lava, ground grass, swamp details, and night-light quality live.
+- Crafting lives beside the inventory. Recipes consume gathered resources and create wooden/stone axes and pickaxes; click a tool in the inventory to equip or unequip it.
 - Resources stack to 10, can be dragged between slots, and can be dragged outside the inventory to drop them into the world. Tools are single-slot equipment items and stay safely in the inventory.
 - Axes speed up harvesting trees, shrubs, and cacti; pickaxes speed up rocks and stone features. The equipped tool is shown in the inventory and rendered in the player's hand.
 - The game automatically persists the seed, player position, inventory, equipped tool, harvested features, and dropped world items. Procedural terrain itself is regenerated from the saved seed.

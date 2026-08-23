@@ -16,10 +16,10 @@ export const GROUND_GRASS_DENSITY_BY_BIOME: Readonly<Record<Biome, number>> = {
   [Biome.Snow]: 0
 };
 
-// Ground grass uses a full render-sized window and is prepared an extra chunk beyond it. The
-// preload window makes patches exist before a player can reach the camera edge, eliminating
-// visible pop-in without keeping the layer drawing outside the screen-sized render window.
+// Ground grass uses a full render-sized window and is prepared at least two chunks beyond it.
+// ChunkManager expands these minimums for an ultrawide viewport, so the player can never see a
+// terrain chunk whose low grass has not already been assembled off-screen.
 export const GROUND_GRASS_RENDER_RADIUS_X = 3;
 export const GROUND_GRASS_RENDER_RADIUS_Y = 2;
-export const GROUND_GRASS_PRELOAD_RADIUS_X = 4;
-export const GROUND_GRASS_PRELOAD_RADIUS_Y = 3;
+export const GROUND_GRASS_PRELOAD_RADIUS_X = 5;
+export const GROUND_GRASS_PRELOAD_RADIUS_Y = 4;

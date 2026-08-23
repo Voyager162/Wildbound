@@ -1,4 +1,5 @@
 import { coherentNoise } from './generation/noise';
+import { Biome } from './generation/biomeGenerator';
 import { surfaceAtTile } from './generation/terrainGenerator';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 
@@ -295,6 +296,31 @@ const bakeTerrain = (seed: string, chunkX: number, chunkY: number, materialSet: 
   return pixels;
 };
 
+// Water classification used to be sampled again on the renderer immediately after a worker bake.
+// Keeping it beside the terrain pixels avoids another 4,096 seeded surface evaluations when a
+// streamed chunk commits, while preserving the exact per-cell water decisions.
+const bakeWaterKinds = (seed: string, chunkX: number, chunkY: number): Uint8Array => {
+  const cellsPerChunk = CHUNK_SIZE_PIXELS / VISUAL_TERRAIN_CELL_SIZE;
+  const waterKinds = new Uint8Array(cellsPerChunk * cellsPerChunk);
+  const firstTileX = chunkX * CHUNK_SIZE_TILES;
+  const firstTileY = chunkY * CHUNK_SIZE_TILES;
+  for (let cellY = 0; cellY < cellsPerChunk; cellY += 1) {
+    for (let cellX = 0; cellX < cellsPerChunk; cellX += 1) {
+      const surface = surfaceAtTile(
+        seed,
+        firstTileX + (cellX + 0.5) / VISUAL_CELLS_PER_TILE,
+        firstTileY + (cellY + 0.5) / VISUAL_CELLS_PER_TILE
+      );
+      const isSwamp = surface.isSwampWater && surface.waterVisualAmount > 0.16;
+      const isOcean = !surface.isSwampWater && (
+        surface.isWater || (surface.biome === Biome.Beach && surface.waterVisualAmount > 0.2)
+      );
+      waterKinds[cellY * cellsPerChunk + cellX] = isSwamp ? 2 : isOcean ? 1 : 0;
+    }
+  }
+  return waterKinds;
+};
+
 workerScope.addEventListener('message', (event: MessageEvent<IncomingMessage>) => {
   const message = event.data;
   if (message.type === 'initialize') {
@@ -307,9 +333,10 @@ workerScope.addEventListener('message', (event: MessageEvent<IncomingMessage>) =
       throw new Error('Terrain worker received a bake before material initialization.');
     }
     const pixels = bakeTerrain(message.seed, message.chunkX, message.chunkY, materials);
+    const waterKinds = bakeWaterKinds(message.seed, message.chunkX, message.chunkY);
     workerScope.postMessage(
-      { type: 'complete', id: message.id, pixels: pixels.buffer },
-      [pixels.buffer as ArrayBuffer]
+      { type: 'complete', id: message.id, pixels: pixels.buffer, waterKinds: waterKinds.buffer },
+      [pixels.buffer as ArrayBuffer, waterKinds.buffer as ArrayBuffer]
     );
   } catch (error) {
     workerScope.postMessage({

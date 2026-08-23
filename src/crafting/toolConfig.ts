@@ -8,10 +8,20 @@ export enum ToolId {
   StonePickaxe = 'stone pickaxe',
   IronPickaxe = 'iron pickaxe',
   GoldPickaxe = 'gold pickaxe',
-  DiamondPickaxe = 'diamond pickaxe'
+  DiamondPickaxe = 'diamond pickaxe',
+  WoodenHoe = 'wooden hoe',
+  StoneHoe = 'stone hoe',
+  IronHoe = 'iron hoe',
+  GoldHoe = 'gold hoe',
+  DiamondHoe = 'diamond hoe',
+  WoodenSword = 'wooden sword',
+  StoneSword = 'stone sword',
+  IronSword = 'iron sword',
+  GoldSword = 'gold sword',
+  DiamondSword = 'diamond sword'
 }
 
-export type ToolKind = 'axe' | 'pickaxe';
+export type ToolKind = 'axe' | 'pickaxe' | 'hoe' | 'sword';
 export type ToolHeadMaterial = 'wood' | 'stone' | 'iron' | 'gold' | 'diamond';
 
 export interface ToolHeadPalette {
@@ -97,6 +107,66 @@ export const TOOL_DEFINITIONS: Readonly<Record<ToolId, ToolDefinition>> = {
     id: ToolId.DiamondPickaxe,
     label: 'Diamond Pickaxe',
     kind: 'pickaxe',
+    headMaterial: 'diamond'
+  },
+  [ToolId.WoodenHoe]: {
+    id: ToolId.WoodenHoe,
+    label: 'Wooden Hoe',
+    kind: 'hoe',
+    headMaterial: 'wood'
+  },
+  [ToolId.StoneHoe]: {
+    id: ToolId.StoneHoe,
+    label: 'Stone Hoe',
+    kind: 'hoe',
+    headMaterial: 'stone'
+  },
+  [ToolId.IronHoe]: {
+    id: ToolId.IronHoe,
+    label: 'Iron Hoe',
+    kind: 'hoe',
+    headMaterial: 'iron'
+  },
+  [ToolId.GoldHoe]: {
+    id: ToolId.GoldHoe,
+    label: 'Gold Hoe',
+    kind: 'hoe',
+    headMaterial: 'gold'
+  },
+  [ToolId.DiamondHoe]: {
+    id: ToolId.DiamondHoe,
+    label: 'Diamond Hoe',
+    kind: 'hoe',
+    headMaterial: 'diamond'
+  },
+  [ToolId.WoodenSword]: {
+    id: ToolId.WoodenSword,
+    label: 'Wooden Sword',
+    kind: 'sword',
+    headMaterial: 'wood'
+  },
+  [ToolId.StoneSword]: {
+    id: ToolId.StoneSword,
+    label: 'Stone Sword',
+    kind: 'sword',
+    headMaterial: 'stone'
+  },
+  [ToolId.IronSword]: {
+    id: ToolId.IronSword,
+    label: 'Iron Sword',
+    kind: 'sword',
+    headMaterial: 'iron'
+  },
+  [ToolId.GoldSword]: {
+    id: ToolId.GoldSword,
+    label: 'Gold Sword',
+    kind: 'sword',
+    headMaterial: 'gold'
+  },
+  [ToolId.DiamondSword]: {
+    id: ToolId.DiamondSword,
+    label: 'Diamond Sword',
+    kind: 'sword',
     headMaterial: 'diamond'
   }
 };

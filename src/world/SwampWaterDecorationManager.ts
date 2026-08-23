@@ -115,6 +115,7 @@ export class SwampWaterDecorationManager {
   private visiblePads: LilyPad[] = [];
   private lastChunkX = Number.NaN;
   private lastChunkY = Number.NaN;
+  private enabled = true;
 
   constructor(
     private readonly scene: Phaser.Scene,
@@ -125,6 +126,14 @@ export class SwampWaterDecorationManager {
 
   prime(chunkX: number, chunkY: number): void {
     this.syncCandidates(chunkX, chunkY);
+  }
+
+  setEnabled(enabled: boolean): void {
+    if (this.enabled === enabled) {
+      return;
+    }
+    this.enabled = enabled;
+    this.pads.forEach((pad) => pad.image.setVisible(enabled && pad.visible));
   }
 
   update(
@@ -138,6 +147,9 @@ export class SwampWaterDecorationManager {
     playerVelocityY: number,
     playerIsSwimming: boolean
   ): void {
+    if (!this.enabled) {
+      return;
+    }
     if (chunkX !== this.lastChunkX || chunkY !== this.lastChunkY) {
       this.syncCandidates(chunkX, chunkY);
     }

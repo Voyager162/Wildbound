@@ -1,5 +1,6 @@
 import { CRAFTING_RECIPES, type CraftingRecipe } from '../crafting/recipeConfig';
-import { TOOL_DEFINITIONS } from '../crafting/toolConfig';
+import { PLACEABLE_DEFINITIONS, isPlaceableId } from '../crafting/placeableConfig';
+import { TOOL_DEFINITIONS, isToolId } from '../crafting/toolConfig';
 import { peakHarvestSpeedForTool } from '../crafting/harvestSpeedConfig';
 import type { Inventory } from '../player/Inventory';
 import { resourceLabel } from '../world/resources';
@@ -24,9 +25,6 @@ export class CraftingOverlay {
     const title = document.createElement('div');
     title.className = 'crafting-title';
     title.textContent = 'Crafting';
-    const hint = document.createElement('span');
-    hint.textContent = 'C to close';
-    title.append(hint);
 
     const description = document.createElement('p');
     description.className = 'crafting-description';
@@ -63,23 +61,28 @@ export class CraftingOverlay {
   private createRecipe(recipe: CraftingRecipe): HTMLButtonElement {
     const canCraft = recipe.ingredients.every((ingredient) => this.inventory.get(ingredient.resource) >= ingredient.amount)
       && this.inventory.canAdd(recipe.output, 1);
-    const tool = TOOL_DEFINITIONS[recipe.output];
+    const tool = isToolId(recipe.output) ? TOOL_DEFINITIONS[recipe.output] : null;
+    const placeable = isPlaceableId(recipe.output) ? PLACEABLE_DEFINITIONS[recipe.output] : null;
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'crafting-recipe';
     button.disabled = !canCraft;
-    button.setAttribute('aria-label', `Craft ${tool.label}`);
+    button.setAttribute('aria-label', `Craft ${tool?.label ?? placeable?.label ?? recipe.output}`);
 
     const icon = document.createElement('span');
-    icon.className = `tool-icon tool-icon--${tool.kind} tool-icon--${tool.headMaterial}`;
+    icon.className = tool
+      ? `tool-icon tool-icon--${tool.kind} tool-icon--${tool.headMaterial}`
+      : `placeable-icon placeable-icon--${recipe.output.replaceAll(' ', '-')}`;
     icon.setAttribute('aria-hidden', 'true');
 
     const details = document.createElement('span');
     details.className = 'crafting-recipe__details';
     const label = document.createElement('strong');
-    label.textContent = tool.label;
+    label.textContent = tool?.label ?? placeable?.label ?? recipe.output;
     const speed = document.createElement('small');
-    speed.textContent = `Up to ${peakHarvestSpeedForTool(tool.id).toFixed(2)}× harvest speed`;
+    speed.textContent = tool
+      ? `Up to ${peakHarvestSpeedForTool(tool.id).toFixed(2)}× harvest speed`
+      : placeable?.description ?? '';
     const ingredients = document.createElement('span');
     ingredients.className = 'crafting-recipe__ingredients';
     ingredients.textContent = recipe.ingredients.map((ingredient) => {

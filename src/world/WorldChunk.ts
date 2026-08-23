@@ -60,7 +60,7 @@ import {
   CAVE_MOUTH_STALACTITE_COUNT_MIN,
   CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE,
 } from './caves/caveGenerationConfig';
-import { requestTerrainBake } from './terrainBakeService';
+import { requestTerrainBake, type TerrainBake } from './terrainBakeService';
 
 // Terrain is sampled in compact 8px cells, then bilinearly painted into one continuous canvas.
 // This keeps chunk generation bounded while avoiding a visible grid in the world itself.
@@ -147,6 +147,48 @@ interface CaveTerrainFacet {
 
 const terrainMaterialPixels = new Map<string, TerrainMaterialPixels>();
 
+// Creating Phaser canvases, masks, and feature textures still has to happen on the renderer
+// after the deterministic pixel bake returns from workers. Bakes may finish in parallel, but
+// their Phaser commits must be serialized: allowing several 512px texture uploads to land in
+// one idle callback is the exact kind of short travel hitch streaming is meant to avoid.
+const rendererCommitQueue: Array<() => void> = [];
+let rendererCommitScheduled = false;
+
+const scheduleRendererCommit = (): void => {
+  if (rendererCommitScheduled || rendererCommitQueue.length === 0) {
+    return;
+  }
+  rendererCommitScheduled = true;
+  window.requestAnimationFrame(() => {
+    let settled = false;
+    let fallbackTimer = 0;
+    const releaseOne = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      window.clearTimeout(fallbackTimer);
+      rendererCommitQueue.shift()?.();
+      rendererCommitScheduled = false;
+      scheduleRendererCommit();
+    };
+
+    if ('requestIdleCallback' in window) {
+      window.requestIdleCallback(releaseOne, { timeout: 48 });
+      // The timeout option is advisory in some embedded Chromium builds. This separate bound
+      // guarantees that every deterministic bake eventually commits even during continuous input.
+      fallbackTimer = window.setTimeout(releaseOne, 52);
+      return;
+    }
+    globalThis.setTimeout(releaseOne, 0);
+  });
+};
+
+const waitForRendererIdle = (): Promise<void> => new Promise((resolve) => {
+  rendererCommitQueue.push(resolve);
+  scheduleRendererCommit();
+});
+
 const caveRockColorForBiome = (biome: Biome): readonly [number, number, number] => {
   switch (biome) {
     case Biome.Desert:
@@ -191,8 +233,15 @@ export class WorldChunk {
   private readonly animatedFeatureFoliage = new Map<string, AnimatedFeatureFoliage>();
   private readonly waterWaves: WaterWave[] = [];
   private hasWater = false;
-  private renderVisible = true;
-  private groundGrassVisible = true;
+  // A streamed chunk is assembled off-screen first. It is only made visible by ChunkManager
+  // after the terrain texture and, when enabled, its foreground grass are presentation-ready.
+  // This prevents both blank chunk edges and grass growing in under the player.
+  private renderVisible = false;
+  private groundGrassVisible = false;
+  private groundGrassPreloadEnabled = false;
+  private groundGrassBuildCursor = 0;
+  private groundGrassBuildPending = true;
+  private animatedFeatureFoliageInitialized = false;
   private lastGroundGrassFrame = Number.NEGATIVE_INFINITY;
   private lastFeatureFoliageFrame = Number.NEGATIVE_INFINITY;
   private harvestingTileKey: string | null = null;
@@ -206,16 +255,20 @@ export class WorldChunk {
     seed: string,
     sessionState: SessionWorldState,
     x: number,
-    y: number
+    y: number,
+    deferRendererCommit = true
   ): Promise<WorldChunk> {
-    let preBakedTerrainPixels: Uint8ClampedArray | null = null;
+    let preBakedTerrain: TerrainBake | null = null;
     try {
-      preBakedTerrainPixels = await requestTerrainBake(scene, seed, x, y);
+      preBakedTerrain = await requestTerrainBake(scene, seed, x, y);
     } catch {
       // The synchronous renderer remains a safe fallback if a browser cannot create workers.
       // Do not make chunk streaming depend on a platform feature outside Phaser's control.
     }
-    return new WorldChunk(scene, seed, sessionState, x, y, preBakedTerrainPixels);
+    if (deferRendererCommit) {
+      await waitForRendererIdle();
+    }
+    return new WorldChunk(scene, seed, sessionState, x, y, preBakedTerrain?.pixels ?? null, preBakedTerrain?.waterKinds ?? null);
   }
 
   constructor(
@@ -224,7 +277,8 @@ export class WorldChunk {
     private readonly sessionState: SessionWorldState,
     readonly x: number,
     readonly y: number,
-    private readonly preBakedTerrainPixels: Uint8ClampedArray | null = null
+    private readonly preBakedTerrainPixels: Uint8ClampedArray | null = null,
+    private readonly preBakedWaterKinds: Uint8Array | null = null
   ) {
     this.key = `${x},${y}`;
     this.textureKey = `terrain:v${TOPOGRAPHY_GENERATION_VERSION}:${seed}:${x}:${y}`;
@@ -241,12 +295,14 @@ export class WorldChunk {
     terrainTexture.add('surface', 0, TERRAIN_TEXTURE_PADDING, TERRAIN_TEXTURE_PADDING, CHUNK_SIZE_PIXELS, CHUNK_SIZE_PIXELS);
     this.terrainImage = scene.add
       .image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.textureKey, 'surface')
-      .setOrigin(0);
-    this.waterGraphics = scene.add.graphics().setDepth(0.25);
+      .setOrigin(0)
+      .setVisible(false);
+    this.waterGraphics = scene.add.graphics().setDepth(0.25).setVisible(false);
     this.featureImage = scene.add
       .image(x * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, y * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, this.featureTextureKey)
       .setOrigin(0)
-      .setDepth(1);
+      .setDepth(1)
+      .setVisible(false);
     // This is an off-screen scratch pad only. It is immediately baked into featureImage's texture.
     this.featureGraphics = scene.add.graphics().setVisible(false);
     this.features = generateChunkFeatures(seed, x, y);
@@ -254,13 +310,15 @@ export class WorldChunk {
     this.caveTerrainInfluences = this.collectCaveTerrainInfluences();
 
     this.drawTerrain(terrainTexture);
-    this.createAnimatedGroundGrass();
     this.refreshFeatures();
-    this.updateFoliage(performance.now());
   }
 
   setRenderVisible(visible: boolean): void {
     if (this.renderVisible === visible) {
+      if (visible && !this.animatedFeatureFoliageInitialized) {
+        this.animatedFeatureFoliageInitialized = true;
+        this.syncAnimatedFeatureFoliage();
+      }
       return;
     }
 
@@ -273,9 +331,13 @@ export class WorldChunk {
     this.swampWaterHighlights?.setVisible(visible);
     this.oceanWaterMaskImage?.setVisible(visible);
     this.swampWaterMaskImage?.setVisible(visible);
-    this.animatedGroundGrass.forEach((patch) => patch.image.setVisible(visible && this.groundGrassVisible));
+    this.syncGroundGrassVisibility();
     this.featureImage.setVisible(visible);
     this.animatedFeatureFoliage.forEach(({ sprite }) => setAnimatedFoliageSpriteVisible(sprite, visible));
+    if (visible) {
+      this.animatedFeatureFoliageInitialized = true;
+      this.syncAnimatedFeatureFoliage();
+    }
   }
 
   // Low grass does not need the same one-chunk-long distance buffer as tall trees and landmarks.
@@ -286,7 +348,41 @@ export class WorldChunk {
     }
 
     this.groundGrassVisible = visible;
-    this.animatedGroundGrass.forEach((patch) => patch.image.setVisible(this.renderVisible && visible));
+    this.syncGroundGrassVisibility();
+  }
+
+  setGroundGrassPreloadEnabled(enabled: boolean): void {
+    this.groundGrassPreloadEnabled = enabled;
+  }
+
+  get isGroundGrassReady(): boolean {
+    return !this.groundGrassPreloadEnabled || !this.groundGrassBuildPending;
+  }
+
+  get hasPendingGroundGrassBuild(): boolean {
+    return this.groundGrassPreloadEnabled && this.groundGrassBuildPending;
+  }
+
+  buildGroundGrassBatch(time: number, tileBudget: number): boolean {
+    if (!this.groundGrassPreloadEnabled || !this.groundGrassBuildPending || tileBudget < 1) {
+      return false;
+    }
+
+    let builtTiles = 0;
+    while (this.groundGrassBuildCursor < CHUNK_SIZE_TILES * CHUNK_SIZE_TILES && builtTiles < tileBudget) {
+      const cursor = this.groundGrassBuildCursor;
+      this.groundGrassBuildCursor += 1;
+      builtTiles += 1;
+      const localX = cursor % CHUNK_SIZE_TILES;
+      const localY = Math.floor(cursor / CHUNK_SIZE_TILES);
+      this.createGroundGrassAt(localX, localY, time);
+    }
+
+    if (this.groundGrassBuildCursor >= CHUNK_SIZE_TILES * CHUNK_SIZE_TILES) {
+      this.groundGrassBuildPending = false;
+      this.syncGroundGrassVisibility();
+    }
+    return this.groundGrassBuildPending;
   }
 
   // Surface interaction only needs entrances already represented by loaded terrain. Exposing this
@@ -299,13 +395,13 @@ export class WorldChunk {
     return this.features;
   }
 
-  updateFoliage(time: number): void {
-    if (!this.renderVisible) {
+  updateFoliage(time: number, animate = true): void {
+    if (!this.renderVisible || !animate) {
       return;
     }
 
     const grassFrame = Math.floor(time / GROUND_GRASS_ANIMATION_UPDATE_INTERVAL_MS);
-    if (this.groundGrassVisible && grassFrame !== this.lastGroundGrassFrame) {
+    if (this.groundGrassVisible && !this.groundGrassBuildPending && grassFrame !== this.lastGroundGrassFrame) {
       this.lastGroundGrassFrame = grassFrame;
       this.animatedGroundGrass.forEach((patch) => updateAnimatedGroundGrassPatch(patch, time));
     }
@@ -490,7 +586,9 @@ export class WorldChunk {
     });
     this.featureGraphics.generateTexture(this.featureTextureKey, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
     this.featureGraphics.clear();
-    this.syncAnimatedFeatureFoliage();
+    if (this.animatedFeatureFoliageInitialized) {
+      this.syncAnimatedFeatureFoliage();
+    }
   }
 
   destroy(): void {
@@ -551,6 +649,7 @@ export class WorldChunk {
     let hasOceanWaterSurface = false;
     let hasSwampWaterSurface = false;
 
+    const usePreBakedWaterKinds = this.preBakedWaterKinds !== null && this.caveTerrainInfluences.length === 0;
     for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
       for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
         const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
@@ -560,8 +659,11 @@ export class WorldChunk {
           for (let visualX = 0; visualX < VISUAL_CELLS_PER_TILE; visualX += 1) {
             const sampleTileX = worldTileX + (visualX + 0.5) / VISUAL_CELLS_PER_TILE;
             const sampleTileY = worldTileY + (visualY + 0.5) / VISUAL_CELLS_PER_TILE;
-            const surface = surfaceAtTile(this.seed, sampleTileX, sampleTileY);
-            const variation = randomAtTile(
+            const preBakedWaterKind = usePreBakedWaterKinds
+              ? this.preBakedWaterKinds![(localY * VISUAL_CELLS_PER_TILE + visualY) * waterMaskSize + localX * VISUAL_CELLS_PER_TILE + visualX]
+              : 0;
+            const surface = usePreBakedWaterKinds ? null : surfaceAtTile(this.seed, sampleTileX, sampleTileY);
+            const variation = usePreBakedWaterKinds ? 0 : randomAtTile(
               this.seed,
               worldTileX * VISUAL_CELLS_PER_TILE + visualX,
               worldTileY * VISUAL_CELLS_PER_TILE + visualY,
@@ -573,11 +675,11 @@ export class WorldChunk {
             // Full water motion is confined to actual ocean water. A narrow high-water strip on
             // the beach remains eligible so ocean surf can roll onto wet sand and retreat, but
             // the rest of the Beach biome stays visibly sandy.
-            const hasSwampSurface = surface.isSwampWater && surface.waterVisualAmount > 0.16;
-            const hasOceanSurface = !surface.isSwampWater && (
-              surface.isWater
-              || (surface.biome === Biome.Beach && surface.waterVisualAmount > 0.2)
-            );
+            const hasSwampSurface = preBakedWaterKind === 2 || (!usePreBakedWaterKinds && surface!.isSwampWater && surface!.waterVisualAmount > 0.16);
+            const hasOceanSurface = preBakedWaterKind === 1 || (!usePreBakedWaterKinds && !surface!.isSwampWater && (
+              surface!.isWater
+              || (surface!.biome === Biome.Beach && surface!.waterVisualAmount > 0.2)
+            ));
             if (hasSwampSurface || hasOceanSurface) {
               this.hasWater = true;
               const maskX = localX * VISUAL_CELLS_PER_TILE + visualX;
@@ -591,8 +693,8 @@ export class WorldChunk {
 
               hasOceanWaterSurface = true;
               oceanWaterMaskContext.fillRect(maskX, maskY, 1, 1);
-              if (variation > 0.942 + surface.waterVisualAmount * 0.014) {
-                const shoreAmount = 1 - surface.waterVisualAmount;
+              if (!usePreBakedWaterKinds && variation > 0.942 + surface!.waterVisualAmount * 0.014) {
+                const shoreAmount = 1 - surface!.waterVisualAmount;
                 const shoreNormal = this.oceanShoreNormal(sampleTileX, sampleTileY);
                 waveCandidates.push({
                   worldX: worldX + cellX + 1,
@@ -601,7 +703,7 @@ export class WorldChunk {
                   phase: randomAtTile(this.seed, worldTileX * VISUAL_CELLS_PER_TILE + visualX, worldTileY * VISUAL_CELLS_PER_TILE + visualY, 0xc353c5f9) * Math.PI * 2,
                   speed: 0.92 + randomAtTile(this.seed, worldTileX, worldTileY, 0x1e3e7655) * 1.38,
                   alpha: (0.3 + randomAtTile(this.seed, worldTileX, worldTileY, 0x6f1620d3) * 0.38)
-                    * (0.5 + surface.waterVisualAmount * 0.5),
+                    * (0.5 + surface!.waterVisualAmount * 0.5),
                   amplitude: 4.2 + randomAtTile(this.seed, worldTileX, worldTileY, 0x9a0372c7) * 7.2,
                   shoreAmount,
                   shoreNormalX: shoreNormal.x,
@@ -992,6 +1094,13 @@ export class WorldChunk {
     } else {
       this.scene.textures.remove(swampMaskKey);
     }
+
+    this.oceanWaterMaskImage?.setVisible(this.renderVisible);
+    this.swampWaterMaskImage?.setVisible(this.renderVisible);
+    this.oceanWaterSurface?.setVisible(this.renderVisible);
+    this.oceanWaterHighlights?.setVisible(this.renderVisible);
+    this.swampWaterSurface?.setVisible(this.renderVisible);
+    this.swampWaterHighlights?.setVisible(this.renderVisible);
   }
 
   private ensureWaterMotionTexture(): string {
@@ -1697,46 +1806,46 @@ export class WorldChunk {
     return (1 - zeroDensityPressure) ** 1.7;
   }
 
-  private createAnimatedGroundGrass(): void {
-    const now = performance.now();
-    for (let localY = 0; localY < CHUNK_SIZE_TILES; localY += 1) {
-      for (let localX = 0; localX < CHUNK_SIZE_TILES; localX += 1) {
-        const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
-        const worldTileY = this.y * CHUNK_SIZE_TILES + localY;
-        if (this.isCaveFeatureTile(worldTileX, worldTileY)) {
-          continue;
-        }
-        const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
-        const density = this.groundGrassDensity(surface);
-        const edgeFade = this.groundGrassEdgeFade(surface);
-        const placement = randomAtTile(this.seed, worldTileX, worldTileY, 0x6d42aeb9);
-        if (density === 0 || placement > density) {
-          continue;
-        }
-
-        // One patch already contains thirteen individually animated blades. Its slight overlap
-        // into neighboring tiles makes a thick field without creating per-blade game objects.
-        const height = (GROUND_GRASS_BASE_HEIGHT_PIXELS
-          + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37) * GROUND_GRASS_HEIGHT_VARIATION_PIXELS)
-          * GROUND_GRASS_SIZE_SCALE * (0.58 + edgeFade * 0.42);
-        const patch = createAnimatedGroundGrassPatch(
-          this.scene,
-          worldTileX * WORLD_TILE_SIZE + 5 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7) * 22,
-          worldTileY * WORLD_TILE_SIZE + 29,
-          height / 34,
-          this.groundGrassTint(surface),
-          Math.floor(randomAtTile(this.seed, worldTileX, worldTileY, 0x7959e2d1) * GROUND_GRASS_PATTERN_VARIANTS),
-          randomAtTile(this.seed, worldTileX, worldTileY, 0x53da69c7),
-          now
-        );
-        // Density reduces the number of patches near a transition; these visual changes make
-        // surviving edge patches shorter and more transparent as well, so a field peters out
-        // instead of ending as a random binary band.
-        patch.image.setAlpha(0.22 + edgeFade * 0.78);
-        patch.image.setVisible(this.renderVisible && this.groundGrassVisible);
-        this.animatedGroundGrass.push(patch);
-      }
+  private createGroundGrassAt(localX: number, localY: number, time: number): void {
+    const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
+    const worldTileY = this.y * CHUNK_SIZE_TILES + localY;
+    if (this.isCaveFeatureTile(worldTileX, worldTileY)) {
+      return;
     }
+    const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
+    const density = this.groundGrassDensity(surface);
+    const edgeFade = this.groundGrassEdgeFade(surface);
+    const placement = randomAtTile(this.seed, worldTileX, worldTileY, 0x6d42aeb9);
+    if (density === 0 || placement > density) {
+      return;
+    }
+
+    // One patch already contains thirteen individually animated blades. Its slight overlap
+    // into neighboring tiles makes a thick field without creating per-blade game objects.
+    const height = (GROUND_GRASS_BASE_HEIGHT_PIXELS
+      + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37) * GROUND_GRASS_HEIGHT_VARIATION_PIXELS)
+      * GROUND_GRASS_SIZE_SCALE * (0.58 + edgeFade * 0.42);
+    const patch = createAnimatedGroundGrassPatch(
+      this.scene,
+      worldTileX * WORLD_TILE_SIZE + 5 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7) * 22,
+      worldTileY * WORLD_TILE_SIZE + 29,
+      height / 34,
+      this.groundGrassTint(surface),
+      Math.floor(randomAtTile(this.seed, worldTileX, worldTileY, 0x7959e2d1) * GROUND_GRASS_PATTERN_VARIANTS),
+      randomAtTile(this.seed, worldTileX, worldTileY, 0x53da69c7),
+      time
+    );
+    // Density reduces the number of patches near a transition; these visual changes make
+    // surviving edge patches shorter and more transparent as well, so a field peters out
+    // instead of ending as a random binary band.
+    patch.image.setAlpha(0.22 + edgeFade * 0.78);
+    patch.image.setVisible(false);
+    this.animatedGroundGrass.push(patch);
+  }
+
+  private syncGroundGrassVisibility(): void {
+    const visible = this.renderVisible && this.groundGrassVisible && !this.groundGrassBuildPending;
+    this.animatedGroundGrass.forEach((patch) => patch.image.setVisible(visible));
   }
 
   private syncAnimatedFeatureFoliage(): void {
@@ -1934,24 +2043,6 @@ export class WorldChunk {
       }
       case TerrainFeatureType.Grass: {
         groundPatch(66 * scale, 18 * scale, 0x496d33, 0.25);
-        break;
-      }
-      case TerrainFeatureType.IcePatch: {
-        groundPatch(118 * scale, 50 * scale, 0x6c9eab, 0.34);
-        graphics.fillStyle(0x527e9b, 0.92);
-        graphics.fillEllipse(centerX, centerY + 2 * scale, 108 * scale, 60 * scale);
-        graphics.fillStyle(0x9fdae8, 0.96);
-        graphics.fillEllipse(centerX - 3 * scale, centerY - 2 * scale, 96 * scale, 49 * scale);
-        graphics.fillStyle(0xd8f8fb, 0.72);
-        graphics.fillEllipse(centerX - 14 * scale, centerY - 9 * scale, 44 * scale, 15 * scale);
-        graphics.lineStyle(3 * scale, 0xe8fdff, 0.92);
-        graphics.lineBetween(centerX - 32 * scale, centerY - 8 * scale, centerX - 2 * scale, centerY + 5 * scale);
-        graphics.lineBetween(centerX - 2 * scale, centerY + 5 * scale, centerX + 27 * scale, centerY - 16 * scale);
-        graphics.lineBetween(centerX - 2 * scale, centerY + 5 * scale, centerX + 15 * scale, centerY + 22 * scale);
-        graphics.lineBetween(centerX - 16 * scale, centerY + 19 * scale, centerX - 2 * scale, centerY + 5 * scale);
-        graphics.lineStyle(1.1 * scale, 0xbceff4, 0.72);
-        graphics.lineBetween(centerX - 41 * scale, centerY + 6 * scale, centerX - 15 * scale, centerY + 12 * scale);
-        graphics.lineBetween(centerX + 11 * scale, centerY - 18 * scale, centerX + 37 * scale, centerY - 3 * scale);
         break;
       }
     }

@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { AdventureScene } from './scenes/AdventureScene';
+import { MainMenuScene } from './scenes/MainMenuScene';
 import './styles.css';
 
 const config: Phaser.Types.Core.GameConfig = {
@@ -21,15 +22,46 @@ const config: Phaser.Types.Core.GameConfig = {
     mode: Phaser.Scale.RESIZE,
     autoCenter: Phaser.Scale.CENTER_BOTH
   },
+  // Phaser's built-in FPS limiter skips requestAnimationFrame callbacks. That creates uneven
+  // 2/3-refresh-frame gaps on 120 / 144 Hz displays, which makes camera movement look jerky.
+  // Start a regular, 60 Hz timer-paced loop instead; AdventureScene switches this scheduler when
+  // the player changes the frame-rate preference (and returns to RAF for Unlimited).
+  fps: {
+    target: 60,
+    limit: 0,
+    forceSetTimeOut: true,
+    smoothStep: false
+  },
   render: {
     powerPreference: 'high-performance',
     roundPixels: false
   },
-  scene: [AdventureScene]
+  scene: [MainMenuScene, AdventureScene]
 };
 
 const game = new Phaser.Game(config);
 const gameElement = document.getElementById('game');
+
+// The wilderness uses a small, CSS-rendered crosshair instead of an operating-system pointer.
+// It keeps the interaction point unambiguous without competing with the terrain. Item drags
+// temporarily hide it so the item itself is the cursor.
+if (gameElement) {
+  const gameCursor = document.createElement('div');
+  gameCursor.className = 'wildbound-game-cursor is-hidden';
+  gameCursor.setAttribute('aria-hidden', 'true');
+  gameElement.append(gameCursor);
+
+  const updateGameCursor = (event: PointerEvent): void => {
+    const target = event.target instanceof Element ? event.target : null;
+    const isTextEntry = Boolean(target?.closest('input, textarea, [contenteditable="true"]'));
+    gameCursor.classList.toggle('is-hidden', event.pointerType !== 'mouse' || isTextEntry);
+    gameCursor.style.transform = `translate3d(${Math.round(event.clientX - 7)}px, ${Math.round(event.clientY - 7)}px, 0)`;
+  };
+
+  gameElement.addEventListener('pointerenter', updateGameCursor);
+  gameElement.addEventListener('pointermove', updateGameCursor);
+  gameElement.addEventListener('pointerleave', () => gameCursor.classList.add('is-hidden'));
+}
 
 // Electron's fullscreen transition does not reliably trigger Phaser's automatic parent-size
 // measurement on every Windows display setup. Observing the actual container keeps the canvas

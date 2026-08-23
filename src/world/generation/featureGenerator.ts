@@ -18,7 +18,6 @@ export enum TerrainFeatureType {
   Reeds = 'reeds',
   WaterReeds = 'water reeds',
   SnowyRock = 'snowy rock',
-  IcePatch = 'ice patch',
   Grass = 'wild grass'
 }
 
@@ -35,7 +34,6 @@ export const FEATURE_DENSITIES = {
   desertCactus: 0.005,
   rocky: 0.007,
   snowyRock: 0.002,
-  icePatch: 0.002,
   plainsGrass: 0.02
 } as const;
 
@@ -49,7 +47,6 @@ const featureClearance: Record<TerrainFeatureType, number> = {
   [TerrainFeatureType.Reeds]: 1.1,
   [TerrainFeatureType.WaterReeds]: 0.9,
   [TerrainFeatureType.SnowyRock]: 1.35,
-  [TerrainFeatureType.IcePatch]: 1.6,
   [TerrainFeatureType.Grass]: 1
 };
 
@@ -65,7 +62,6 @@ const isBiomeCompatible = (feature: TerrainFeatureType, biome: Biome): boolean =
     case TerrainFeatureType.WaterReeds:
       return biome === Biome.Swamp;
     case TerrainFeatureType.SnowyRock:
-    case TerrainFeatureType.IcePatch:
       return biome === Biome.Snow;
     case TerrainFeatureType.Grass:
       return biome === Biome.Plains;
@@ -159,9 +155,7 @@ export const featureAtTile = (seed: string, tileX: number, tileY: number): Terra
       if (shouldPlace(seed, tileX, tileY, 0x1a7f44bd, FEATURE_DENSITIES.snowyRock)) {
         return acceptFeature(seed, tileX, tileY, TerrainFeatureType.SnowyRock);
       }
-      return shouldPlace(seed, tileX, tileY, 0x33c51981, FEATURE_DENSITIES.icePatch)
-        ? acceptFeature(seed, tileX, tileY, TerrainFeatureType.IcePatch)
-        : null;
+      return null;
     case Biome.Mountains:
     case Biome.Hills:
       return shouldPlace(seed, tileX, tileY, 0x47bd60a9, FEATURE_DENSITIES.rocky)

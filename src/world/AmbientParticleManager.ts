@@ -5,6 +5,7 @@ import {
   AMBIENT_PARTICLE_MAX_COUNT,
   AMBIENT_PARTICLE_RADIUS_CELLS_X,
   AMBIENT_PARTICLE_RADIUS_CELLS_Y,
+  NIGHT_AMBIENT_LIGHT_DENSITY_MULTIPLIER,
   NIGHT_AMBIENT_LIGHT_MAX_COUNT,
   NIGHT_AMBIENT_LIGHT_RETENTION_CELLS
 } from './explorationConfig';
@@ -37,8 +38,18 @@ export interface NightAmbientLight {
   worldX: number;
   worldY: number;
   radius: number;
+  // Most ambient particles use the global art-direction multiplier. Permanent world lights can
+  // opt into an exact world-space radius instead (for example, a lantern balanced in chunks).
+  radiusMultiplier?: number;
   color: number;
   intensity: number;
+  // Permanent flame sources can separately tune their color temperature and the sharpness of
+  // their falloff. Ambient particles leave these unset and retain their existing behavior.
+  warmth?: number;
+  clarity?: number;
+  // A placed light can retain its exact configured brightness day and night. Ambient particles
+  // leave this unset and therefore remain night-only.
+  alwaysOn?: boolean;
 }
 
 interface AmbientParticle {
@@ -72,6 +83,7 @@ export class AmbientParticleManager {
   private lastAnchorCellY = Number.NaN;
   private currentParticlePoolLimit = AMBIENT_PARTICLE_MAX_COUNT;
   private currentParticleRenderLimit = AMBIENT_PARTICLE_RENDER_MAX_COUNT;
+  private particleStrength = 1;
   private particles: AmbientParticle[] = [];
   private readonly particlePool = new Map<string, AmbientParticle>();
   private readonly lightTracks = new Map<string, NightLightTrack>();
@@ -81,7 +93,28 @@ export class AmbientParticleManager {
     this.graphics = scene.add.graphics().setDepth(2.5);
   }
 
+  setParticleStrength(strength: number): void {
+    const nextStrength = Math.max(0, Math.min(2, strength));
+    if (nextStrength === this.particleStrength) {
+      return;
+    }
+    this.particleStrength = nextStrength;
+    // Rebuild a deterministic pool at the selected density on the next update rather than
+    // retaining candidates from the previous quality level.
+    this.lastAnchorCellX = Number.NaN;
+    this.lastAnchorCellY = Number.NaN;
+    this.particlePool.clear();
+    this.lightTracks.clear();
+    this.nightLights = [];
+    this.graphics.clear();
+  }
+
   update(time: number, playerWorldX: number, playerWorldY: number, nightAmount: number): void {
+    if (this.particleStrength <= 0) {
+      this.graphics.clear();
+      this.nightLights = [];
+      return;
+    }
     const anchorCellX = Math.floor(playerWorldX / AMBIENT_PARTICLE_CELL_SIZE_PIXELS);
     const anchorCellY = Math.floor(playerWorldY / AMBIENT_PARTICLE_CELL_SIZE_PIXELS);
     const playerBiome = biomeAtTile(this.seed, playerWorldX / WORLD_TILE_SIZE, playerWorldY / WORLD_TILE_SIZE);
@@ -123,6 +156,9 @@ export class AmbientParticleManager {
   }
 
   getNightLights(time: number): readonly NightAmbientLight[] {
+    if (this.particleStrength <= 0) {
+      return [];
+    }
     const timeSeconds = time / 1000;
     // Particle rendering is deliberately throttled, but each light is evaluated from its analytic
     // motion curve at the exact frame time. This preserves smooth drifting without increasing the
@@ -330,7 +366,7 @@ export class AmbientParticleManager {
   }
 
   private particleBudgetForBiome(biome: Biome): { poolLimit: number; renderLimit: number } {
-    const multiplier = Math.max(0, AMBIENT_PARTICLE_DENSITY_MULTIPLIER_BY_BIOME[biome]);
+    const multiplier = Math.max(0, AMBIENT_PARTICLE_DENSITY_MULTIPLIER_BY_BIOME[biome] * this.particleStrength);
     return {
       poolLimit: Math.min(AMBIENT_PARTICLE_DENSE_POOL_HARD_CAP, Math.round(AMBIENT_PARTICLE_MAX_COUNT * multiplier)),
       renderLimit: Math.min(AMBIENT_PARTICLE_DENSE_RENDER_HARD_CAP, Math.round(AMBIENT_PARTICLE_RENDER_MAX_COUNT * multiplier))
@@ -411,7 +447,12 @@ export class AmbientParticleManager {
     light: Pick<AmbientParticle, 'nightLightColor' | 'nightLightRadius' | 'nightLightIntensity'>
   ): Pick<AmbientParticle, 'nightLightColor' | 'nightLightRadius' | 'nightLightIntensity'> {
     const tuning = AMBIENT_BIOME_TUNING[biome];
-    if (randomAtTile(this.seed, cellX, cellY, sourceSalt) > tuning.lightSpawnChance) {
+    const spawnChance = Phaser.Math.Clamp(
+      tuning.lightSpawnChance * NIGHT_AMBIENT_LIGHT_DENSITY_MULTIPLIER,
+      0,
+      1
+    );
+    if (randomAtTile(this.seed, cellX, cellY, sourceSalt) > spawnChance) {
       return { ...light, nightLightRadius: 0, nightLightIntensity: 0 };
     }
 

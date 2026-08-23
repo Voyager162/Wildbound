@@ -10,11 +10,17 @@ const CACHE_REBUILD_MARGIN = 0.36;
 
 const clampScale = (value: number): number => Math.max(1, Math.min(100, value));
 
+export interface MinimapWaypointMarker {
+  tileX: number;
+  tileY: number;
+}
+
 interface MinimapDrawRequest {
   seed: string;
   playerTileX: number;
   playerTileY: number;
   tilesPerReferenceCell: number;
+  waypoints: readonly MinimapWaypointMarker[];
 }
 
 interface MinimapRenderJob {
@@ -70,11 +76,17 @@ export class MinimapOverlay {
     parent.append(this.canvas);
   }
 
-  draw(seed: string, playerTileX: number, playerTileY: number, tilesPerReferenceCell: number): void {
+  draw(
+    seed: string,
+    playerTileX: number,
+    playerTileY: number,
+    tilesPerReferenceCell: number,
+    waypoints: readonly MinimapWaypointMarker[] = []
+  ): void {
     if (!this.isVisible) {
       return;
     }
-    const request = { seed, playerTileX, playerTileY, tilesPerReferenceCell };
+    const request = { seed, playerTileX, playerTileY, tilesPerReferenceCell, waypoints };
     this.latestRequest = request;
     this.ensureVisibleCanvasSize();
 
@@ -266,9 +278,40 @@ export class MinimapOverlay {
       context.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
     }
 
+    this.drawWaypoints(context, request);
+
     context.restore();
     this.drawFrame(context);
     context.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  private drawWaypoints(context: CanvasRenderingContext2D, request: MinimapDrawRequest): void {
+    const worldTilesPerCssPixel = this.cacheState?.worldTilesPerCssPixel
+      ?? request.tilesPerReferenceCell / REFERENCE_CELL_SIZE;
+    const center = MINIMAP_SIZE / 2;
+    const radius = center - 5;
+    const markers = Array.isArray(request.waypoints) ? request.waypoints : [];
+
+    // Blue dots deliberately contain no text on the compact map. The full fog-of-war chart has
+    // the labels, while this stays readable and cheap during regular movement updates.
+    for (let index = 0; index < Math.min(markers.length, 500); index += 1) {
+      const marker = markers[index];
+      if (!Number.isFinite(marker?.tileX) || !Number.isFinite(marker?.tileY)) {
+        continue;
+      }
+      const x = center + (marker.tileX - request.playerTileX) / worldTilesPerCssPixel;
+      const y = center + (marker.tileY - request.playerTileY) / worldTilesPerCssPixel;
+      if ((x - center) ** 2 + (y - center) ** 2 > (radius + 4) ** 2) {
+        continue;
+      }
+      context.fillStyle = '#319eed';
+      context.beginPath();
+      context.arc(x, y, 3.1, 0, Math.PI * 2);
+      context.fill();
+      context.lineWidth = 1.1;
+      context.strokeStyle = '#e8fbff';
+      context.stroke();
+    }
   }
 
   private drawFrame(context: CanvasRenderingContext2D): void {
