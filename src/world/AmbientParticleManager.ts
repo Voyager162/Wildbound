@@ -79,6 +79,7 @@ interface NightLightTrack {
 
 export class AmbientParticleManager {
   private readonly graphics: Phaser.GameObjects.Graphics;
+  private enabled = true;
   private lastAnchorCellX = Number.NaN;
   private lastAnchorCellY = Number.NaN;
   private currentParticlePoolLimit = AMBIENT_PARTICLE_MAX_COUNT;
@@ -109,8 +110,27 @@ export class AmbientParticleManager {
     this.graphics.clear();
   }
 
+  // Surface particles are drawn above terrain so their motion remains legible. Caves therefore
+  // have to suspend the entire layer, not merely stop updating it, or the last surface frame
+  // remains cached above the cave floor. Re-enabling invalidates the anchor so the same seeded
+  // cells are rebuilt around the surface destination on the next update.
+  setEnabled(enabled: boolean): void {
+    if (this.enabled === enabled) {
+      return;
+    }
+    this.enabled = enabled;
+    this.graphics.setVisible(enabled);
+    this.graphics.clear();
+    this.nightLights = [];
+    this.lightTracks.clear();
+    if (enabled) {
+      this.lastAnchorCellX = Number.NaN;
+      this.lastAnchorCellY = Number.NaN;
+    }
+  }
+
   update(time: number, playerWorldX: number, playerWorldY: number, nightAmount: number): void {
-    if (this.particleStrength <= 0) {
+    if (!this.enabled || this.particleStrength <= 0) {
       this.graphics.clear();
       this.nightLights = [];
       return;
@@ -156,7 +176,7 @@ export class AmbientParticleManager {
   }
 
   getNightLights(time: number): readonly NightAmbientLight[] {
-    if (this.particleStrength <= 0) {
+    if (!this.enabled || this.particleStrength <= 0) {
       return [];
     }
     const timeSeconds = time / 1000;

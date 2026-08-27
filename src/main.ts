@@ -1,7 +1,10 @@
 import Phaser from 'phaser';
 import { AdventureScene } from './scenes/AdventureScene';
 import { MainMenuScene } from './scenes/MainMenuScene';
+import { installMenuClickAudio } from './ui/MenuClickAudio';
 import './styles.css';
+
+installMenuClickAudio();
 
 const config: Phaser.Types.Core.GameConfig = {
   // Wildbound's terrain, foliage shaders, and texture compositing are designed for WebGL. Ask

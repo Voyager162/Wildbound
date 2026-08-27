@@ -321,7 +321,7 @@ const bakeWaterKinds = (seed: string, chunkX: number, chunkY: number): Uint8Arra
   return waterKinds;
 };
 
-workerScope.addEventListener('message', (event: MessageEvent<IncomingMessage>) => {
+workerScope.addEventListener('message', async (event: MessageEvent<IncomingMessage>) => {
   const message = event.data;
   if (message.type === 'initialize') {
     materials = message.materials;
@@ -334,9 +334,18 @@ workerScope.addEventListener('message', (event: MessageEvent<IncomingMessage>) =
     }
     const pixels = bakeTerrain(message.seed, message.chunkX, message.chunkY, materials);
     const waterKinds = bakeWaterKinds(message.seed, message.chunkX, message.chunkY);
+    const imageBitmap = typeof createImageBitmap === 'function'
+      ? await createImageBitmap(new ImageData(
+        new Uint8ClampedArray(pixels.buffer as ArrayBuffer),
+        TERRAIN_TEXTURE_SIZE,
+        TERRAIN_TEXTURE_SIZE
+      ))
+      : null;
+    const transfers: Transferable[] = [pixels.buffer as ArrayBuffer, waterKinds.buffer as ArrayBuffer];
+    if (imageBitmap) transfers.push(imageBitmap);
     workerScope.postMessage(
-      { type: 'complete', id: message.id, pixels: pixels.buffer, waterKinds: waterKinds.buffer },
-      [pixels.buffer as ArrayBuffer, waterKinds.buffer as ArrayBuffer]
+      { type: 'complete', id: message.id, pixels: pixels.buffer, waterKinds: waterKinds.buffer, imageBitmap },
+      transfers
     );
   } catch (error) {
     workerScope.postMessage({

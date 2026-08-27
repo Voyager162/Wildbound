@@ -22,6 +22,7 @@ import {
 import { WATER_WAVES_PER_VISIBLE_CHUNK } from './ambientPerformanceConfig';
 import {
   createAnimatedGroundGrassPatch,
+  createGroundGrassBlitters,
   type AnimatedGroundGrassPatch,
   updateAnimatedGroundGrassPatch
 } from './GroundGrassAnimation';
@@ -40,7 +41,11 @@ import {
   GROUND_GRASS_PATTERN_VARIANTS,
   HARVESTABLE_GRASS_SCALE_MULTIPLIER
 } from './foliageAnimationConfig';
-import { GROUND_GRASS_DENSITY_BY_BIOME } from './groundGrassConfig';
+import {
+  GROUND_GRASS_DENSITY_BY_BIOME,
+  GROUND_GRASS_EDGE_FADE_POWER,
+  GROUND_GRASS_ZERO_BIOME_FADE_LEAD_SCALE
+} from './groundGrassConfig';
 import { TERRAIN_MATERIAL_TEXTURE_KEYS } from './terrainMaterialConfig';
 import {
   BIOME_BLEND_WIDTH_SCALE,
@@ -61,6 +66,10 @@ import {
   CAVE_MOUTH_RECESS_FORWARD_SHIFT_SCALE,
 } from './caves/caveGenerationConfig';
 import { requestTerrainBake, type TerrainBake } from './terrainBakeService';
+import {
+  requestProceduralChunkNeighborhood,
+  type ProceduralChunkData
+} from './proceduralChunkDataService';
 
 // Terrain is sampled in compact 8px cells, then bilinearly painted into one continuous canvas.
 // This keeps chunk generation bounded while avoiding a visible grid in the world itself.
@@ -71,8 +80,8 @@ const VISUAL_CELLS_PER_TILE = WORLD_TILE_SIZE / VISUAL_TERRAIN_CELL_SIZE;
 const TERRAIN_TEXTURE_PADDING = 2;
 const TERRAIN_TEXTURE_SIZE = CHUNK_SIZE_PIXELS + TERRAIN_TEXTURE_PADDING * 2;
 const TERRAIN_VERTEX_MARGIN_CELLS = Math.ceil(TERRAIN_TEXTURE_PADDING / VISUAL_TERRAIN_CELL_SIZE);
-const FEATURE_TEXTURE_PADDING = 128;
-const FEATURE_TEXTURE_SIZE = CHUNK_SIZE_PIXELS + FEATURE_TEXTURE_PADDING * 2;
+const SHARED_FEATURE_TEXTURE_SIZE = 256;
+const SHARED_FEATURE_TEXTURE_CENTER = SHARED_FEATURE_TEXTURE_SIZE / 2;
 const WATER_MOTION_TEXTURE_SIZE = 192;
 const CAVE_FEATURE_EDGE_BUFFER_PIXELS = WORLD_TILE_SIZE;
 
@@ -159,29 +168,27 @@ const scheduleRendererCommit = (): void => {
     return;
   }
   rendererCommitScheduled = true;
-  window.requestAnimationFrame(() => {
-    let settled = false;
-    let fallbackTimer = 0;
-    const releaseOne = (): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      window.clearTimeout(fallbackTimer);
-      rendererCommitQueue.shift()?.();
-      rendererCommitScheduled = false;
-      scheduleRendererCommit();
-    };
-
-    if ('requestIdleCallback' in window) {
-      window.requestIdleCallback(releaseOne, { timeout: 48 });
-      // The timeout option is advisory in some embedded Chromium builds. This separate bound
-      // guarantees that every deterministic bake eventually commits even during continuous input.
-      fallbackTimer = window.setTimeout(releaseOne, 52);
+  let settled = false;
+  let fallbackTimer = 0;
+  const releaseOne = (): void => {
+    if (settled) {
       return;
     }
-    globalThis.setTimeout(releaseOne, 0);
-  });
+    settled = true;
+    window.clearTimeout(fallbackTimer);
+    rendererCommitQueue.shift()?.();
+    rendererCommitScheduled = false;
+    scheduleRendererCommit();
+  };
+
+  if ('requestIdleCallback' in window) {
+    // Scheduling directly into idle time avoids paying an extra animation frame before every
+    // commit. One chunk is still released per callback, preserving movement frame headroom.
+    window.requestIdleCallback(releaseOne, { timeout: 28 });
+    fallbackTimer = window.setTimeout(releaseOne, 34);
+    return;
+  }
+  globalThis.setTimeout(releaseOne, 0);
 };
 
 const waitForRendererIdle = (): Promise<void> => new Promise((resolve) => {
@@ -223,9 +230,12 @@ export class WorldChunk {
   private oceanWaterMaskTextureKey: string | null = null;
   private swampWaterMaskTextureKey: string | null = null;
   // Complex feature vectors are baked into one texture per chunk, avoiding per-frame Graphics triangulation.
-  private readonly featureTextureKey: string;
-  private readonly featureImage: Phaser.GameObjects.Image;
   private readonly featureGraphics: Phaser.GameObjects.Graphics;
+  private readonly featureContainer: Phaser.GameObjects.Container;
+  private readonly featureImages = new Map<string, Phaser.GameObjects.Image>();
+  // One Blitter per shared art pattern renders all of this chunk's grass as lightweight Bobs.
+  // Hundreds of patches therefore add only six objects to Phaser's scene/display traversal.
+  private readonly groundGrassBlitters: Phaser.GameObjects.Blitter[];
   private readonly features: TerrainFeature[];
   private readonly caveEntrances: readonly CaveEntrance[];
   private readonly caveTerrainInfluences: readonly CaveTerrainInfluence[];
@@ -256,19 +266,38 @@ export class WorldChunk {
     sessionState: SessionWorldState,
     x: number,
     y: number,
-    deferRendererCommit = true
-  ): Promise<WorldChunk> {
-    let preBakedTerrain: TerrainBake | null = null;
-    try {
-      preBakedTerrain = await requestTerrainBake(scene, seed, x, y);
-    } catch {
-      // The synchronous renderer remains a safe fallback if a browser cannot create workers.
-      // Do not make chunk streaming depend on a platform feature outside Phaser's control.
+    deferRendererCommit = true,
+    shouldCommit: () => boolean = () => true
+  ): Promise<WorldChunk | null> {
+    // Terrain pixels and deterministic gameplay data use independent worker pools. Starting them
+    // together lets feature/cave scans finish without occupying the renderer or extending the
+    // terrain bake's critical path. Each service retains a bounded coordinate cache.
+    const [preBakedTerrain, preGeneratedNeighborhood] = await Promise.all([
+      requestTerrainBake(scene, seed, x, y).catch((): TerrainBake | null => null),
+      requestProceduralChunkNeighborhood(seed, x, y).catch((): null => null)
+    ]);
+    // A request can become irrelevant while its worker is baking. Do not allocate canvases,
+    // textures, sprites, and masks merely to destroy them in the same microtask.
+    if (!shouldCommit()) {
+      return null;
     }
     if (deferRendererCommit) {
       await waitForRendererIdle();
     }
-    return new WorldChunk(scene, seed, sessionState, x, y, preBakedTerrain?.pixels ?? null, preBakedTerrain?.waterKinds ?? null);
+    if (!shouldCommit()) {
+      return null;
+    }
+    return new WorldChunk(
+      scene,
+      seed,
+      sessionState,
+      x,
+      y,
+      preBakedTerrain?.pixels ?? null,
+      preBakedTerrain?.waterKinds ?? null,
+      preBakedTerrain?.imageBitmap ?? null,
+      preGeneratedNeighborhood
+    );
   }
 
   constructor(
@@ -278,39 +307,52 @@ export class WorldChunk {
     readonly x: number,
     readonly y: number,
     private readonly preBakedTerrainPixels: Uint8ClampedArray | null = null,
-    private readonly preBakedWaterKinds: Uint8Array | null = null
+    private readonly preBakedWaterKinds: Uint8Array | null = null,
+    private readonly preBakedTerrainBitmap: ImageBitmap | null = null,
+    private readonly preGeneratedNeighborhood: readonly ProceduralChunkData[] | null = null
   ) {
     this.key = `${x},${y}`;
     this.textureKey = `terrain:v${TOPOGRAPHY_GENERATION_VERSION}:${seed}:${x}:${y}`;
-    const terrainTexture = scene.textures.createCanvas(this.textureKey, TERRAIN_TEXTURE_SIZE, TERRAIN_TEXTURE_SIZE);
+    this.features = [...(this.preGeneratedDataFor(x, y)?.features ?? generateChunkFeatures(seed, x, y))];
+    this.caveEntrances = this.preGeneratedDataFor(x, y)?.caveEntrances ?? generateChunkCaveEntrances(seed, x, y);
+    this.caveTerrainInfluences = this.collectCaveTerrainInfluences();
+
+    const hasPreBakedWater = this.preBakedWaterKinds?.some((kind) => kind !== 0) ?? false;
+    const canUseBitmap = this.preBakedTerrainBitmap
+      && !hasPreBakedWater
+      && this.caveTerrainInfluences.length === 0;
+    const terrainTexture = canUseBitmap
+      ? scene.textures.addImage(this.textureKey, this.preBakedTerrainBitmap as unknown as HTMLImageElement)
+      : scene.textures.createCanvas(this.textureKey, TERRAIN_TEXTURE_SIZE, TERRAIN_TEXTURE_SIZE);
     if (!terrainTexture) {
       throw new Error('Wildbound could not create a terrain texture.');
     }
 
-    this.featureTextureKey = `features:v${TOPOGRAPHY_GENERATION_VERSION}:${seed}:${x}:${y}`;
-    const featureTexture = scene.textures.createCanvas(this.featureTextureKey, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
-    if (!featureTexture) {
-      throw new Error('Wildbound could not create a feature texture.');
-    }
     terrainTexture.add('surface', 0, TERRAIN_TEXTURE_PADDING, TERRAIN_TEXTURE_PADDING, CHUNK_SIZE_PIXELS, CHUNK_SIZE_PIXELS);
     this.terrainImage = scene.add
       .image(x * CHUNK_SIZE_PIXELS, y * CHUNK_SIZE_PIXELS, this.textureKey, 'surface')
       .setOrigin(0)
       .setVisible(false);
     this.waterGraphics = scene.add.graphics().setDepth(0.25).setVisible(false);
-    this.featureImage = scene.add
-      .image(x * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, y * CHUNK_SIZE_PIXELS - FEATURE_TEXTURE_PADDING, this.featureTextureKey)
-      .setOrigin(0)
-      .setDepth(1)
-      .setVisible(false);
-    // This is an off-screen scratch pad only. It is immediately baked into featureImage's texture.
+    this.featureContainer = scene.add.container(0, 0).setDepth(1).setVisible(false);
+    // This scratch pad creates a small shared texture once per feature/mirror variant. Streamed
+    // chunks then reuse those textures instead of uploading a large unique feature canvas.
     this.featureGraphics = scene.add.graphics().setVisible(false);
-    this.features = generateChunkFeatures(seed, x, y);
-    this.caveEntrances = generateChunkCaveEntrances(seed, x, y);
-    this.caveTerrainInfluences = this.collectCaveTerrainInfluences();
+    this.groundGrassBlitters = createGroundGrassBlitters(
+      scene,
+      x * CHUNK_SIZE_PIXELS,
+      y * CHUNK_SIZE_PIXELS
+    );
 
-    this.drawTerrain(terrainTexture);
-    this.refreshFeatures();
+    if (!canUseBitmap) {
+      this.drawTerrain(terrainTexture as Phaser.Textures.CanvasTexture);
+    }
+    // Sparse biomes commonly have no harvestable feature in a chunk. Avoid rasterizing and
+    // uploading a large, completely transparent feature canvas in that overwhelmingly common
+    // case; the dedicated texture remains ready if deterministic content actually exists.
+    if (this.features.length > 0) {
+      this.refreshFeatures();
+    }
   }
 
   setRenderVisible(visible: boolean): void {
@@ -332,7 +374,7 @@ export class WorldChunk {
     this.oceanWaterMaskImage?.setVisible(visible);
     this.swampWaterMaskImage?.setVisible(visible);
     this.syncGroundGrassVisibility();
-    this.featureImage.setVisible(visible);
+    this.featureContainer.setVisible(visible);
     this.animatedFeatureFoliage.forEach(({ sprite }) => setAnimatedFoliageSpriteVisible(sprite, visible));
     if (visible) {
       this.animatedFeatureFoliageInitialized = true;
@@ -422,7 +464,7 @@ export class WorldChunk {
 
     this.harvestingTileKey = tileKey;
     this.harvestOffset = offset;
-    this.refreshFeatures();
+    this.applyFeatureHarvestOffset(tileX, tileY, offset);
   }
 
   clearHarvestAnimation(): void {
@@ -430,9 +472,11 @@ export class WorldChunk {
       return;
     }
 
+    const tileKey = this.harvestingTileKey;
     this.harvestingTileKey = null;
     this.harvestOffset = 0;
-    this.refreshFeatures();
+    const [tileX, tileY] = tileKey.split(',').map(Number);
+    this.applyFeatureHarvestOffset(tileX, tileY, 0);
   }
 
   updateWaterAnimation(time: number): void {
@@ -559,33 +603,28 @@ export class WorldChunk {
   }
 
   refreshFeatures(): void {
-    const texture = this.scene.textures.get(this.featureTextureKey) as Phaser.Textures.CanvasTexture;
-    const canvas = texture.getSourceImage() as HTMLCanvasElement;
-    const context = canvas.getContext('2d');
-    if (!context) {
-      throw new Error('Wildbound could not update a feature texture.');
-    }
-    context.clearRect(0, 0, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
-    this.featureGraphics.clear();
+    this.featureContainer.removeAll(true);
+    this.featureImages.clear();
     this.features.forEach((feature) => {
       const worldTileX = this.x * CHUNK_SIZE_TILES + feature.localTileX;
       const worldTileY = this.y * CHUNK_SIZE_TILES + feature.localTileY;
 
       if (!this.sessionState.isFeatureHarvested(worldTileX, worldTileY)
         && !this.isCaveFeatureTile(worldTileX, worldTileY)) {
+        const variation = randomAtTile(this.seed, worldTileX, worldTileY, 0x6ac4d9e3);
+        const scale = 0.92 + variation * 0.16;
+        const mirror = variation > 0.5 ? 1 : -1;
         const offset = this.harvestingTileKey === this.tileKey(worldTileX, worldTileY) ? this.harvestOffset : 0;
-        this.drawFeature(
-          feature.type,
-          feature.localTileX * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING,
-          feature.localTileY * WORLD_TILE_SIZE + FEATURE_TEXTURE_PADDING,
-          offset,
-          worldTileX,
-          worldTileY
-        );
+        const image = this.scene.add.image(
+          (worldTileX + 0.5) * WORLD_TILE_SIZE + offset,
+          (worldTileY + 0.5) * WORLD_TILE_SIZE,
+          this.ensureSharedFeatureTexture(feature.type, mirror)
+        ).setScale(scale);
+        image.setVisible(true);
+        this.featureContainer.add(image);
+        this.featureImages.set(this.tileKey(worldTileX, worldTileY), image);
       }
     });
-    this.featureGraphics.generateTexture(this.featureTextureKey, FEATURE_TEXTURE_SIZE, FEATURE_TEXTURE_SIZE);
-    this.featureGraphics.clear();
     if (this.animatedFeatureFoliageInitialized) {
       this.syncAnimatedFeatureFoliage();
     }
@@ -601,14 +640,15 @@ export class WorldChunk {
     this.waterBitmapMasks.forEach((mask) => mask.destroy());
     this.oceanWaterMaskImage?.destroy();
     this.swampWaterMaskImage?.destroy();
-    this.animatedGroundGrass.forEach((patch) => patch.image.destroy());
     this.animatedGroundGrass.length = 0;
-    this.featureImage.destroy();
+    this.groundGrassBlitters.forEach((blitter) => blitter.destroy());
+    this.featureContainer.removeAll(true);
+    this.featureImages.clear();
+    this.featureContainer.destroy();
     this.featureGraphics.destroy();
     this.animatedFeatureFoliage.forEach(({ sprite }) => destroyAnimatedFoliageSprite(sprite));
     this.animatedFeatureFoliage.clear();
     this.scene.textures.remove(this.textureKey);
-    this.scene.textures.remove(this.featureTextureKey);
     if (this.oceanWaterMaskTextureKey) {
       this.scene.textures.remove(this.oceanWaterMaskTextureKey);
     }
@@ -626,9 +666,26 @@ export class WorldChunk {
       const imageData = context.createImageData(TERRAIN_TEXTURE_SIZE, TERRAIN_TEXTURE_SIZE);
       imageData.data.set(this.preBakedTerrainPixels);
       context.putImageData(imageData, 0, 0);
+    } else if (this.preBakedTerrainPixels) {
+      // The worker already produced the complete base terrain. Composite only the bounded cave
+      // formation pixels instead of regenerating all 266,000 terrain pixels on the renderer.
+      this.paintContinuousTerrain(
+        context,
+        [],
+        this.caveTerrainInfluences,
+        this.preBakedTerrainPixels
+      );
     } else {
       const terrainVertexColors = this.createTerrainVertexColors();
       this.paintContinuousTerrain(context, terrainVertexColors, this.caveTerrainInfluences);
+    }
+    // Most land chunks contain no animated water at all. The worker already classified every
+    // visual cell, so skip two temporary mask textures and 4,096 renderer-thread iterations.
+    if (this.preBakedWaterKinds
+      && this.caveTerrainInfluences.length === 0
+      && !this.preBakedWaterKinds.some((kind) => kind !== 0)) {
+      texture.refresh();
+      return;
     }
     // Compact alpha masks are built once while the baked terrain is sampled. The two TileSprites
     // above them can then flow across all water pixels without rebuilding a chunk canvas each tick.
@@ -642,10 +699,8 @@ export class WorldChunk {
     }
     const oceanWaterMaskContext = oceanWaterMaskTexture.getContext();
     const swampWaterMaskContext = swampWaterMaskTexture.getContext();
-    oceanWaterMaskContext.clearRect(0, 0, waterMaskSize, waterMaskSize);
-    swampWaterMaskContext.clearRect(0, 0, waterMaskSize, waterMaskSize);
-    oceanWaterMaskContext.fillStyle = '#ffffff';
-    swampWaterMaskContext.fillStyle = '#ffffff';
+    const oceanWaterMaskData = oceanWaterMaskContext.createImageData(waterMaskSize, waterMaskSize);
+    const swampWaterMaskData = swampWaterMaskContext.createImageData(waterMaskSize, waterMaskSize);
     let hasOceanWaterSurface = false;
     let hasSwampWaterSurface = false;
 
@@ -684,15 +739,22 @@ export class WorldChunk {
               this.hasWater = true;
               const maskX = localX * VISUAL_CELLS_PER_TILE + visualX;
               const maskY = localY * VISUAL_CELLS_PER_TILE + visualY;
+              const maskPixel = (maskY * waterMaskSize + maskX) * 4;
 
               if (hasSwampSurface) {
                 hasSwampWaterSurface = true;
-                swampWaterMaskContext.fillRect(maskX, maskY, 1, 1);
+                swampWaterMaskData.data[maskPixel] = 255;
+                swampWaterMaskData.data[maskPixel + 1] = 255;
+                swampWaterMaskData.data[maskPixel + 2] = 255;
+                swampWaterMaskData.data[maskPixel + 3] = 255;
                 continue;
               }
 
               hasOceanWaterSurface = true;
-              oceanWaterMaskContext.fillRect(maskX, maskY, 1, 1);
+              oceanWaterMaskData.data[maskPixel] = 255;
+              oceanWaterMaskData.data[maskPixel + 1] = 255;
+              oceanWaterMaskData.data[maskPixel + 2] = 255;
+              oceanWaterMaskData.data[maskPixel + 3] = 255;
               if (!usePreBakedWaterKinds && variation > 0.942 + surface!.waterVisualAmount * 0.014) {
                 const shoreAmount = 1 - surface!.waterVisualAmount;
                 const shoreNormal = this.oceanShoreNormal(sampleTileX, sampleTileY);
@@ -720,6 +782,8 @@ export class WorldChunk {
       }
     }
 
+    oceanWaterMaskContext.putImageData(oceanWaterMaskData, 0, 0);
+    swampWaterMaskContext.putImageData(swampWaterMaskData, 0, 0);
     texture.refresh();
     this.createWaterSurfaceLayers(
       oceanWaterMaskTexture,
@@ -745,7 +809,8 @@ export class WorldChunk {
       for (let chunkX = this.x - 1; chunkX <= this.x + 1; chunkX += 1) {
         const entrances = chunkX === this.x && chunkY === this.y
           ? this.caveEntrances
-          : generateChunkCaveEntrances(this.seed, chunkX, chunkY);
+          : this.preGeneratedDataFor(chunkX, chunkY)?.caveEntrances
+            ?? generateChunkCaveEntrances(this.seed, chunkX, chunkY);
         entrances.forEach((entrance) => {
           const radiusPixels = entrance.formationRadiusTiles * WORLD_TILE_SIZE;
           const centerWorldX = (entrance.tileX + 0.5) * WORLD_TILE_SIZE;
@@ -1007,6 +1072,10 @@ export class WorldChunk {
     return influences;
   }
 
+  private preGeneratedDataFor(chunkX: number, chunkY: number): ProceduralChunkData | undefined {
+    return this.preGeneratedNeighborhood?.find((data) => data.chunkX === chunkX && data.chunkY === chunkY);
+  }
+
   /** True when a harvestable tile would be covered by the exposed cave formation. */
   coversCaveFormationAtTile(worldTileX: number, worldTileY: number): boolean {
     return this.isCaveFeatureTile(worldTileX, worldTileY);
@@ -1226,10 +1295,14 @@ export class WorldChunk {
   private paintContinuousTerrain(
     context: CanvasRenderingContext2D,
     vertices: readonly (readonly TerrainVisualVertex[])[],
-    caveInfluences: readonly CaveTerrainInfluence[]
+    caveInfluences: readonly CaveTerrainInfluence[],
+    preBakedPixels: Uint8ClampedArray | null = null
   ): void {
     const imageData = context.createImageData(TERRAIN_TEXTURE_SIZE, TERRAIN_TEXTURE_SIZE);
     const pixels = imageData.data;
+    if (preBakedPixels) {
+      pixels.set(preBakedPixels);
+    }
     const cellsPerChunk = CHUNK_SIZE_PIXELS / VISUAL_TERRAIN_CELL_SIZE;
     const chunkWorldX = this.x * CHUNK_SIZE_PIXELS;
     const chunkWorldY = this.y * CHUNK_SIZE_PIXELS;
@@ -1396,17 +1469,58 @@ export class WorldChunk {
         const verticalAmount = (offsetY + 0.5) / VISUAL_TERRAIN_CELL_SIZE;
         for (let cellX = -TERRAIN_VERTEX_MARGIN_CELLS; cellX < cellsPerChunk + TERRAIN_VERTEX_MARGIN_CELLS; cellX += 1) {
           const textureX = cellX * VISUAL_TERRAIN_CELL_SIZE + TERRAIN_TEXTURE_PADDING;
-          const topLeft = top[cellX + TERRAIN_VERTEX_MARGIN_CELLS];
-          const topRight = top[cellX + TERRAIN_VERTEX_MARGIN_CELLS + 1];
-          const bottomLeft = bottom[cellX + TERRAIN_VERTEX_MARGIN_CELLS];
-          const bottomRight = bottom[cellX + TERRAIN_VERTEX_MARGIN_CELLS + 1];
-
           for (let offsetX = 0; offsetX < VISUAL_TERRAIN_CELL_SIZE; offsetX += 1) {
             const pixelX = textureX + offsetX;
             if (pixelX < 0 || pixelX >= TERRAIN_TEXTURE_SIZE) {
               continue;
             }
+            if (preBakedPixels && calculatedCavePixelBounds && (
+              pixelX < calculatedCavePixelBounds.minX
+              || pixelX > calculatedCavePixelBounds.maxX
+              || textureY < calculatedCavePixelBounds.minY
+              || textureY > calculatedCavePixelBounds.maxY
+            )) {
+              continue;
+            }
             const horizontalAmount = (offsetX + 0.5) / VISUAL_TERRAIN_CELL_SIZE;
+            const worldPixelX = this.x * CHUNK_SIZE_PIXELS + cellX * VISUAL_TERRAIN_CELL_SIZE + offsetX;
+            const worldPixelY = this.y * CHUNK_SIZE_PIXELS + cellY * VISUAL_TERRAIN_CELL_SIZE + offsetY;
+
+            if (preBakedPixels) {
+              const pixel = (textureY * TERRAIN_TEXTURE_SIZE + pixelX) * 4;
+              caveInfluences.forEach((cave) => {
+                const deltaX = worldPixelX - cave.centerWorldX;
+                const deltaY = worldPixelY - cave.centerWorldY;
+                const forward = deltaX * cave.forwardX + deltaY * cave.forwardY;
+                const side = -deltaX * cave.forwardY + deltaY * cave.forwardX;
+                const sideRadius = cave.radiusPixels * 1.28;
+                const sideAmount = Math.abs(side) / sideRadius;
+                const ridgeProfile = (coherentNoise(this.seed, worldPixelX, worldPixelY, 74, 0x3c719a) - 0.5) * 0.28
+                  + (coherentNoise(this.seed, worldPixelX, worldPixelY, 21, 0x8f21d4) - 0.5) * 0.17
+                  + (coherentNoise(this.seed, worldPixelX, worldPixelY, 6, 0x6e24a1) - 0.5) * 0.08;
+                const sideNoise = (coherentNoise(this.seed, worldPixelX, worldPixelY, 31, 0x3b1169) - 0.5) * 0.16;
+                const shoulder = Math.max(0, 1 - sideAmount ** 1.75);
+                const backEdge = -cave.radiusPixels * (0.42 + shoulder * 0.48 + ridgeProfile);
+                const frontEdge = cave.radiusPixels * (0.1 + shoulder * 0.2 + ridgeProfile * 0.34);
+                if (sideAmount >= 1 + sideNoise || forward <= backEdge || forward >= frontEdge) {
+                  return;
+                }
+                const rockHeight = caveRockHeightAtTexturePixel(pixelX, textureY);
+                const slopeX = caveRockHeightAtTexturePixel(pixelX + 3, textureY) - caveRockHeightAtTexturePixel(pixelX - 3, textureY);
+                const slopeY = caveRockHeightAtTexturePixel(pixelX, textureY + 3) - caveRockHeightAtTexturePixel(pixelX, textureY - 3);
+                const bedrockTone = (rockHeight - 0.5) * 34 - slopeX * 28 - slopeY * 19
+                  + caveRockCellToneAt(worldPixelX, worldPixelY);
+                pixels[pixel] = clampChannel(cave.rockRed + bedrockTone * 1.08);
+                pixels[pixel + 1] = clampChannel(cave.rockGreen + bedrockTone);
+                pixels[pixel + 2] = clampChannel(cave.rockBlue + bedrockTone * 0.9);
+              });
+              continue;
+            }
+
+            const topLeft = top[cellX + TERRAIN_VERTEX_MARGIN_CELLS];
+            const topRight = top[cellX + TERRAIN_VERTEX_MARGIN_CELLS + 1];
+            const bottomLeft = bottom[cellX + TERRAIN_VERTEX_MARGIN_CELLS];
+            const bottomRight = bottom[cellX + TERRAIN_VERTEX_MARGIN_CELLS + 1];
             let red = sample(
               channel(topLeft.color, 16), channel(topRight.color, 16),
               channel(bottomLeft.color, 16), channel(bottomRight.color, 16), horizontalAmount, verticalAmount
@@ -1490,9 +1604,6 @@ export class WorldChunk {
             red += (246 - red) * snowMoundAmount;
             green += (252 - green) * snowMoundAmount;
             blue += (255 - blue) * snowMoundAmount;
-
-            const worldPixelX = this.x * CHUNK_SIZE_PIXELS + cellX * VISUAL_TERRAIN_CELL_SIZE + offsetX;
-            const worldPixelY = this.y * CHUNK_SIZE_PIXELS + cellY * VISUAL_TERRAIN_CELL_SIZE + offsetY;
 
             // Generated materials are crossfaded exactly like the base colour. Sampling the
             // strongest two fields avoids a texture hand-off line, while keeping chunk baking
@@ -1770,7 +1881,9 @@ export class WorldChunk {
     // Unlike a centred colour blend, this curve finishes at the gameplay boundary itself.
     // This is what removes the last visible grass step: a zero-density biome starts only after
     // every nearby patch has already shrunk and faded to zero.
-    const scaledLeadIn = leadIn * Math.max(0.1, BIOME_BLEND_WIDTH_SCALE / 50);
+    const scaledLeadIn = leadIn
+      * GROUND_GRASS_ZERO_BIOME_FADE_LEAD_SCALE
+      * Math.max(0.1, BIOME_BLEND_WIDTH_SCALE / 50);
     if (increasesTowardZeroDensity) {
       return this.smoothRange(boundary - scaledLeadIn, boundary, value);
     }
@@ -1803,7 +1916,7 @@ export class WorldChunk {
       highSnowPressure,
       mountainPressure
     );
-    return (1 - zeroDensityPressure) ** 1.7;
+    return (1 - zeroDensityPressure) ** GROUND_GRASS_EDGE_FADE_POWER;
   }
 
   private createGroundGrassAt(localX: number, localY: number, time: number): void {
@@ -1825,27 +1938,32 @@ export class WorldChunk {
     const height = (GROUND_GRASS_BASE_HEIGHT_PIXELS
       + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37) * GROUND_GRASS_HEIGHT_VARIATION_PIXELS)
       * GROUND_GRASS_SIZE_SCALE * (0.58 + edgeFade * 0.42);
+    const pattern = Math.floor(randomAtTile(
+      this.seed,
+      worldTileX,
+      worldTileY,
+      0x7959e2d1
+    ) * GROUND_GRASS_PATTERN_VARIANTS);
     const patch = createAnimatedGroundGrassPatch(
-      this.scene,
-      worldTileX * WORLD_TILE_SIZE + 5 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7) * 22,
-      worldTileY * WORLD_TILE_SIZE + 29,
+      this.groundGrassBlitters[pattern],
+      localX * WORLD_TILE_SIZE + 5 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7) * 22,
+      localY * WORLD_TILE_SIZE + 29,
       height / 34,
       this.groundGrassTint(surface),
-      Math.floor(randomAtTile(this.seed, worldTileX, worldTileY, 0x7959e2d1) * GROUND_GRASS_PATTERN_VARIANTS),
+      pattern,
       randomAtTile(this.seed, worldTileX, worldTileY, 0x53da69c7),
       time
     );
     // Density reduces the number of patches near a transition; these visual changes make
     // surviving edge patches shorter and more transparent as well, so a field peters out
     // instead of ending as a random binary band.
-    patch.image.setAlpha(0.22 + edgeFade * 0.78);
-    patch.image.setVisible(false);
+    patch.bob.setAlpha(0.22 + edgeFade * 0.78);
     this.animatedGroundGrass.push(patch);
   }
 
   private syncGroundGrassVisibility(): void {
     const visible = this.renderVisible && this.groundGrassVisible && !this.groundGrassBuildPending;
-    this.animatedGroundGrass.forEach((patch) => patch.image.setVisible(visible));
+    this.groundGrassBlitters.forEach((blitter) => blitter.setVisible(visible));
   }
 
   private syncAnimatedFeatureFoliage(): void {
@@ -1909,19 +2027,51 @@ export class WorldChunk {
     });
   }
 
+  private applyFeatureHarvestOffset(tileX: number, tileY: number, offset: number): void {
+    this.featureImages.get(this.tileKey(tileX, tileY))?.setX((tileX + 0.5) * WORLD_TILE_SIZE + offset);
+    if (this.animatedFeatureFoliageInitialized) {
+      this.syncAnimatedFeatureFoliage();
+    }
+  }
+
+  private ensureSharedFeatureTexture(type: TerrainFeatureType, mirror: number): string {
+    const direction = mirror < 0 ? 'left' : 'right';
+    const textureKey = `feature-shared:v${TOPOGRAPHY_GENERATION_VERSION}:${type}:${direction}`;
+    if (this.scene.textures.exists(textureKey)) {
+      return textureKey;
+    }
+
+    this.featureGraphics.clear();
+    this.drawFeature(
+      type,
+      SHARED_FEATURE_TEXTURE_CENTER - WORLD_TILE_SIZE / 2,
+      SHARED_FEATURE_TEXTURE_CENTER - WORLD_TILE_SIZE / 2,
+      0,
+      0,
+      0,
+      1,
+      mirror
+    );
+    this.featureGraphics.generateTexture(textureKey, SHARED_FEATURE_TEXTURE_SIZE, SHARED_FEATURE_TEXTURE_SIZE);
+    this.featureGraphics.clear();
+    return textureKey;
+  }
+
   private drawFeature(
     type: TerrainFeatureType,
     tileX: number,
     tileY: number,
     animationOffset: number,
     worldTileX = Math.floor(tileX / WORLD_TILE_SIZE),
-    worldTileY = Math.floor(tileY / WORLD_TILE_SIZE)
+    worldTileY = Math.floor(tileY / WORLD_TILE_SIZE),
+    scaleOverride?: number,
+    mirrorOverride?: number
   ): void {
     const centerX = tileX + WORLD_TILE_SIZE / 2 + animationOffset;
     const centerY = tileY + WORLD_TILE_SIZE / 2;
     const variation = randomAtTile(this.seed, worldTileX, worldTileY, 0x6ac4d9e3);
-    const scale = 0.92 + variation * 0.16;
-    const mirror = variation > 0.5 ? 1 : -1;
+    const scale = scaleOverride ?? 0.92 + variation * 0.16;
+    const mirror = mirrorOverride ?? (variation > 0.5 ? 1 : -1);
     const graphics = this.featureGraphics;
 
     const groundPatch = (width: number, depth: number, color: number, alpha = 0.32): void => {

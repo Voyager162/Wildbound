@@ -188,8 +188,18 @@ export const featureAtTile = (seed: string, tileX: number, tileY: number): Terra
   }
 };
 
+const FEATURE_CHUNK_CACHE_LIMIT = 256;
+const featureChunkCache = new Map<string, TerrainFeature[]>();
+
 // This data is independent of Phaser, so an unloaded chunk can be recreated exactly later.
 export const generateChunkFeatures = (seed: string, chunkX: number, chunkY: number): TerrainFeature[] => {
+  const cacheKey = `${seed}:${chunkX},${chunkY}`;
+  const cached = featureChunkCache.get(cacheKey);
+  if (cached) {
+    featureChunkCache.delete(cacheKey);
+    featureChunkCache.set(cacheKey, cached);
+    return cached;
+  }
   const features: TerrainFeature[] = [];
   const firstTileX = chunkX * CHUNK_SIZE_TILES;
   const firstTileY = chunkY * CHUNK_SIZE_TILES;
@@ -203,5 +213,13 @@ export const generateChunkFeatures = (seed: string, chunkX: number, chunkY: numb
     }
   }
 
+  featureChunkCache.set(cacheKey, features);
+  while (featureChunkCache.size > FEATURE_CHUNK_CACHE_LIMIT) {
+    const oldestKey = featureChunkCache.keys().next().value as string | undefined;
+    if (!oldestKey) {
+      break;
+    }
+    featureChunkCache.delete(oldestKey);
+  }
   return features;
 };

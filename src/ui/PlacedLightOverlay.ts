@@ -43,6 +43,7 @@ export class PlacedLightOverlay {
   private pixelWidth = 0;
   private pixelHeight = 0;
   private hasDrawnLight = false;
+  private enabled = true;
 
   constructor(private readonly parent: HTMLElement) {
     this.canvas = document.createElement('canvas');
@@ -56,7 +57,24 @@ export class PlacedLightOverlay {
     parent.append(this.canvas);
   }
 
+  setEnabled(enabled: boolean): void {
+    if (this.enabled === enabled) {
+      return;
+    }
+    this.enabled = enabled;
+    this.canvas.classList.toggle('is-hidden', !enabled);
+    this.canvas.style.display = enabled ? '' : 'none';
+    if (!enabled) {
+      this.context.setTransform(1, 0, 0, 1, 0, 0);
+      this.context.clearRect(0, 0, this.pixelWidth, this.pixelHeight);
+      this.hasDrawnLight = false;
+    }
+  }
+
   update(camera: Phaser.Cameras.Scene2D.Camera, lights: readonly NightAmbientLight[]): void {
+    if (!this.enabled) {
+      return;
+    }
     const scale = PLACED_LIGHT_RENDER_SCALE * Math.max(1, window.devicePixelRatio || 1);
     const cssWidth = Math.max(1, this.parent.clientWidth);
     const cssHeight = Math.max(1, this.parent.clientHeight);

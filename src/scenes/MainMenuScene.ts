@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import type { WorldSelection } from '../save/WorldLibrary';
+import { mainMenuMusic } from '../audio/MainMenuMusic';
 import { MainMenuOverlay } from '../ui/MainMenuOverlay';
 
 export class MainMenuScene extends Phaser.Scene {
@@ -11,6 +12,7 @@ export class MainMenuScene extends Phaser.Scene {
 
   create(): void {
     this.cameras.main.setBackgroundColor('#0d1b20');
+    void mainMenuMusic.start();
     const gameElement = document.getElementById('game');
     if (!gameElement) {
       throw new Error('Wildbound game container was not found.');

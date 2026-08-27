@@ -16,10 +16,16 @@ export const GROUND_GRASS_DENSITY_BY_BIOME: Readonly<Record<Biome, number>> = {
   [Biome.Snow]: 0
 };
 
-// Ground grass uses a full render-sized window and is prepared at least two chunks beyond it.
+// Keep plains vegetation present through most of the visual terrain blend. These controls only
+// shape the final approach to a biome whose configured density is zero; grass still reaches zero
+// exactly when that gameplay biome begins, but no longer disappears far ahead of its boundary.
+export const GROUND_GRASS_ZERO_BIOME_FADE_LEAD_SCALE = 0.44;
+export const GROUND_GRASS_EDGE_FADE_POWER = 0.72;
+
+// Ground grass uses a full render-sized window and is prepared one complete chunk beyond it.
 // ChunkManager expands these minimums for an ultrawide viewport, so the player can never see a
 // terrain chunk whose low grass has not already been assembled off-screen.
 export const GROUND_GRASS_RENDER_RADIUS_X = 3;
 export const GROUND_GRASS_RENDER_RADIUS_Y = 2;
-export const GROUND_GRASS_PRELOAD_RADIUS_X = 5;
-export const GROUND_GRASS_PRELOAD_RADIUS_Y = 4;
+export const GROUND_GRASS_PRELOAD_RADIUS_X = 4;
+export const GROUND_GRASS_PRELOAD_RADIUS_Y = 3;

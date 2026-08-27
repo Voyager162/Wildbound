@@ -44,7 +44,9 @@ export const resourceForFeature = (feature: TerrainFeatureType): ResourceType =>
     case TerrainFeatureType.Tree:
       return ResourceType.Wood;
     case TerrainFeatureType.Cactus:
-      return ResourceType.Cactus;
+      // Cacti are harvested as tough plant fiber, matching the other fibrous world vegetation.
+      // Keep the legacy Cactus inventory resource defined for existing saves and potion recipes.
+      return ResourceType.Fiber;
     case TerrainFeatureType.Rock:
     case TerrainFeatureType.SnowyRock:
       return ResourceType.Stone;

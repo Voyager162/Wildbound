@@ -3,6 +3,7 @@ import { featureAtTile } from '../generation/featureGenerator';
 import { coherentNoise, randomAtTile } from '../generation/noise';
 import { surfaceAtTile } from '../generation/terrainGenerator';
 import {
+  CAVE_DIAMOND_MAX_DEPOSITS_PER_CAVE,
   CAVE_ORE_FLOOR_PLACEMENT_CHANCE,
   CAVE_ORE_MIN_SEPARATION_TILES,
   CAVE_ORE_SPAWN_RULES,
@@ -841,10 +842,11 @@ const buildDepthMap = (tiles: boolean[][], starts: readonly (readonly [number, n
 // cannot make a formation unreachable or appear at the entrance.
 const normalizedCaveStartDepth = (startDepth: number): number => Math.max(1, Math.min(CAVE_DEPTH_SCALE_MAX, startDepth)) / CAVE_DEPTH_SCALE_MAX;
 
-const oreForDepth = (seed: string, cave: CaveEntrance, x: number, y: number, depth: number, hasLavaReach: boolean): CaveOreType | null => {
+const oreForDepth = (seed: string, cave: CaveEntrance, x: number, y: number, depth: number): CaveOreType | null => {
   const roll = randomAtTile(seed, cave.tileX * 131 + x, cave.tileY * 131 + y, CAVE_ORE_SALT);
   const rules = CAVE_ORE_SPAWN_RULES;
-  if ((!rules.diamond.requiresDeepCave || hasLavaReach) && depth > Math.max(normalizedCaveStartDepth(rules.diamond.startDepth), normalizedCaveStartDepth(CAVE_LAVA_START_DEPTH)) && roll < rules.diamond.chance) return 'diamond';
+  const isDeepCave = cave.depth === 'deep' || cave.depth === 'abyssal';
+  if ((!rules.diamond.requiresDeepCave || isDeepCave) && depth > normalizedCaveStartDepth(rules.diamond.startDepth) && roll < rules.diamond.chance) return 'diamond';
   if (depth > normalizedCaveStartDepth(rules.gold.startDepth) && roll < rules.gold.chance) return 'gold';
   if (depth > normalizedCaveStartDepth(rules.iron.startDepth) && roll < rules.iron.chance) return 'iron';
   return depth > normalizedCaveStartDepth(rules.coal.startDepth) && roll < rules.coal.chance ? 'coal' : null;
@@ -1146,16 +1148,22 @@ export const generateCaveLayout = (seed: string, entrance: CaveEntrance): CaveLa
   }
 
   const ores: CaveOre[] = [];
+  let diamondDepositCount = 0;
   for (let y = 1; y < height - 1; y += 1) for (let x = 1; x < width - 1; x += 1) {
     if (!floorTiles[y][x]) continue;
     const adjacentFloorDirections = CARDINAL_DIRECTIONS.filter(([dx, dy]) => floorTiles[y + dy][x + dx]);
     if (adjacentFloorDirections.length !== CARDINAL_DIRECTIONS.length) continue;
     const depth = depthByTile[y][x];
     if (depth < 0.05 || x === entranceTileX && y >= entranceTileY - 3) continue;
-    const ore = oreForDepth(seed, systemEntrance, x, y, depth, lavaPools.length > 0);
+    const ore = oreForDepth(seed, systemEntrance, x, y, depth);
+    const diamondCapReached = ore === 'diamond'
+      && diamondDepositCount >= CAVE_DIAMOND_MAX_DEPOSITS_PER_CAVE;
     const hasClearanceFromOtherOre = ores.every((existing) => Math.hypot(existing.tileX - x, existing.tileY - y) >= CAVE_ORE_MIN_SEPARATION_TILES);
-    if (ore && hasClearanceFromOtherOre && randomAtTile(seed, x + systemEntrance.tileX * 41, y + systemEntrance.tileY * 41, CAVE_ORE_SALT + 3) < CAVE_ORE_FLOOR_PLACEMENT_CHANCE) {
+    if (ore && !diamondCapReached && hasClearanceFromOtherOre && randomAtTile(seed, x + systemEntrance.tileX * 41, y + systemEntrance.tileY * 41, CAVE_ORE_SALT + 3) < CAVE_ORE_FLOOR_PLACEMENT_CHANCE) {
       ores.push({ id: `${systemEntrance.id}:${x}:${y}`, tileX: x, tileY: y, type: ore, placement: 'floor', veinStyle: oreVeinStyleFor(seed, systemEntrance, x, y, ore) });
+      if (ore === 'diamond') {
+        diamondDepositCount += 1;
+      }
     }
   }
 

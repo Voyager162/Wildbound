@@ -14,17 +14,23 @@ interface MainMenuOverlayOptions {
   readonly onWorldSelected: (selection: WorldSelection) => void;
 }
 
-const SEED_WORDS = [
-  'amber', 'ash', 'bramble', 'cedar', 'cinder', 'dawn', 'ember', 'fern', 'glade', 'hollow',
-  'ivy', 'juniper', 'lumen', 'moss', 'north', 'oak', 'ripple', 'solstice', 'thistle', 'wild'
-] as const;
-
 // A blank seed keeps the one-click discovery flow. This is intentionally not exposed as a
 // separate control: leaving the seed field blank is the single way to request a fresh world.
+const RANDOM_SEED_MINIMUM = 1_000_000_000;
+const RANDOM_SEED_RANGE = 9_000_000_000;
+const RANDOM_SEED_SAMPLE_LIMIT = Math.floor(Number.MAX_SAFE_INTEGER / RANDOM_SEED_RANGE) * RANDOM_SEED_RANGE;
+
 const createSeed = (): string => {
-  const randomWord = (): string => SEED_WORDS[Math.floor(Math.random() * SEED_WORDS.length)];
-  const suffix = Math.floor(Math.random() * 0x1_0000).toString(16).padStart(4, '0');
-  return `${randomWord()}-${randomWord()}-${suffix}`;
+  // Use 53 cryptographically random bits and rejection sampling, so every value from
+  // 1,000,000,000 through 9,999,999,999 is equally likely. Returning a string preserves the
+  // existing seed hashing and storage behavior while guaranteeing ten numeric digits.
+  const randomParts = new Uint32Array(2);
+  let sample = RANDOM_SEED_SAMPLE_LIMIT;
+  while (sample >= RANDOM_SEED_SAMPLE_LIMIT) {
+    crypto.getRandomValues(randomParts);
+    sample = randomParts[0] * 2_097_152 + (randomParts[1] >>> 11);
+  }
+  return String(RANDOM_SEED_MINIMUM + (sample % RANDOM_SEED_RANGE));
 };
 
 const worldLabel = (world: WorldSummary): string => world.name;
@@ -154,7 +160,7 @@ export class MainMenuOverlay {
     input.maxLength = MAX_WORLD_SEED_LENGTH;
     input.autocomplete = 'off';
     input.spellcheck = false;
-    input.placeholder = 'Leave blank for a new discovery';
+    input.placeholder = 'Leave blank for a 10-digit random seed';
     input.setAttribute('aria-describedby', 'world-seed-help');
     const help = document.createElement('p');
     help.id = 'world-seed-help';
@@ -547,7 +553,12 @@ export class MainMenuOverlay {
     overline.textContent = 'A procedural adventure';
     const title = document.createElement('div');
     title.className = 'wildbound-brand__title';
-    title.innerHTML = '<span>Wild</span><span>bound</span>';
+    // Keep the baseline title tilt on the outer element. The inner word can then settle to a
+    // neutral rotation before its transform origin moves to the opposite edge, avoiding a jump.
+    const titleMotion = document.createElement('div');
+    titleMotion.className = 'wildbound-brand__title-motion';
+    titleMotion.innerHTML = '<span>Wild</span><span>bound</span>';
+    title.append(titleMotion);
     const underline = document.createElement('span');
     underline.className = 'wildbound-brand__underline';
     underline.textContent = 'Explore the untamed';

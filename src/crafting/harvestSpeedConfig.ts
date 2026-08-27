@@ -264,11 +264,24 @@ export const CAVE_ORE_MINING_SPEEDS: Readonly<Record<HarvestMethodId, number>> =
   [ToolId.DiamondSword]: .5
 };
 
+// Deposit toughness is independent from the equipped tool: upgraded ores take progressively
+// longer even when they are mined with the appropriate pickaxe. The values also keep the
+// minimum valid-tool times in order: coal, iron, gold, then diamond.
+export const CAVE_ORE_MINING_DURATION_MULTIPLIERS: Readonly<Record<CaveOreType, number>> = {
+  coal: 1,
+  iron: 1.7,
+  gold: 2.55,
+  diamond: 3.3
+};
+
 export const harvestSpeedForFeature = (toolId: ToolId | null, feature: TerrainFeatureType): number =>
   HARVEST_SPEEDS[toolId ?? 'hand'][feature];
 
 export const caveOreMiningSpeedForTool = (toolId: ToolId | null): number =>
   CAVE_ORE_MINING_SPEEDS[toolId ?? 'hand'];
+
+export const caveOreMiningDurationMultiplierFor = (ore: CaveOreType): number =>
+  CAVE_ORE_MINING_DURATION_MULTIPLIERS[ore];
 
 export const peakHarvestSpeedForTool = (toolId: ToolId): number =>
   Math.max(...Object.values(HARVEST_SPEEDS[toolId]));

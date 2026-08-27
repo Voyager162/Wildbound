@@ -14,3 +14,7 @@ contextBridge.exposeInMainWorld('wildboundSettings', {
   load: (): Promise<unknown | null> => ipcRenderer.invoke('wildbound:load-settings'),
   save: (settings: unknown): Promise<void> => ipcRenderer.invoke('wildbound:save-settings', settings)
 });
+
+contextBridge.exposeInMainWorld('wildboundMusic', {
+  listMainMenuTracks: (): Promise<unknown> => ipcRenderer.invoke('wildbound:list-main-menu-music')
+});

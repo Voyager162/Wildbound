@@ -8,7 +8,9 @@ const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     icon: 'assets/wildbound',
-    extraResource: ['assets/wildbound.ico']
+    // Music remains outside the renderer bundle so creators can manage the MP3 library as a
+    // normal folder, while Forge still copies it beside every packaged executable.
+    extraResource: ['assets/wildbound.ico', 'music']
   },
   makers: [
     new MakerSquirrel(

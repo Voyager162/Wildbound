@@ -3,6 +3,7 @@ import type { InventoryItem, InventorySlot } from '../player/Inventory';
 import { HOTBAR_SLOT_COUNT, Inventory, INVENTORY_SLOT_COUNT } from '../player/Inventory';
 import { FacingDirection } from '../player/interaction';
 import { PLAYER_SPEED_SCALE } from '../player/playerConfig';
+import { mainMenuMusic } from '../audio/MainMenuMusic';
 import type { InteractionTarget } from '../player/interaction';
 import { isSaveGameData, type SaveGameData } from '../save/SaveGameData';
 import { MAX_WORLD_SEED_LENGTH, isWorldMode, type WorldMode } from '../save/WorldLibrary';
@@ -27,12 +28,18 @@ import { PotionEffectOverlay } from '../ui/PotionEffectOverlay';
 import { WorldMapOverlay } from '../ui/WorldMapOverlay';
 import { MINIMAP_AREA_SCALE } from '../ui/uiConfig';
 import { ChunkManager } from '../world/ChunkManager';
+import { BiomeAmbientAudio } from '../world/BiomeAmbientAudio';
+import { SWIM_RECORDING_REPEAT_INTERVAL_MS } from '../world/swimmingAudioConfig';
+import {
+  caveOreHarvestSoundContactCountFor,
+  harvestSoundContactCountFor
+} from '../world/harvestAudioConfig';
 import { DropManager } from '../world/DropManager';
 import { PlaceableManager } from '../world/PlaceableManager';
 import { biomeAtTile, climateAtTile } from '../world/generation/biomeGenerator';
 import { featureAtTile } from '../world/generation/featureGenerator';
 import { randomAtTile } from '../world/generation/noise';
-import { isTraversableWaterAt, surfaceAtTile } from '../world/generation/terrainGenerator';
+import { surfaceAtTile } from '../world/generation/terrainGenerator';
 import type { TopographySample } from '../world/generation/topographyGenerator';
 import { RESOURCE_COLORS, ResourceType, resourceForFeature, resourceLabel } from '../world/resources';
 import { SessionWorldState } from '../world/SessionWorldState';
@@ -58,6 +65,7 @@ import { POTION_DEFINITIONS, isPotionId, type PotionEffect, type PotionId } from
 import { TOOL_DEFINITIONS, TOOL_HEAD_PALETTES, isToolId, type ToolId } from '../crafting/toolConfig';
 import { craftRecipeIntoSlot as applyCraftingRecipe } from '../crafting/craftingService';
 import {
+  caveOreMiningDurationMultiplierFor,
   caveOreMiningSpeedForTool,
   harvestSpeedForFeature,
   meetsMiningRequirement,
@@ -101,6 +109,7 @@ const DROP_INTERACTION_INTERVAL_MS = 120;
 const SAVE_INTERVAL_MS = 5000;
 const MINIMAP_UPDATE_INTERVAL_MS = 80;
 const NIGHT_AMBIENT_LIGHT_UPDATE_INTERVAL_MS = 33;
+const FOOTSTEP_SOUND_INTERVAL_MS = 265;
 const MINIMAP_TILES_PER_CELL = Math.max(1, Math.round(16 * (MINIMAP_AREA_SCALE / 50)));
 const CAVE_ENTRANCE_INTERACTION_RADIUS_PIXELS = 84;
 const CAVE_INTERACTION_BUCKET_SIZE_TILES = 6;
@@ -114,9 +123,8 @@ const CAVE_WALL_FACE_SCALE = 0.72 + CAVE_WALL_PUFFINESS * 0.28;
 // tile-by-tile sight polygon. It still limits how much of a tunnel is known at once, while
 // keeping nearby cave walls and floor details legible.
 const CAVE_PLAYER_VISION_RADIUS_TILES = 10.5;
-// Cave exit shafts are cave-local art. They intentionally remain fixed instead of sampling
-// the surface clock, so entering a cave never changes its lighting at sunrise or nightfall.
-const CAVE_EXIT_LIGHT_LEVEL = 0.72;
+// Cave exit shafts sample the surface clock. They can carry daylight underground, but must not
+// leave a permanent overhead glow at night when the surface opening itself is dark.
 
 // Placement follows the visible world, not an invisible collision grid.  Keep these reasons
 // narrow and explicit so a clear patch of ground never becomes unexpectedly unavailable.
@@ -191,6 +199,7 @@ export class AdventureScene extends Phaser.Scene {
   private chunkManager!: ChunkManager;
   private dropManager!: DropManager;
   private placeableManager!: PlaceableManager;
+  private ambientAudio: BiomeAmbientAudio | null = null;
   private sessionWorldState!: SessionWorldState;
   private inventory!: Inventory;
   private inventoryOverlay!: InventoryOverlay;
@@ -205,6 +214,7 @@ export class AdventureScene extends Phaser.Scene {
   private placedObjectOverlay!: PlacedObjectOverlay;
   private debugElement!: HTMLPreElement;
   private loadingOverlay!: HTMLDivElement;
+  private loadingTitle!: HTMLElement;
   private loadingProgressBar!: HTMLDivElement;
   private loadingProgressFill!: HTMLDivElement;
   private loadingProgressText!: HTMLSpanElement;
@@ -222,6 +232,7 @@ export class AdventureScene extends Phaser.Scene {
   private caveLavaGraphics!: Phaser.GameObjects.Graphics;
   private caveEntranceLightGraphics!: Phaser.GameObjects.Graphics;
   private caveFogOverlay!: SVGSVGElement;
+  private caveFogMask!: SVGMaskElement;
   private caveFogMaskBase!: SVGRectElement;
   private caveFogDarkness!: SVGRectElement;
   private caveFogPlayerLight!: SVGCircleElement;
@@ -232,11 +243,15 @@ export class AdventureScene extends Phaser.Scene {
   private pauseMenuOpen = false;
   private returningToMainMenu = false;
   private worldReady = false;
+  private caveTransitionInProgress = false;
   private worldSeed = WORLD_SEED;
   private worldId: string | null = null;
   private worldMode: WorldMode = 'survival';
   private facing = FacingDirection.Down;
   private isSwimming = false;
+  private isSwimmingInSwampWater = false;
+  private swimStrokeElapsedMs = 0;
+  private footstepElapsedMs = 0;
   private terrainSurface = 'ground';
   private currentTopography: TopographySample | null = null;
   private interactionTarget: InteractionTarget | null = null;
@@ -253,6 +268,7 @@ export class AdventureScene extends Phaser.Scene {
   private placementPreview: (PlacementTarget & { readonly placeable: PlaceableId }) | null = null;
   private harvestTarget: InteractionTarget | null = null;
   private harvestElapsedMs = 0;
+  private harvestContactSoundCount = 0;
   private harvestRequiresControlRelease = false;
   private drinkingPotion: { readonly id: PotionId; readonly slotIndex: number } | null = null;
   private tonicDrinkElapsedMs = 0;
@@ -320,6 +336,7 @@ export class AdventureScene extends Phaser.Scene {
     this.worldMapOpen = false;
     this.pauseMenuOpen = false;
     this.returningToMainMenu = false;
+    this.caveTransitionInProgress = false;
     this.activeCave = null;
     this.activePotionEffects.clear();
     this.drinkingPotion = null;
@@ -488,9 +505,11 @@ export class AdventureScene extends Phaser.Scene {
 
     this.updateWorldTime(time, delta);
     this.updatePotionEffects();
+    this.updateAmbientAudio();
     // Menus are true input pauses. Keep world time/save bookkeeping alive, but never let held
     // movement keys carry the player while the inventory or settings UI has focus.
     if (this.pauseMenuOpen) {
+      this.ambientAudio?.setSwimming(false, false, false);
       this.cancelTonicDrinking();
       this.clearPlacementPreview();
       this.updatePlayerAvatar(delta, false);
@@ -502,6 +521,7 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
     if (this.activeCave) {
+      this.ambientAudio?.setSwimming(false, false, false);
       this.clearPlacementPreview();
       this.updateCave(time, delta);
       this.persistIfNeeded(time);
@@ -514,6 +534,7 @@ export class AdventureScene extends Phaser.Scene {
     this.updateExploration();
 
     if (this.worldMapOpen) {
+      this.ambientAudio?.setSwimming(false, false, false);
       this.cancelTonicDrinking();
       this.clearPlacementPreview();
       this.chunkManager.updateWaterAnimation(time);
@@ -530,6 +551,7 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     if (this.inventoryOpen || this.craftingOpen) {
+      this.ambientAudio?.setSwimming(false, false, false);
       this.cancelTonicDrinking();
       this.clearPlacementPreview();
       this.chunkManager.updateWaterAnimation(time);
@@ -547,6 +569,7 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     if (this.placedObjectOverlay.isOpen) {
+      this.ambientAudio?.setSwimming(false, false, false);
       this.cancelTonicDrinking();
       this.clearPlacementPreview();
       this.chunkManager.updateWaterAnimation(time);
@@ -591,6 +614,8 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     this.updateSwimmingState();
+    this.updateSurfaceSwimAudio(delta, isMoving);
+    this.updateSurfaceFootsteps(delta, isMoving);
     this.chunkManager.update(this.player.x, this.player.y, time);
     this.chunkManager.updateFoliage(time);
     this.chunkManager.updateWaterAnimation(time);
@@ -667,34 +692,58 @@ export class AdventureScene extends Phaser.Scene {
     this.sessionWorldState.setWorldTimeMs(this.worldTimeMs);
 
     this.chunkManager = new ChunkManager(this, this.worldSeed, this.sessionWorldState);
+    this.ambientAudio?.destroy();
+    this.ambientAudio = new BiomeAmbientAudio(this.worldSeed);
+    if (this.gameSettings.audio.biomeAmbienceEnabled) {
+      this.ambientAudio.prepare();
+    }
     this.chunkManager.applyVideoSettings(this.gameSettings.video);
     this.dropManager = new DropManager(this, this.sessionWorldState);
-    await this.chunkManager.prime(this.player.x, this.player.y, (progress) => {
-      this.updateLoadingProgress(progress.completed, progress.total);
-    });
+    const savedCaveEntrance = savedActiveCave
+      ? caveEntranceAtTile(this.worldSeed, savedActiveCave.entranceTileX, savedActiveCave.entranceTileY)
+      : null;
+    // A save already inside a cave does not need a surface presentation yet. Skipping that prime
+    // avoids completing a wilderness loading pass only to immediately begin a second cave pass;
+    // the correct surface window is prepared later when the player actually leaves the cave.
+    if (!savedCaveEntrance) {
+      await this.chunkManager.prime(this.player.x, this.player.y, (progress) => {
+        this.updateLoadingProgress(progress.completed, progress.total);
+      });
+    }
     this.worldReady = true;
-    this.loadingOverlay.classList.add('is-hidden');
-    this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
-    this.terrainSurface = this.currentTopography.surface;
-    this.placeableManager.refresh(this.player.x, this.player.y);
-    this.updateSwimmingState(true);
-    this.updatePlayerAvatar(0, false);
+    if (!savedCaveEntrance) {
+      this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
+      this.terrainSurface = this.currentTopography.surface;
+      this.placeableManager.refresh(this.player.x, this.player.y);
+      this.updateSwimmingState(true);
+      this.updatePlayerAvatar(0, false);
+    }
     this.inventoryOverlay.refresh();
     this.hotbarOverlay.refresh();
-    if (savedActiveCave) {
-      const entrance = caveEntranceAtTile(this.worldSeed, savedActiveCave.entranceTileX, savedActiveCave.entranceTileY);
-      if (entrance) {
-        this.enterCave(entrance, savedActiveCave.returnWorldX, savedActiveCave.returnWorldY, false);
-      }
+    if (savedActiveCave && savedCaveEntrance) {
+      await this.enterCave(
+        savedCaveEntrance,
+        savedActiveCave.returnWorldX,
+        savedActiveCave.returnWorldY,
+        false,
+        true
+      );
     }
-    this.updateInteractionTarget(true);
+    this.loadingOverlay.classList.add('is-hidden');
+    mainMenuMusic.stop();
+    if (this.activeCave) {
+      this.updateCaveInteraction(true);
+    } else {
+      this.updateInteractionTarget(true);
+      this.updateCaveEntranceInteraction(true);
+      this.updateExploration(true);
+    }
     this.updateDropInteraction(0, true);
     this.updateMinimap(0, true);
     this.dayNightOverlay.update(this.worldTimeMs);
     this.nightAmount = sampleDayNight(this.worldTimeMs).nightAmount;
     this.ambientLightAmount = ambientLightScheduleAmount(this.worldTimeMs);
     this.updateNightAmbientLighting(this.time.now);
-    this.updateExploration(true);
     this.updateDebugText();
 
     if (!savedGame || !hadSavedWorldTime || DAY_NIGHT_START_HOUR_OVERRIDE !== null) {
@@ -714,14 +763,27 @@ export class AdventureScene extends Phaser.Scene {
     const sampleTileY = (this.player.y + 9) / WORLD_TILE_SIZE;
     const tileX = Math.floor(sampleTileX);
     const tileY = Math.floor(sampleTileY);
-    const waterAtFeet = isTraversableWaterAt(this.worldSeed, sampleTileX, sampleTileY);
-    if (!force && tileX === this.lastSwimmingTileX && tileY === this.lastSwimmingTileY && waterAtFeet === this.isSwimming) {
+    const surface = surfaceAtTile(this.worldSeed, sampleTileX, sampleTileY);
+    const waterAtFeet = surface.isWater;
+    const isSwampWater = waterAtFeet && surface.isSwampWater;
+    if (!force && tileX === this.lastSwimmingTileX && tileY === this.lastSwimmingTileY
+      && waterAtFeet === this.isSwimming && isSwampWater === this.isSwimmingInSwampWater) {
       return;
     }
 
+    const enteredWater = waterAtFeet && !this.isSwimming;
     this.lastSwimmingTileX = tileX;
     this.lastSwimmingTileY = tileY;
     this.isSwimming = waterAtFeet;
+    this.isSwimmingInSwampWater = isSwampWater;
+    if (!waterAtFeet) {
+      this.swimStrokeElapsedMs = 0;
+    } else if (enteredWater) {
+      this.swimStrokeElapsedMs = SWIM_RECORDING_REPEAT_INTERVAL_MS * 0.58;
+      if (!force) {
+        this.ambientAudio?.playWaterEntry(tileX, tileY, isSwampWater);
+      }
+    }
   }
 
   private updateCaveSwimmingState(force = false): void {
@@ -735,6 +797,76 @@ export class AdventureScene extends Phaser.Scene {
     this.lastSwimmingTileX = tileX;
     this.lastSwimmingTileY = tileY;
     this.isSwimming = lavaAtFeet;
+    this.isSwimmingInSwampWater = false;
+    this.swimStrokeElapsedMs = 0;
+  }
+
+  private updateSurfaceSwimAudio(delta: number, isMoving: boolean): void {
+    const swimmingOnSurface = !this.activeCave && this.isSwimming;
+    this.ambientAudio?.setSwimming(
+      swimmingOnSurface,
+      swimmingOnSurface && isMoving,
+      this.isSwimmingInSwampWater
+    );
+    if (!swimmingOnSurface || !isMoving) {
+      this.swimStrokeElapsedMs = 0;
+      return;
+    }
+    this.swimStrokeElapsedMs += Math.max(0, delta);
+    if (this.swimStrokeElapsedMs < SWIM_RECORDING_REPEAT_INTERVAL_MS) {
+      return;
+    }
+    this.swimStrokeElapsedMs %= SWIM_RECORDING_REPEAT_INTERVAL_MS;
+    this.ambientAudio?.playSwimStroke(
+      this.lastSwimmingTileX,
+      this.lastSwimmingTileY,
+      this.isSwimmingInSwampWater
+    );
+  }
+
+  private updateSurfaceFootsteps(delta: number, isMoving: boolean): void {
+    if (this.activeCave || this.isSwimming || !isMoving) {
+      this.footstepElapsedMs = 0;
+      return;
+    }
+    this.footstepElapsedMs += Math.max(0, delta);
+    if (this.footstepElapsedMs < FOOTSTEP_SOUND_INTERVAL_MS) {
+      return;
+    }
+    this.footstepElapsedMs %= FOOTSTEP_SOUND_INTERVAL_MS;
+    // Sample at the same visible feet point used by swimming, so a step changes material exactly
+    // when the avatar crosses the rendered shoreline or biome surface.
+    const sampleTileX = this.player.x / WORLD_TILE_SIZE;
+    const sampleTileY = (this.player.y + 9) / WORLD_TILE_SIZE;
+    const surface = surfaceAtTile(this.worldSeed, sampleTileX, sampleTileY);
+    if (surface.isWater) {
+      return;
+    }
+    this.ambientAudio?.playFootstep(
+      surface.biome,
+      Math.floor(sampleTileX),
+      Math.floor(sampleTileY)
+    );
+  }
+
+  private updateCaveFootsteps(delta: number, isMoving: boolean): void {
+    if (!isMoving || this.isSwimming) {
+      this.footstepElapsedMs = 0;
+      return;
+    }
+    this.footstepElapsedMs += Math.max(0, delta);
+    if (this.footstepElapsedMs < FOOTSTEP_SOUND_INTERVAL_MS) {
+      return;
+    }
+    this.footstepElapsedMs %= FOOTSTEP_SOUND_INTERVAL_MS;
+    const cave = this.activeCave;
+    if (!cave) {
+      return;
+    }
+    this.ambientAudio?.playCaveFootstep(
+      Math.floor((this.player.x - cave.origin.x) / WORLD_TILE_SIZE),
+      Math.floor((this.player.y - cave.origin.y) / WORLD_TILE_SIZE)
+    );
   }
 
   private isCaveLavaAt(worldX: number, worldY: number): boolean {
@@ -929,6 +1061,7 @@ export class AdventureScene extends Phaser.Scene {
     this.loadingOverlay.setAttribute('aria-live', 'polite');
     const title = document.createElement('strong');
     title.textContent = 'Preparing wilderness';
+    this.loadingTitle = title;
     this.loadingProgressText = document.createElement('span');
     this.loadingProgressText.className = 'world-loading-overlay__progress-text';
     const track = document.createElement('div');
@@ -947,14 +1080,57 @@ export class AdventureScene extends Phaser.Scene {
     gameElement.append(this.loadingOverlay);
   }
 
-  private updateLoadingProgress(completed: number, total: number): void {
+  private updateLoadingProgress(
+    completed: number,
+    total: number,
+    status = 'Building the nearby terrain'
+  ): void {
     const safeTotal = Math.max(1, total);
     const ratio = Phaser.Math.Clamp(completed / safeTotal, 0, 1);
     const percentage = Math.round(ratio * 100);
-    this.loadingProgressText.textContent = `Building the nearby terrain… ${percentage}%`;
+    this.loadingProgressText.textContent = `${status}… ${percentage}%`;
     this.loadingProgressBar.setAttribute('aria-valuenow', String(percentage));
-    this.loadingProgressBar.setAttribute('aria-valuetext', `${percentage}% of nearby terrain prepared`);
+    this.loadingProgressBar.setAttribute('aria-valuetext', `${status}: ${percentage}%`);
     this.loadingProgressFill.style.transform = `scaleX(${ratio})`;
+  }
+
+  private showTerrainLoading(continueExistingProgress = false): void {
+    // Cave travel deliberately uses the exact original terrain presentation. It is one world,
+    // so entering underground should not look like navigating to a separate cave-specific scene.
+    this.loadingTitle.textContent = 'Preparing wilderness';
+    if (!continueExistingProgress) {
+      this.updateLoadingProgress(0, 100);
+    }
+    this.loadingOverlay.classList.remove('is-hidden');
+    this.loadingOverlay.setAttribute('aria-busy', 'true');
+  }
+
+  // A pair of animation frames guarantees the DOM overlay has actually painted before a
+  // synchronous cave-generation or cave-rendering phase begins. One rAF callback alone still
+  // runs before paint and can leave the previous world visible during the expensive work.
+  private waitForTerrainLoadingPaint(): Promise<void> {
+    return new Promise((resolve) => {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+    });
+  }
+
+  private async finishTerrainLoading(): Promise<void> {
+    this.updateLoadingProgress(100, 100);
+    await this.waitForTerrainLoadingPaint();
+    this.worldReady = true;
+    this.updateAmbientAudio();
+    this.loadingOverlay.setAttribute('aria-busy', 'false');
+    this.loadingOverlay.classList.add('is-hidden');
+    this.caveTransitionInProgress = false;
+  }
+
+  private recoverFromTerrainLoadingFailure(action: string, error: unknown): void {
+    console.error(`Wildbound could not ${action}.`, error);
+    this.worldReady = true;
+    this.updateAmbientAudio();
+    this.loadingOverlay.setAttribute('aria-busy', 'false');
+    this.loadingOverlay.classList.add('is-hidden');
+    this.caveTransitionInProgress = false;
   }
 
   private async loadGameSettings(): Promise<void> {
@@ -1024,9 +1200,13 @@ export class AdventureScene extends Phaser.Scene {
     this.chunkManager?.applyVideoSettings(this.gameSettings.video);
     this.nightAmbientOverlay?.setEnabled(this.gameSettings.video.quality.showNightLights && !this.activeCave);
     this.nightAmbientOverlay?.setRenderScale(this.gameSettings.video.quality.nightLightResolution);
+    if (this.gameSettings.audio.biomeAmbienceEnabled) {
+      this.ambientAudio?.activate();
+    }
     if (this.activeCave) {
       this.updateCaveLava(this.gameSettings.video.quality.animateLava ? this.time.now : 0, true);
     }
+    this.updateAmbientAudio();
   }
 
   private toggleDebug(): void {
@@ -1039,6 +1219,7 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private handleGameKeyDown(event: KeyboardEvent): void {
+    this.ambientAudio?.activate();
     if (event.repeat) {
       return;
     }
@@ -1113,7 +1294,7 @@ export class AdventureScene extends Phaser.Scene {
         return;
       }
       if (this.matchesControl('enterExitCave', event) && this.caveExitNearby) {
-        this.exitCave(this.caveExitTarget ?? undefined);
+        void this.exitCave(this.caveExitTarget ?? undefined);
         return;
       }
       if (this.matchesControl('openInventory', event)) {
@@ -1123,7 +1304,7 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     if (this.matchesControl('enterExitCave', event) && this.nearbyCaveEntrance) {
-      this.enterCave(this.nearbyCaveEntrance, this.player.x, this.player.y);
+      void this.enterCave(this.nearbyCaveEntrance, this.player.x, this.player.y);
       return;
     }
     if (this.matchesControl('pickUpItem', event) && this.pickupNearbyDrop()) {
@@ -1162,6 +1343,7 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private readonly handleWorldPointerDown = (pointer: Phaser.Input.Pointer): void => {
+    this.ambientAudio?.activate();
     if (!this.worldReady || this.inventoryOpen || this.craftingOpen || this.worldMapOpen
       || this.pauseMenuOpen || this.placedObjectOverlay.isOpen) {
       return;
@@ -1185,7 +1367,7 @@ export class AdventureScene extends Phaser.Scene {
         return;
       }
       if (this.matchesPointerControl('enterExitCave', pointer) && this.caveExitNearby) {
-        this.exitCave(this.caveExitTarget ?? undefined);
+        void this.exitCave(this.caveExitTarget ?? undefined);
         return;
       }
       if (this.matchesPointerControl('openInventory', pointer)) {
@@ -1194,7 +1376,7 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
     if (this.matchesPointerControl('enterExitCave', pointer) && this.nearbyCaveEntrance) {
-      this.enterCave(this.nearbyCaveEntrance, this.player.x, this.player.y);
+      void this.enterCave(this.nearbyCaveEntrance, this.player.x, this.player.y);
       return;
     }
     if (this.matchesPointerControl('pickUpItem', pointer) && this.pickupNearbyDrop()) {
@@ -1688,6 +1870,8 @@ export class AdventureScene extends Phaser.Scene {
     this.chunkManager?.destroy();
     this.dropManager?.destroy();
     this.placeableManager?.destroy();
+    this.ambientAudio?.destroy();
+    this.ambientAudio = null;
     this.caveFogOverlay.remove();
   }
 
@@ -1752,14 +1936,35 @@ export class AdventureScene extends Phaser.Scene {
     );
   }
 
+  private updateAmbientAudio(): void {
+    if (!this.worldReady || !this.ambientAudio) {
+      return;
+    }
+    // A changed user setting is recognized as a mixer-state change. Its own AudioParam ramp
+    // updates immediately but still prevents the result from sounding like a switch.
+    this.ambientAudio.update({
+      playerWorldX: this.player.x,
+      playerWorldY: this.player.y,
+      worldTimeMs: this.worldTimeMs,
+      daylightAmount: sampleDayNight(this.worldTimeMs).lightLevel,
+      isCave: Boolean(this.activeCave),
+      caveDepthMeters: this.caveDepthMetersAt(this.player.x, this.player.y),
+      nearLava: this.isSwimming,
+      isPaused: this.pauseMenuOpen,
+      enabled: this.gameSettings.audio.biomeAmbienceEnabled,
+      volume: this.gameSettings.audio.ambientVolume
+    });
+  }
+
   private setCaveLightingActive(active: boolean): void {
     this.dayNightOverlay.setEnabled(!active);
     this.nightAmbientOverlay.setEnabled(!active && this.gameSettings.video.quality.showNightLights);
+    this.placedLightOverlay.setEnabled(!active);
+    this.chunkManager?.setSurfaceAmbientEnabled(!active);
     this.lastDayNightOverlayUpdateMs = Number.NEGATIVE_INFINITY;
     this.lastNightAmbientLightingUpdateMs = Number.NEGATIVE_INFINITY;
 
     if (active) {
-      this.placedLightOverlay.update(this.cameras.main, []);
       return;
     }
 
@@ -2410,7 +2615,21 @@ export class AdventureScene extends Phaser.Scene {
       .setVisible(true);
   }
 
-  private enterCave(entrance: CaveEntrance, returnWorldX: number, returnWorldY: number, markDirty = true): void {
+  private async enterCave(
+    entrance: CaveEntrance,
+    returnWorldX: number,
+    returnWorldY: number,
+    markDirty = true,
+    continueExistingLoading = false
+  ): Promise<void> {
+    if (this.caveTransitionInProgress) {
+      return;
+    }
+    this.caveTransitionInProgress = true;
+    this.worldReady = false;
+    this.ambientAudio?.setSwimming(false, false, false);
+    this.footstepElapsedMs = 0;
+    this.showTerrainLoading(continueExistingLoading);
     this.cancelHarvesting();
     this.nearbyCaveEntrance = null;
     this.caveExitTarget = null;
@@ -2420,80 +2639,113 @@ export class AdventureScene extends Phaser.Scene {
     this.dropHint.setVisible(false);
     this.interactionHighlight.setVisible(false);
 
-    const layout = generateCaveLayout(this.worldSeed, entrance);
-    const origin = caveWorldOrigin(entrance);
-    const entrySurfaceExitId = layout.surfaceExits.find((exit) => (
-      exit.surfaceTileX === entrance.tileX && exit.surfaceTileY === entrance.tileY
-    ))?.id ?? layout.entrance.id;
-    const exitVisuals = this.createCaveExitVisuals(layout, origin);
-    this.activeCave = {
-      entrance,
-      layout,
-      origin,
-      oreBuckets: createCaveOreBuckets(layout.ores),
-      returnWorldX,
-      returnWorldY,
-      entrySurfaceExitId,
-      exitVisuals
-    };
-    this.setCaveLightingActive(true);
-    this.lastCaveVisibilityWorldX = Number.NaN;
-    this.lastCaveVisibilityWorldY = Number.NaN;
-    const spawn = caveWorldTilePosition(origin, layout.spawnTileX, layout.spawnTileY);
-    this.player.setPosition(spawn.x, spawn.y);
-    this.cameras.main.centerOn(this.player.x, this.player.y);
-    this.isSwimming = false;
-    this.terrainSurface = 'cave floor';
-    this.minimapOverlay.setVisible(false);
-    this.drawActiveCave();
-    this.updateCaveVisibility(true);
-    this.updateCaveInteraction(true);
-    this.updateDropInteraction(0, true);
-    this.updatePlayerAvatar(0, false);
-    if (markDirty) {
-      this.markSaveDirty();
+    try {
+      await this.waitForTerrainLoadingPaint();
+
+      const layout = generateCaveLayout(this.worldSeed, entrance);
+      this.updateLoadingProgress(55, 100);
+      await this.waitForTerrainLoadingPaint();
+      const origin = caveWorldOrigin(entrance);
+      const entrySurfaceExitId = layout.surfaceExits.find((exit) => (
+        exit.surfaceTileX === entrance.tileX && exit.surfaceTileY === entrance.tileY
+      ))?.id ?? layout.entrance.id;
+      const exitVisuals = this.createCaveExitVisuals(layout, origin);
+      this.activeCave = {
+        entrance,
+        layout,
+        origin,
+        oreBuckets: createCaveOreBuckets(layout.ores),
+        returnWorldX,
+        returnWorldY,
+        entrySurfaceExitId,
+        exitVisuals
+      };
+      this.setCaveLightingActive(true);
+      this.lastCaveVisibilityWorldX = Number.NaN;
+      this.lastCaveVisibilityWorldY = Number.NaN;
+      const spawn = caveWorldTilePosition(origin, layout.spawnTileX, layout.spawnTileY);
+      this.player.setPosition(spawn.x, spawn.y);
+      this.cameras.main.centerOn(this.player.x, this.player.y);
+      this.isSwimming = false;
+      this.terrainSurface = 'cave floor';
+      this.minimapOverlay.setVisible(false);
+      this.drawActiveCave();
+      this.updateLoadingProgress(90, 100);
+      await this.waitForTerrainLoadingPaint();
+      this.updateCaveVisibility(true);
+      this.updateCaveInteraction(true);
+      this.updateDropInteraction(0, true);
+      this.updatePlayerAvatar(0, false);
+      if (markDirty) {
+        this.markSaveDirty();
+      }
+      await this.finishTerrainLoading();
+    } catch (error) {
+      this.recoverFromTerrainLoadingFailure('enter the cave', error);
     }
   }
 
-  private exitCave(exitTarget?: CaveSurfaceExit): void {
+  private async exitCave(exitTarget?: CaveSurfaceExit): Promise<void> {
     const cave = this.activeCave;
-    if (!cave) {
+    if (!cave || this.caveTransitionInProgress) {
       return;
     }
 
+    this.caveTransitionInProgress = true;
+    this.worldReady = false;
+    this.ambientAudio?.setSwimming(false, false, false);
+    this.footstepElapsedMs = 0;
+    this.showTerrainLoading();
     this.cancelHarvesting();
-    this.activeCave = null;
-    this.setCaveLightingActive(false);
-    this.caveOreTarget = null;
-    this.caveExitNearby = false;
-    this.caveExitTarget = null;
-    this.caveGraphics.clear().setVisible(false);
-    this.caveLavaGraphics.clear().setVisible(false);
-    this.caveEntranceLightGraphics.clear().setVisible(false);
-    this.caveFogOverlay.classList.remove('is-visible');
-    this.lastCaveVisibilityWorldX = Number.NaN;
-    this.lastCaveVisibilityWorldY = Number.NaN;
-    const returnToEntrySurface = !exitTarget || exitTarget.id === cave.entrySurfaceExitId;
-    this.player.setPosition(
-      returnToEntrySurface ? cave.returnWorldX : (exitTarget.surfaceTileX + 0.5) * WORLD_TILE_SIZE,
-      returnToEntrySurface ? cave.returnWorldY : (exitTarget.surfaceTileY + 0.5) * WORLD_TILE_SIZE
-    );
-    this.cameras.main.centerOn(this.player.x, this.player.y);
-    this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
-    this.terrainSurface = this.currentTopography.surface;
-    this.placeableManager.refresh(this.player.x, this.player.y);
-    this.updateSwimmingState(true);
-    this.chunkManager.update(this.player.x, this.player.y);
-    this.updateInteractionTarget(true);
-    this.updateCaveEntranceInteraction(true);
-    this.updateDropInteraction(0, true);
-    this.minimapOverlay.setVisible(true);
-    this.lastMinimapUpdateMs = Number.NEGATIVE_INFINITY;
-    this.lastMinimapTileX = Number.NaN;
-    this.lastMinimapTileY = Number.NaN;
-    this.updateMinimap(0, true);
-    this.updatePlayerAvatar(0, false);
-    this.markSaveDirty();
+    try {
+      await this.waitForTerrainLoadingPaint();
+
+      const returnToEntrySurface = !exitTarget || exitTarget.id === cave.entrySurfaceExitId;
+      const destinationX = returnToEntrySurface
+        ? cave.returnWorldX
+        : (exitTarget.surfaceTileX + 0.5) * WORLD_TILE_SIZE;
+      const destinationY = returnToEntrySurface
+        ? cave.returnWorldY
+        : (exitTarget.surfaceTileY + 0.5) * WORLD_TILE_SIZE;
+      await this.chunkManager.prime(destinationX, destinationY, (progress) => {
+        const ratio = progress.completed / Math.max(1, progress.total);
+        this.updateLoadingProgress(8 + ratio * 80, 100);
+      });
+      this.updateLoadingProgress(92, 100);
+      await this.waitForTerrainLoadingPaint();
+
+      this.activeCave = null;
+      this.setCaveLightingActive(false);
+      this.caveOreTarget = null;
+      this.caveExitNearby = false;
+      this.caveExitTarget = null;
+      this.caveGraphics.clear().setVisible(false);
+      this.caveLavaGraphics.clear().setVisible(false);
+      this.caveEntranceLightGraphics.clear().setVisible(false);
+      this.caveFogOverlay.classList.remove('is-visible');
+      this.lastCaveVisibilityWorldX = Number.NaN;
+      this.lastCaveVisibilityWorldY = Number.NaN;
+      this.player.setPosition(destinationX, destinationY);
+      this.cameras.main.centerOn(this.player.x, this.player.y);
+      this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
+      this.terrainSurface = this.currentTopography.surface;
+      this.placeableManager.refresh(this.player.x, this.player.y);
+      this.updateSwimmingState(true);
+      this.chunkManager.update(this.player.x, this.player.y);
+      this.updateInteractionTarget(true);
+      this.updateCaveEntranceInteraction(true);
+      this.updateDropInteraction(0, true);
+      this.minimapOverlay.setVisible(true);
+      this.lastMinimapUpdateMs = Number.NEGATIVE_INFINITY;
+      this.lastMinimapTileX = Number.NaN;
+      this.lastMinimapTileY = Number.NaN;
+      this.updateMinimap(0, true);
+      this.updatePlayerAvatar(0, false);
+      this.markSaveDirty();
+      await this.finishTerrainLoading();
+    } catch (error) {
+      this.recoverFromTerrainLoadingFailure('leave the cave', error);
+    }
   }
 
   private drawActiveCave(): void {
@@ -2607,8 +2859,45 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private caveDepthAt(layout: CaveLayout, tileX: number, tileY: number): number {
-    const row = layout.depthByTile[Math.max(0, Math.min(layout.height - 1, Math.floor(tileY)))];
-    return row?.[Math.max(0, Math.min(layout.width - 1, Math.floor(tileX)))] ?? 0;
+    const sampleX = Math.max(0, Math.min(layout.width - 1, Math.floor(tileX)));
+    const sampleY = Math.max(0, Math.min(layout.height - 1, Math.floor(tileY)));
+    const directDepth = layout.depthByTile[sampleY]?.[sampleX] ?? -1;
+    if (directDepth >= 0) {
+      return directDepth;
+    }
+
+    // Movement uses the exact smoothed cave contour, whereas the compact depth map samples
+    // each tile at its centre. A narrow ledge beside a wall can therefore be valid floor even
+    // though its centre sample is rock. Inherit the nearest reachable cell's route depth so a
+    // continuous cave never reports an artificial zero-metre pocket at its boundary.
+    let nearestDepth = 0;
+    let nearestDistanceSquared = Number.POSITIVE_INFINITY;
+    const fallbackRadius = 3;
+    for (let y = Math.max(0, sampleY - fallbackRadius); y <= Math.min(layout.height - 1, sampleY + fallbackRadius); y += 1) {
+      for (let x = Math.max(0, sampleX - fallbackRadius); x <= Math.min(layout.width - 1, sampleX + fallbackRadius); x += 1) {
+        const candidateDepth = layout.depthByTile[y]?.[x] ?? -1;
+        if (candidateDepth < 0) {
+          continue;
+        }
+        const distanceSquared = (x + 0.5 - tileX) ** 2 + (y + 0.5 - tileY) ** 2;
+        if (distanceSquared < nearestDistanceSquared) {
+          nearestDistanceSquared = distanceSquared;
+          nearestDepth = candidateDepth;
+        }
+      }
+    }
+    return nearestDepth;
+  }
+
+  private caveDepthMetersAt(worldX: number, worldY: number): number {
+    const cave = this.activeCave;
+    if (!cave) {
+      return 0;
+    }
+    const localTileX = (worldX - cave.origin.x) / WORLD_TILE_SIZE;
+    const localTileY = (worldY - cave.origin.y) / WORLD_TILE_SIZE;
+    return Math.max(0, Math.min(CAVE_DEPTH_SCALE_MAX,
+      this.caveDepthAt(cave.layout, localTileX, localTileY) * CAVE_DEPTH_SCALE_MAX));
   }
 
   private drawCaveDepthShading(layout: CaveLayout, origin: CaveWorldOrigin): void {
@@ -2804,8 +3093,12 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
     this.lastCaveEntranceLightFrame = frame;
-    const lightLevel = CAVE_EXIT_LIGHT_LEVEL;
+    const lightLevel = sampleDayNight(this.worldTimeMs).lightLevel;
     const graphics = this.caveEntranceLightGraphics;
+    if (lightLevel <= 0.001) {
+      graphics.clear().setVisible(false);
+      return;
+    }
     graphics.clear().setVisible(true);
 
     cave.layout.surfaceExits.forEach((exit) => {
@@ -2918,6 +3211,10 @@ export class AdventureScene extends Phaser.Scene {
     const width = this.scale.width;
     const height = this.scale.height;
     this.caveFogOverlay.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    this.caveFogMask.setAttribute('x', '0');
+    this.caveFogMask.setAttribute('y', '0');
+    this.caveFogMask.setAttribute('width', `${width}`);
+    this.caveFogMask.setAttribute('height', `${height}`);
     this.caveFogMaskBase.setAttribute('width', `${width}`);
     this.caveFogMaskBase.setAttribute('height', `${height}`);
     this.caveFogDarkness.setAttribute('width', `${width}`);
@@ -2929,6 +3226,9 @@ export class AdventureScene extends Phaser.Scene {
     const overlay = document.createElementNS(namespace, 'svg');
     overlay.classList.add('cave-fog-overlay');
     overlay.setAttribute('aria-hidden', 'true');
+    // The SVG shares Phaser's viewport, not an intrinsic artboard. The browser's default
+    // "meet" behavior letterboxes a non-matching viewport and leaves a hard vertical fog edge.
+    overlay.setAttribute('preserveAspectRatio', 'none');
     const definitions = document.createElementNS(namespace, 'defs');
     const mask = document.createElementNS(namespace, 'mask');
     const maskId = 'wildbound-cave-fog-mask';
@@ -2936,6 +3236,7 @@ export class AdventureScene extends Phaser.Scene {
     mask.setAttribute('maskUnits', 'userSpaceOnUse');
     mask.setAttribute('maskContentUnits', 'userSpaceOnUse');
     mask.setAttribute('mask-type', 'luminance');
+    this.caveFogMask = mask;
     this.caveFogMaskBase = document.createElementNS(namespace, 'rect');
     this.caveFogMaskBase.setAttribute('x', '0');
     this.caveFogMaskBase.setAttribute('y', '0');
@@ -3225,6 +3526,7 @@ export class AdventureScene extends Phaser.Scene {
 
   private updateCave(time: number, delta: number): void {
     if (this.worldMapOpen || this.inventoryOpen || this.craftingOpen || this.pauseMenuOpen) {
+      this.updateCaveFootsteps(delta, false);
       this.cancelTonicDrinking();
       this.updatePlayerAvatar(delta, false);
       return;
@@ -3233,16 +3535,20 @@ export class AdventureScene extends Phaser.Scene {
     const horizontal = Number(this.isDown('right')) - Number(this.isDown('left'));
     const vertical = Number(this.isDown('down')) - Number(this.isDown('up'));
     this.updateSwimmingState();
-    const isMoving = horizontal !== 0 || vertical !== 0;
-    this.sampleMovementPerformance(time, delta, isMoving);
+    const wantsToMove = horizontal !== 0 || vertical !== 0;
+    let isMoving = false;
+    this.sampleMovementPerformance(time, delta, wantsToMove);
     this.updateFacing(horizontal, vertical);
-    if (isMoving) {
+    if (wantsToMove) {
       const length = Math.hypot(horizontal, vertical);
       const distance = PLAYER_SPEED * this.potionSpeedMultiplier() * (this.isSwimming ? SWIM_SPEED_MULTIPLIER : 1) * delta / 1000;
-      this.moveCavePlayer(horizontal / length * distance, vertical / length * distance);
-      this.markSaveDirty();
+      isMoving = this.moveCavePlayer(horizontal / length * distance, vertical / length * distance);
+      if (isMoving) {
+        this.markSaveDirty();
+      }
     }
     this.updateSwimmingState();
+    this.updateCaveFootsteps(delta, isMoving);
     if (this.gameSettings.video.quality.animateLava) {
       this.updateCaveLava(time);
     }
@@ -3255,10 +3561,10 @@ export class AdventureScene extends Phaser.Scene {
     this.updatePlayerAvatar(delta, isMoving);
   }
 
-  private moveCavePlayer(deltaX: number, deltaY: number): void {
+  private moveCavePlayer(deltaX: number, deltaY: number): boolean {
     const cave = this.activeCave;
     if (!cave) {
-      return;
+      return false;
     }
     const tryMove = (x: number, y: number): boolean => {
       const tileX = (x - cave.origin.x) / WORLD_TILE_SIZE;
@@ -3271,12 +3577,16 @@ export class AdventureScene extends Phaser.Scene {
       // boundary, matching the visible cave floor without hidden pool collision.
       return true;
     };
+    let moved = false;
     if (tryMove(this.player.x + deltaX, this.player.y)) {
       this.player.x += deltaX;
+      moved = moved || deltaX !== 0;
     }
     if (tryMove(this.player.x, this.player.y + deltaY)) {
       this.player.y += deltaY;
+      moved = moved || deltaY !== 0;
     }
+    return moved;
   }
 
   private updateCaveInteraction(force = false): void {
@@ -3369,16 +3679,21 @@ export class AdventureScene extends Phaser.Scene {
     if (!this.caveHarvestOre || this.caveHarvestOre.id !== this.caveOreTarget.id) {
       this.caveHarvestOre = this.caveOreTarget;
       this.harvestElapsedMs = 0;
+      this.harvestContactSoundCount = 0;
     }
     const speed = this.caveMiningSpeed();
-    const durationMs = HARVEST_DURATION_MS / speed;
+    const durationMs = HARVEST_DURATION_MS
+      * caveOreMiningDurationMultiplierFor(this.caveHarvestOre.type)
+      / speed;
     this.harvestElapsedMs = Math.min(durationMs, this.harvestElapsedMs + delta);
     const cave = this.activeCave;
     if (!cave) {
       return;
     }
     const position = caveWorldTilePosition(cave.origin, this.caveHarvestOre.tileX, this.caveHarvestOre.tileY);
-    this.drawHarvestProgressAt(position.x, position.y - 32, this.harvestElapsedMs / durationMs);
+    const progress = this.harvestElapsedMs / durationMs;
+    this.drawHarvestProgressAt(position.x, position.y - 32, progress);
+    this.updateCaveOreContactSound(this.caveHarvestOre, progress, durationMs);
     if (this.harvestElapsedMs >= durationMs) {
       const ore = this.caveHarvestOre;
       this.caveHarvestOre = null;
@@ -3409,6 +3724,21 @@ export class AdventureScene extends Phaser.Scene {
 
   private caveMiningSpeed(): number {
     return caveOreMiningSpeedForTool(this.equippedTool) * this.hasteMultiplier();
+  }
+
+  private updateCaveOreContactSound(ore: CaveOre, progress: number, durationMs: number): void {
+    const contactCount = caveOreHarvestSoundContactCountFor(ore.type, durationMs);
+    const scheduledContacts = Math.min(contactCount, Math.ceil(progress * contactCount));
+    const contactBudgetSeconds = durationMs / 1_000 / contactCount;
+    while (this.harvestContactSoundCount < scheduledContacts) {
+      this.ambientAudio?.playCaveOreImpact(
+        ore.type,
+        ore.tileX,
+        ore.tileY,
+        contactBudgetSeconds
+      );
+      this.harvestContactSoundCount += 1;
+    }
   }
 
   private updateInteractionTarget(force = false): void {
@@ -3562,17 +3892,50 @@ export class AdventureScene extends Phaser.Scene {
     if (!this.harvestTarget || !this.sameTarget(this.harvestTarget, this.interactionTarget)) {
       this.cancelHarvesting();
       this.harvestTarget = { ...this.interactionTarget };
+      // Contacts are scheduled from normalized harvest progress, so every configured tool tier
+      // gets its exact count regardless of renderer frame rate or harvest speed.
+      this.harvestContactSoundCount = 0;
     }
 
     const speedMultiplier = harvestSpeedForFeature(this.equippedTool, this.harvestTarget.feature) * this.hasteMultiplier();
     const durationMs = HARVEST_DURATION_MS / speedMultiplier;
+    const handSpeedMultiplier = harvestSpeedForFeature(null, this.harvestTarget.feature) * this.hasteMultiplier();
+    // Material tier only affects the contact phrase when it actually makes this target faster.
+    // A diamond pickaxe, hoe, or sword used on a tree therefore keeps the tree's hand cadence.
+    const usesFasterThanHandTool = speedMultiplier > handSpeedMultiplier + 0.0001;
     this.harvestElapsedMs = Math.min(this.harvestElapsedMs + delta, durationMs);
     const progress = this.harvestElapsedMs / durationMs;
     this.chunkManager.setHarvestAnimation(this.harvestTarget.tileX, this.harvestTarget.tileY, progress);
     this.drawHarvestProgress(this.harvestTarget, progress);
 
+    this.updateHarvestContactSound(this.harvestTarget, progress, durationMs, usesFasterThanHandTool);
+
     if (progress >= 1) {
       this.completeHarvest();
+      return;
+    }
+  }
+
+  private updateHarvestContactSound(
+    target: InteractionTarget,
+    progress: number,
+    durationMs: number,
+    usesFasterThanHandTool: boolean
+  ): void {
+    const contactCount = harvestSoundContactCountFor(
+      target.feature,
+      usesFasterThanHandTool ? this.equippedTool : null
+    );
+    const scheduledContacts = Math.min(contactCount, Math.ceil(progress * contactCount));
+    const contactBudgetSeconds = durationMs / 1_000 / contactCount;
+    while (this.harvestContactSoundCount < scheduledContacts) {
+      this.ambientAudio?.playHarvestImpact(
+        target.feature,
+        target.tileX,
+        target.tileY,
+        contactBudgetSeconds
+      );
+      this.harvestContactSoundCount += 1;
     }
   }
 
@@ -3595,6 +3958,7 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
+    this.ambientAudio?.playHarvest(target.feature, target.tileX, target.tileY);
     this.inventory.add(resource, 1);
     this.showWorldFeedback(this.player.x, this.player.y - 28, `+ 1 ${resourceLabel(resource)}`);
     this.handleInventoryChanged();
@@ -3609,6 +3973,7 @@ export class AdventureScene extends Phaser.Scene {
     this.harvestTarget = null;
     this.caveHarvestOre = null;
     this.harvestElapsedMs = 0;
+    this.harvestContactSoundCount = 0;
     if (clearProgress) {
       this.harvestProgressGraphics.clear();
     }

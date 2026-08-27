@@ -1,6 +1,7 @@
-﻿import { app, BrowserWindow, ipcMain } from 'electron';
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { app, BrowserWindow, ipcMain, net, protocol } from 'electron';
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import squirrelStartup from 'electron-squirrel-startup';
 import {
   DEFAULT_WORLD_NAME,
@@ -19,6 +20,8 @@ const SETTINGS_FILE_NAME = 'wildbound-settings.json';
 const MAX_SAVE_BYTES = 2 * 1024 * 1024;
 const MAX_SETTINGS_BYTES = 32 * 1024;
 const MAX_WORLD_COUNT = 100;
+const MAX_MAIN_MENU_MUSIC_TRACKS = 200;
+const MAIN_MENU_MUSIC_PROTOCOL = 'wildbound-music';
 const launchedByInstaller = process.argv.includes('--squirrel-firstrun');
 
 app.setName('Wildbound');
@@ -28,6 +31,23 @@ app.setAppUserModelId('com.wildbound.desktop');
 // This remains a preference rather than a software-rendering override, so it preserves Chromium's
 // normal fallback behaviour on machines without a dedicated GPU.
 app.commandLine.appendSwitch('force_high_performance_gpu');
+// Main-menu music begins as soon as the desktop game opens. This avoids Chromium's browser-only
+// gesture gate delaying a local playlist until after the player has already chosen a world.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+// A dedicated streaming scheme lets the sandboxed Vite renderer play local MP3s in both
+// development and packaged builds. Direct file: URLs are not reliably available to media
+// elements loaded from the renderer's http(s) origin.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: MAIN_MENU_MUSIC_PROTOCOL,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true
+    }
+  }
+]);
 
 const shouldExitForSquirrel = squirrelStartup || launchedByInstaller;
 if (shouldExitForSquirrel) {
@@ -43,6 +63,68 @@ const getWorldSaveDirectoryPath = (): string => path.join(app.getPath('userData'
 const getWorldSavePath = (worldId: string): string => path.join(getWorldSaveDirectoryPath(), `${worldId}.json`);
 
 const getSettingsPath = (): string => path.join(app.getPath('userData'), SETTINGS_FILE_NAME);
+
+const getMainMenuMusicDirectory = (): string => app.isPackaged
+  ? path.join(process.resourcesPath, 'music', 'main menu')
+  // Electron Forge's development app path points at its generated build directory. Its working
+  // directory remains the project root, which is where creators add their editable MP3 library.
+  : path.join(process.cwd(), 'music', 'main menu');
+
+const getMainMenuMusicTrackPath = (requestUrl: string): string | null => {
+  try {
+    const url = new URL(requestUrl);
+    if (url.protocol !== `${MAIN_MENU_MUSIC_PROTOCOL}:` || url.hostname !== 'main-menu') {
+      return null;
+    }
+    const fileName = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
+    if (
+      !fileName
+      || fileName !== path.basename(fileName)
+      || fileName.includes('\\')
+      || path.extname(fileName).toLowerCase() !== '.mp3'
+    ) {
+      return null;
+    }
+    return path.join(getMainMenuMusicDirectory(), fileName);
+  } catch {
+    return null;
+  }
+};
+
+const registerMainMenuMusicProtocol = (): void => {
+  protocol.handle(MAIN_MENU_MUSIC_PROTOCOL, async (request) => {
+    const trackPath = getMainMenuMusicTrackPath(request.url);
+    if (!trackPath) {
+      return new Response('Not found', { status: 404 });
+    }
+    try {
+      return await net.fetch(pathToFileURL(trackPath).toString(), { bypassCustomProtocolHandlers: true });
+    } catch (error) {
+      console.warn('Wildbound could not stream a main-menu music track.', error);
+      return new Response('Not found', { status: 404 });
+    }
+  });
+};
+
+const listMainMenuMusicTracks = async (): Promise<string[]> => {
+  try {
+    const entries = await readdir(getMainMenuMusicDirectory(), { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && path.extname(entry.name).toLowerCase() === '.mp3')
+      .map((entry) => entry.name)
+      .sort((first, second) => first.localeCompare(second, undefined, { numeric: true, sensitivity: 'base' }))
+      .slice(0, MAX_MAIN_MENU_MUSIC_TRACKS)
+      // Only this trusted, fixed directory is exposed to the renderer. The custom URL keeps
+      // the renderer sandboxed while allowing Chromium's media pipeline to stream the MP3.
+      .map((fileName) => `${MAIN_MENU_MUSIC_PROTOCOL}://main-menu/${encodeURIComponent(fileName)}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+    console.warn('Wildbound could not read its main-menu music folder.', error);
+    return [];
+  }
+};
 
 interface StoredWorldSummary {
   id: string;
@@ -212,6 +294,8 @@ const ensureWorldIndex = async (): Promise<StoredWorldIndex> => {
 };
 
 const registerWorldHandlers = (): void => {
+  ipcMain.handle('wildbound:list-main-menu-music', listMainMenuMusicTracks);
+
   ipcMain.handle('wildbound:list-worlds', async (): Promise<StoredWorldSummary[]> => {
     const index = await ensureWorldIndex();
     return index.worlds;
@@ -420,6 +504,7 @@ const createWindow = (): void => {
 
 if (!shouldExitForSquirrel) {
   app.whenReady().then(() => {
+    registerMainMenuMusicProtocol();
     registerWorldHandlers();
     createWindow();
 

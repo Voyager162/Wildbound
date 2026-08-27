@@ -20,8 +20,13 @@ export const CAVE_ORE_SPAWN_RULES: Readonly<Record<CaveOreType, CaveOreSpawnRule
   coal: { startDepth: CAVE_COAL_START_DEPTH, chance: 0.065 },
   iron: { startDepth: CAVE_IRON_START_DEPTH, chance: 0.065 },
   gold: { startDepth: CAVE_GOLD_START_DEPTH, chance: 0.036 },
-  diamond: { startDepth: CAVE_DIAMOND_START_DEPTH, chance: 0.008, requiresDeepCave: true },
+  diamond: { startDepth: CAVE_DIAMOND_START_DEPTH, chance: 0.018, requiresDeepCave: true },
 };
+
+// Diamond rolls are intentionally a little generous so eligible caves reliably contain a find,
+// then capped to prevent a very large abyssal floor from turning a lucky seed into a diamond
+// field. Together these controls produce roughly two deposits, with three as the rare maximum.
+export const CAVE_DIAMOND_MAX_DEPOSITS_PER_CAVE = 3;
 
 // Ores are intentionally limited to clear cave floor so mineral formations never paint over a
 // wall face. Raise this to make deposits more common after the type-specific roll succeeds.

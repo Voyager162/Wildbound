@@ -41,9 +41,16 @@ export type ParticleStrength = (typeof PARTICLE_STRENGTH_OPTIONS)[number];
 export const NIGHT_LIGHT_RESOLUTION_OPTIONS = [0.35, 0.5, 0.75, 1] as const;
 export type NightLightResolution = (typeof NIGHT_LIGHT_RESOLUTION_OPTIONS)[number];
 
+export const AMBIENT_VOLUME_OPTIONS = [0, 0.35, 0.55, 0.72, 0.9, 1] as const;
+export type AmbientVolume = (typeof AMBIENT_VOLUME_OPTIONS)[number];
+
 export interface GameSettings {
   readonly version: 1;
   readonly controls: Readonly<Record<ControlAction, ControlBinding>>;
+  readonly audio: {
+    readonly biomeAmbienceEnabled: boolean;
+    readonly ambientVolume: AmbientVolume;
+  };
   readonly video: {
     readonly performance: {
       // Zero means no artificial cap; Phaser will use the display's available cadence.
@@ -96,6 +103,10 @@ const DEFAULT_CONTROLS: Readonly<Record<ControlAction, ControlBinding>> = {
 export const createDefaultGameSettings = (): GameSettings => ({
   version: 1,
   controls: { ...DEFAULT_CONTROLS },
+  audio: {
+    biomeAmbienceEnabled: true,
+    ambientVolume: 0.72
+  },
   video: {
     performance: {
       maxFps: 60,
@@ -133,6 +144,7 @@ export const normalizeGameSettings = (value: unknown): GameSettings | null => {
 
   const settings = value as Partial<GameSettings>;
   const controls = settings.controls;
+  const audio = settings.audio;
   const video = settings.video;
   if (
     settings.version !== 1
@@ -162,6 +174,16 @@ export const normalizeGameSettings = (value: unknown): GameSettings | null => {
   return {
     version: 1,
     controls: normalizedControls,
+    // Audio settings were added after the first settings schema shipped. Missing fields retain
+    // the authored defaults, so an existing player's controls and video preferences stay valid.
+    audio: {
+      biomeAmbienceEnabled: typeof audio?.biomeAmbienceEnabled === 'boolean'
+        ? audio.biomeAmbienceEnabled
+        : defaults.audio.biomeAmbienceEnabled,
+      ambientVolume: isOneOf(audio?.ambientVolume, AMBIENT_VOLUME_OPTIONS)
+        ? audio.ambientVolume
+        : defaults.audio.ambientVolume
+    },
     video: {
       performance: {
         maxFps: video.performance.maxFps,

@@ -9,11 +9,13 @@ const PATCH_WIDTH = 52;
 const PATCH_HEIGHT = 56;
 const PATCH_ROOT_Y = 51;
 const BLADE_COUNT = 13;
+const PATCH_SCALE_VARIANTS = [0.46, 0.6, 0.74, 0.88] as const;
 
 export interface AnimatedGroundGrassPatch {
-  image: Phaser.GameObjects.Image;
+  bob: Phaser.GameObjects.Bob;
   framePhase: number;
   frame: number;
+  sizeVariant: number;
 }
 
 interface GrassColors {
@@ -133,42 +135,62 @@ const ensureGrassTextures = (scene: Phaser.Scene): void => {
     const texture = scene.textures.createCanvas(
       textureKey,
       PATCH_WIDTH,
-      PATCH_HEIGHT * GROUND_GRASS_ANIMATION_FRAME_COUNT
+      PATCH_HEIGHT * GROUND_GRASS_ANIMATION_FRAME_COUNT * PATCH_SCALE_VARIANTS.length
     );
     if (!texture) {
       throw new Error('Wildbound could not create ground-grass animation frames.');
     }
 
     const context = texture.getContext();
-    for (let frame = 0; frame < GROUND_GRASS_ANIMATION_FRAME_COUNT; frame += 1) {
-      context.save();
-      context.translate(0, frame * PATCH_HEIGHT);
-      drawFrame(context, frame, pattern);
-      context.restore();
-      texture.add(String(frame), 0, 0, frame * PATCH_HEIGHT, PATCH_WIDTH, PATCH_HEIGHT);
+    for (let sizeVariant = 0; sizeVariant < PATCH_SCALE_VARIANTS.length; sizeVariant += 1) {
+      for (let frame = 0; frame < GROUND_GRASS_ANIMATION_FRAME_COUNT; frame += 1) {
+        const frameIndex = sizeVariant * GROUND_GRASS_ANIMATION_FRAME_COUNT + frame;
+        context.save();
+        context.translate(0, frameIndex * PATCH_HEIGHT);
+        context.translate(PATCH_WIDTH / 2, PATCH_ROOT_Y);
+        context.scale(PATCH_SCALE_VARIANTS[sizeVariant], PATCH_SCALE_VARIANTS[sizeVariant]);
+        context.translate(-PATCH_WIDTH / 2, -PATCH_ROOT_Y);
+        drawFrame(context, frame, pattern);
+        context.restore();
+        texture.add(`${frame}:${sizeVariant}`, 0, 0, frameIndex * PATCH_HEIGHT, PATCH_WIDTH, PATCH_HEIGHT);
+      }
     }
     texture.refresh();
   }
 };
 
-export const createAnimatedGroundGrassPatch = (
+export const createGroundGrassBlitters = (
   scene: Phaser.Scene,
   worldX: number,
-  worldY: number,
+  worldY: number
+): Phaser.GameObjects.Blitter[] => {
+  ensureGrassTextures(scene);
+  return Array.from({ length: GROUND_GRASS_PATTERN_VARIANTS }, (_, pattern) => scene.add
+    .blitter(worldX, worldY, textureKeyFor(pattern))
+    .setDepth(0.9)
+    .setVisible(false));
+};
+
+export const createAnimatedGroundGrassPatch = (
+  blitter: Phaser.GameObjects.Blitter,
+  localX: number,
+  localY: number,
   scale: number,
   tint: number,
   pattern: number,
   framePhase: number,
   time: number
 ): AnimatedGroundGrassPatch => {
-  ensureGrassTextures(scene);
   const frame = frameFor(time, framePhase);
-  const image = scene.add.image(worldX, worldY, textureKeyFor(pattern), String(frame))
-    .setOrigin(0.5, PATCH_ROOT_Y / PATCH_HEIGHT)
-    .setScale(scale)
-    .setTint(tint)
-    .setDepth(0.9);
-  return { image, framePhase, frame };
+  const sizeVariant = PATCH_SCALE_VARIANTS.reduce((best, candidate, index) => (
+    Math.abs(candidate - scale) < Math.abs(PATCH_SCALE_VARIANTS[best] - scale) ? index : best
+  ), 0);
+  const bob = blitter.create(
+    localX - PATCH_WIDTH / 2,
+    localY - PATCH_ROOT_Y,
+    `${frame}:${sizeVariant}`
+  ).setTint(tint);
+  return { bob, framePhase, frame, sizeVariant };
 };
 
 export const updateAnimatedGroundGrassPatch = (patch: AnimatedGroundGrassPatch, time: number): void => {
@@ -178,5 +200,5 @@ export const updateAnimatedGroundGrassPatch = (patch: AnimatedGroundGrassPatch, 
   }
 
   patch.frame = frame;
-  patch.image.setFrame(String(frame));
+  patch.bob.setFrame(`${frame}:${patch.sizeVariant}`);
 };

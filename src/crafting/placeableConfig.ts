@@ -63,8 +63,8 @@ export const FURNACE_LIGHT_RADIUS_PIXELS = 1200;
 // furnace shares this tuned correction with the trail lantern. Deliberately use player-facing
 // directions here: positive X moves the glow left and positive Y moves it up; negative values
 // move it right/down. Leave both at zero to anchor to the visible flame.
-export const TRAIL_LANTERN_LIGHT_OFFSET_X = -320;
-export const TRAIL_LANTERN_LIGHT_OFFSET_Y = -160;
+export const TRAIL_LANTERN_LIGHT_OFFSET_X = -700;
+export const TRAIL_LANTERN_LIGHT_OFFSET_Y = -420;
 
 // Waypoints are player-authored map annotations. Keeping their limits beside the item definition
 // makes both the interaction menu and persisted world state agree on the same safe label shape.

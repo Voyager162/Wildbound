@@ -3,12 +3,13 @@ import {
   CONTROL_ACTIONS,
   createDefaultGameSettings,
   normalizeGameSettings,
+  type AmbientVolume,
   type ControlAction,
   type ControlBinding,
   type GameSettings
 } from '../settings/GameSettings';
 
-type PausePage = 'pause' | 'settings' | 'controls' | 'video-performance' | 'video-quality';
+type PausePage = 'pause' | 'settings' | 'controls' | 'audio' | 'video-performance' | 'video-quality';
 
 interface PauseMenuOverlayOptions {
   readonly onResume: () => void;
@@ -45,6 +46,15 @@ const ACTION_CONTROLS: readonly ControlDefinition[] = [
   { action: 'worldMap', label: 'World map', description: 'Open or close the exploration map' },
   { action: 'pauseMenu', label: 'Pause menu', description: 'Open this menu' },
   { action: 'debugOverlay', label: 'Debug information', description: 'Toggle the performance and world diagnostic panel' }
+];
+
+const AMBIENT_VOLUME_CHOICES: readonly { readonly value: AmbientVolume; readonly label: string }[] = [
+  { value: 0, label: 'Muted' },
+  { value: 0.35, label: 'Quiet' },
+  { value: 0.55, label: 'Low' },
+  { value: 0.72, label: 'Balanced' },
+  { value: 0.9, label: 'Full' },
+  { value: 1, label: 'Maximum' }
 ];
 
 const createMenuButton = (label: string, style: 'primary' | 'secondary' | 'danger' = 'secondary'): HTMLButtonElement => {
@@ -160,6 +170,7 @@ export class PauseMenuOverlay {
       case 'pause': this.renderPause(body); break;
       case 'settings': this.renderSettings(body); break;
       case 'controls': this.renderControls(body); break;
+      case 'audio': this.renderAudio(body); break;
       case 'video-performance': this.renderVideo(body, 'performance'); break;
       case 'video-quality': this.renderVideo(body, 'quality'); break;
     }
@@ -176,6 +187,7 @@ export class PauseMenuOverlay {
       case 'pause': return 'Game paused';
       case 'settings': return 'Settings';
       case 'controls': return 'Controls';
+      case 'audio': return 'Audio options';
       case 'video-performance': return 'Video options';
       case 'video-quality': return 'Video options';
     }
@@ -199,6 +211,7 @@ export class PauseMenuOverlay {
     choices.className = 'pause-menu-choice-grid';
     choices.append(
       this.createChoice('Controls', () => this.navigate('controls')),
+      this.createChoice('Audio options', () => this.navigate('audio')),
       this.createChoice('Video options', () => this.navigate('video-performance'))
     );
     body.append(choices, this.createBackButton());
@@ -219,6 +232,33 @@ export class PauseMenuOverlay {
     });
     actions.append(this.createBackButton(), reset);
     body.append(groups, actions);
+  }
+
+  private renderAudio(body: HTMLElement): void {
+    const settings = document.createElement('div');
+    settings.className = 'video-settings-list';
+    settings.append(
+      this.createToggleSetting(
+        'Biome ambience',
+        'Blends original birds, wind, foliage, surf, wetlands, and cave ambience around the player.',
+        this.settings.audio.biomeAmbienceEnabled,
+        (biomeAmbienceEnabled) => this.updateSettings({
+          ...this.settings,
+          audio: { ...this.settings.audio, biomeAmbienceEnabled }
+        })
+      ),
+      this.createSelectSetting(
+        'Ambient volume',
+        'Sets the level of the biome soundscape. It is independently smooth-faded when changed.',
+        this.settings.audio.ambientVolume,
+        AMBIENT_VOLUME_CHOICES,
+        (ambientVolume) => this.updateSettings({
+          ...this.settings,
+          audio: { ...this.settings.audio, ambientVolume }
+        })
+      )
+    );
+    body.append(settings, this.createBackButton());
   }
 
   private renderVideo(body: HTMLElement, tab: 'performance' | 'quality'): void {
@@ -482,6 +522,7 @@ export class PauseMenuOverlay {
       case 'pause': this.options.onResume(); return;
       case 'settings': this.page = 'pause'; break;
       case 'controls': this.page = 'settings'; break;
+      case 'audio': this.page = 'settings'; break;
       case 'video-performance':
       case 'video-quality': this.page = 'settings'; break;
     }

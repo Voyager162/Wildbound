@@ -14,5 +14,8 @@ declare global {
       load: () => Promise<unknown | null>;
       save: (settings: import('../settings/GameSettings').GameSettings) => Promise<void>;
     };
+    wildboundMusic?: {
+      listMainMenuTracks: () => Promise<unknown>;
+    };
   }
 }

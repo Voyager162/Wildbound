@@ -122,7 +122,11 @@ body.is-item-dragging .wildbound-game-cursor {
   mix-blend-mode: screen;
 }
 
-.night-ambient-overlay.is-hidden {
+#game > canvas.placed-light-overlay.is-hidden {
+  display: none;
+}
+
+#game > canvas.night-ambient-overlay.is-hidden {
   display: none;
 }
 
@@ -3063,8 +3067,6 @@ body.is-item-dragging .wildbound-game-cursor {
 }
 
 .wildbound-brand__title {
-  display: flex;
-  align-items: baseline;
   margin: -4px 0 -7px;
   font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
   font-size: clamp(65px, 11vw, 116px);
@@ -3073,7 +3075,14 @@ body.is-item-dragging .wildbound-game-cursor {
   letter-spacing: -0.055em;
   text-transform: uppercase;
   transform: perspective(450px) rotateX(6deg) rotateZ(-1.1deg);
-  animation: wildbound-title-float 5.8s ease-in-out infinite;
+}
+
+.wildbound-brand__title-motion {
+  display: flex;
+  align-items: baseline;
+  transform-origin: 8% 68%;
+  will-change: transform;
+  animation: wildbound-title-pivot 5.8s cubic-bezier(0.42, 0, 0.22, 1) infinite;
 }
 
 .wildbound-brand__title span {
@@ -3661,9 +3670,28 @@ body.is-item-dragging .wildbound-game-cursor {
   margin-top: 5px;
 }
 
-@keyframes wildbound-title-float {
-  0%, 100% { transform: perspective(450px) rotateX(6deg) rotateZ(-1.1deg) translateY(0); }
-  50% { transform: perspective(450px) rotateX(6deg) rotateZ(-0.3deg) translateY(-5px); }
+@keyframes wildbound-title-pivot {
+  /* The word comes to rest before the hinge changes sides, so the origin swap is invisible. */
+  0%, 36% {
+    transform-origin: 8% 68%;
+    transform: translateY(0) rotateZ(0deg);
+  }
+  18% {
+    transform-origin: 8% 68%;
+    transform: translateY(-4px) rotateZ(1.15deg);
+  }
+  36.01%, 54% {
+    transform-origin: 92% 68%;
+    transform: translateY(0) rotateZ(0deg);
+  }
+  45% {
+    transform-origin: 92% 68%;
+    transform: translateY(-4px) rotateZ(-1.15deg);
+  }
+  54.01%, 100% {
+    transform-origin: 8% 68%;
+    transform: translateY(0) rotateZ(0deg);
+  }
 }
 
 @keyframes menu-stage-arrive {

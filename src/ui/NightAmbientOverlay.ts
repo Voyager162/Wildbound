@@ -53,7 +53,15 @@ export class NightAmbientOverlay {
     }
     this.enabled = enabled;
     this.canvas.classList.toggle('is-hidden', !enabled);
+    // The main Phaser canvas rule deliberately forces direct canvas children to display. Mirror
+    // the state inline as well so that rule can never resurrect a surface-only light canvas in a
+    // cave, even if future stylesheet ordering changes.
+    this.canvas.style.display = enabled ? '' : 'none';
     if (!enabled) {
+      // Night lights render through a low-resolution scale transform. Clear in backing-store
+      // coordinates or only a fraction of the old frame is erased, leaving a hard vertical or
+      // horizontal edge of stale surface glow behind.
+      this.context.setTransform(1, 0, 0, 1, 0, 0);
       this.context.clearRect(0, 0, this.pixelWidth, this.pixelHeight);
       this.hasRenderedFrame = false;
       this.setCameraOffset(0, 0);

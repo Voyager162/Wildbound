@@ -52,7 +52,6 @@ import type { GameSettings } from '../settings/GameSettings';
 interface PendingChunk {
   x: number;
   y: number;
-  priority: number;
 }
 
 export interface ChunkPrimeProgress {
@@ -80,9 +79,13 @@ export class ChunkManager {
   private streamFocusChunkY = Number.NaN;
   private presentationFocusChunkX = Number.NaN;
   private presentationFocusChunkY = Number.NaN;
+  private presentationFocusWorldX = Number.NaN;
+  private presentationFocusWorldY = Number.NaN;
   private lastPlayerWorldX = Number.NaN;
   private lastPlayerWorldY = Number.NaN;
   private lastPlayerSampleTime = Number.NaN;
+  private smoothedVelocityX = 0;
+  private smoothedVelocityY = 0;
   private lastPrefetchSignature = '';
   private lastWaterAnimationTime = Number.NEGATIVE_INFINITY;
   private lastWaterSurfaceTime = Number.NEGATIVE_INFINITY;
@@ -91,6 +94,9 @@ export class ChunkManager {
   private lastGroundGrassBuildTime = Number.NEGATIVE_INFINITY;
   private lastChunkBuildTime = Number.NEGATIVE_INFINITY;
   private lastGroundGrassPreloadSignature = '';
+  private lastStreamingFrameTime = Number.NaN;
+  private backgroundWorkPausedUntil = Number.NEGATIVE_INFINITY;
+  private targetFrameIntervalMs = 1000 / 60;
   private chunkGenerationRadius = CHUNK_LOAD_RADIUS;
   private chunkUnloadRadius = CHUNK_UNLOAD_RADIUS;
   private chunkBuildBudget = CHUNK_STREAM_BUILDS_PER_TICK;
@@ -150,23 +156,26 @@ export class ChunkManager {
     this.groundGrassEnabled = video.quality.showGroundGrass;
     this.chunkUnloadRadius = Math.max(
       nextRadius + 1,
+      this.visibleRadiusX(),
+      this.visibleRadiusY(),
       this.groundGrassEnabled
         ? Math.max(this.groundGrassPreloadRadiusX(), this.groundGrassPreloadRadiusY())
-        : Math.max(CHUNK_STREAM_VISIBLE_RADIUS_X, CHUNK_STREAM_VISIBLE_RADIUS_Y)
+        : 0
     );
     this.foliageUpdateIntervalMs = Math.max(1, Math.floor(1000 / video.performance.foliageUpdateRate));
     this.ambientEffectUpdateIntervalMs = Math.max(1, Math.round(1000 / video.performance.ambientEffectsUpdateRate));
     const waterRateScale = 30 / video.performance.waterAnimationUpdateRate;
     this.waterSurfaceUpdateIntervalMs = Math.max(1, Math.round(WATER_SURFACE_UPDATE_INTERVAL_MS * waterRateScale));
     this.waterRippleUpdateIntervalMs = Math.max(1, Math.round(WATER_RIPPLE_UPDATE_INTERVAL_MS * waterRateScale));
+    this.targetFrameIntervalMs = 1000 / (video.performance.maxFps > 0 ? video.performance.maxFps : 60);
     switch (video.performance.chunkStreamingPace) {
       case 'gentle':
         this.chunkBuildBudget = 1;
-        this.chunkBuildIntervalMs = 320;
+        this.chunkBuildIntervalMs = 120;
         break;
       case 'rapid':
-        this.chunkBuildBudget = 3;
-        this.chunkBuildIntervalMs = 55;
+        this.chunkBuildBudget = CHUNK_STREAM_MAX_CONCURRENT_BUILDS;
+        this.chunkBuildIntervalMs = 16;
         break;
       default:
         this.chunkBuildBudget = CHUNK_STREAM_BUILDS_PER_TICK;
@@ -189,6 +198,10 @@ export class ChunkManager {
     }
   }
 
+  setSurfaceAmbientEnabled(enabled: boolean): void {
+    this.ambientParticleManager.setEnabled(enabled);
+  }
+
   /** Re-evaluate grass coverage when the viewport changes without touching deterministic world data. */
   handleViewportChanged(): void {
     if (!Number.isFinite(this.activeChunkX) || !Number.isFinite(this.activeChunkY)) {
@@ -196,15 +209,23 @@ export class ChunkManager {
     }
     this.chunkUnloadRadius = Math.max(
       this.chunkGenerationRadius + 1,
+      this.visibleRadiusX(),
+      this.visibleRadiusY(),
       this.groundGrassEnabled
         ? Math.max(this.groundGrassPreloadRadiusX(), this.groundGrassPreloadRadiusY())
-        : Math.max(CHUNK_STREAM_VISIBLE_RADIUS_X, CHUNK_STREAM_VISIBLE_RADIUS_Y)
+        : 0
     );
     this.lastGroundGrassPreloadSignature = '';
+    this.lastPrefetchSignature = '';
+    this.queuePresentationWindow(this.activeChunkX, this.activeChunkY);
     this.queueGroundGrassPreloadChunks();
     if (Number.isFinite(this.lastPlayerWorldX) && Number.isFinite(this.lastPlayerWorldY)) {
       this.queuePrefetchChunks(this.lastPlayerWorldX, this.lastPlayerWorldY);
     }
+    this.sortPendingChunks();
+    // A resize can reveal new terrain without any player movement. Start the enlarged camera
+    // window immediately so ultrawide/fullscreen changes do not wait for the normal cadence.
+    this.processPendingChunks(performance.now(), CHUNK_STREAM_MAX_CONCURRENT_BUILDS, true, true);
     this.updateChunkRenderVisibility();
   }
 
@@ -220,10 +241,11 @@ export class ChunkManager {
     this.activeChunkX = worldToChunk(playerWorldX);
     this.activeChunkY = worldToChunk(playerWorldY);
     this.updateStreamFocus(playerWorldX, playerWorldY, time);
-    this.queueVisibleChunks();
-    this.queueNearbyChunks();
-    this.queueGroundGrassPreloadChunks();
-    this.queuePrefetchChunks(playerWorldX, playerWorldY);
+    // Prime only the first complete camera presentation. The former preload queued nearly one
+    // hundred terrain chunks before the loading screen could finish, although most were several
+    // screens away. Background lookahead begins immediately after this critical window is ready.
+    this.queuePresentationWindow(this.activeChunkX, this.activeChunkY);
+    this.sortPendingChunks();
     this.landmarkManager.update(this.activeChunkX, this.activeChunkY);
     this.swampWaterDecorationManager.prime(this.activeChunkX, this.activeChunkY);
     // The initial queue is fixed while the player is still locked in place, which gives the
@@ -238,7 +260,7 @@ export class ChunkManager {
     };
     reportProgress();
     while (this.pendingChunkCoordinates.length > 0 || this.pendingChunkBuilds.size > 0) {
-      this.processPendingChunks(performance.now(), CHUNK_STREAM_INITIAL_BUILD_COUNT, true);
+      this.processPendingChunks(performance.now(), CHUNK_STREAM_INITIAL_BUILD_COUNT, true, false);
       reportProgress();
       if (this.pendingChunkCoordinates.length > 0 || this.pendingChunkBuilds.size > 0) {
         await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
@@ -253,9 +275,24 @@ export class ChunkManager {
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
     }
     this.updateChunkRenderVisibility();
+    this.queueNearbyChunks();
+    this.queueGroundGrassPreloadChunks();
+    this.queuePrefetchChunks(playerWorldX, playerWorldY);
+    // Fill worker slots before returning control. Renderer commits remain deferred from here on.
+    this.processPendingChunks(performance.now(), this.chunkBuildBudget, true, true);
   }
 
   update(playerWorldX: number, playerWorldY: number, time = performance.now()): void {
+    if (Number.isFinite(this.lastStreamingFrameTime)) {
+      const frameDuration = time - this.lastStreamingFrameTime;
+      // A late frame is a direct signal to stop optional object creation briefly. Terrain workers
+      // and renderer commits continue, while grass resumes automatically as soon as cadence is
+      // healthy. This targets the selected FPS instead of assuming every display is 60 Hz.
+      if (frameDuration > this.targetFrameIntervalMs * 1.18) {
+        this.backgroundWorkPausedUntil = Math.max(this.backgroundWorkPausedUntil, time + 90);
+      }
+    }
+    this.lastStreamingFrameTime = time;
     this.updateStreamFocus(playerWorldX, playerWorldY, time);
     const nextChunkX = worldToChunk(playerWorldX);
     const nextChunkY = worldToChunk(playerWorldY);
@@ -278,10 +315,10 @@ export class ChunkManager {
     this.updateChunkRenderVisibility();
   }
 
-  // Promote the next camera window before a movement step crosses into it. Terrain requests
-  // still bake asynchronously. Movement only waits for the immediate destination chunk, rather
-  // than the entire future camera window: the latter can include distant grass work and caused
-  // held input to feel like it had stalled at otherwise-ready chunk borders.
+  // Promote the exact next camera footprint before a movement step crosses into it. Only missing
+  // terrain can hold the boundary; decorative grass keeps assembling independently. The previous
+  // symmetric presentation check included unseen padding chunks and every grass batch, producing
+  // frequent half-second "invisible walls" even after the visible terrain was already complete.
   canEnterPosition(worldX: number, worldY: number, time = performance.now()): boolean {
     const chunkX = worldToChunk(worldX);
     const chunkY = worldToChunk(worldY);
@@ -292,19 +329,26 @@ export class ChunkManager {
     const focusChanged = chunkX !== this.presentationFocusChunkX || chunkY !== this.presentationFocusChunkY;
     this.presentationFocusChunkX = chunkX;
     this.presentationFocusChunkY = chunkY;
+    this.presentationFocusWorldX = worldX;
+    this.presentationFocusWorldY = worldY;
     if (focusChanged) {
       // Existing cached chunks may not have needed grass while they were outside the previous
       // preload window. Mark the requested window before checking readiness.
       this.updateChunkRenderVisibility();
     }
+    this.queueCameraTerrainWindow(worldX, worldY);
     this.queuePresentationWindow(chunkX, chunkY);
     this.queueGroundGrassPreloadChunks();
     this.sortPendingChunks();
-    this.processPendingChunks(time);
-    const ready = this.isEntryChunkReady(chunkX, chunkY);
+    // A boundary miss is urgent: fill every free worker immediately, while retaining deferred
+    // renderer commits so a catch-up burst cannot create a movement hitch.
+    this.processPendingChunks(time, CHUNK_STREAM_MAX_CONCURRENT_BUILDS, true, true);
+    const ready = this.isCameraTerrainReadyAt(worldX, worldY);
     if (ready) {
       this.presentationFocusChunkX = Number.NaN;
       this.presentationFocusChunkY = Number.NaN;
+      this.presentationFocusWorldX = Number.NaN;
+      this.presentationFocusWorldY = Number.NaN;
     }
     return ready;
   }
@@ -351,7 +395,10 @@ export class ChunkManager {
     // Keep frame swaps to the actual camera presentation window. Distant chunks retain their
     // complete baked feature art, so omitting their off-screen foliage updates is purely a
     // performance win and does not alter what is visible.
-    this.forEachNearbyChunk(this.groundGrassRenderRadiusX(), this.groundGrassRenderRadiusY(), (chunk) => {
+    // Only nearby vegetation needs to advance its atlas frame. More distant visible patches keep
+    // a valid organic pose until they enter this animation window, cutting thousands of frame
+    // comparisons and texture-frame assignments while the player is moving.
+    this.forEachNearbyChunk(AMBIENT_CHUNK_RADIUS_X, AMBIENT_CHUNK_RADIUS_Y, (chunk) => {
       chunk.updateFoliage(time, this.foliageAnimationEnabled);
     });
   }
@@ -496,6 +543,7 @@ export class ChunkManager {
   }
 
   private queueNearbyChunks(): void {
+    this.queuePresentationWindow(this.activeChunkX, this.activeChunkY);
     this.queueChunkNeighborhood(this.activeChunkX, this.activeChunkY);
     this.sortPendingChunks();
   }
@@ -521,12 +569,12 @@ export class ChunkManager {
     }
     const radiusX = this.groundGrassPreloadRadiusX();
     const radiusY = this.groundGrassPreloadRadiusY();
-    const centers: Array<readonly [number, number, number]> = [[this.activeChunkX, this.activeChunkY, -48]];
+    const centers: Array<readonly [number, number]> = [[this.activeChunkX, this.activeChunkY]];
     if (Number.isFinite(this.streamFocusChunkX) && Number.isFinite(this.streamFocusChunkY)) {
-      centers.push([this.streamFocusChunkX, this.streamFocusChunkY, -52]);
+      centers.push([this.streamFocusChunkX, this.streamFocusChunkY]);
     }
     if (Number.isFinite(this.presentationFocusChunkX) && Number.isFinite(this.presentationFocusChunkY)) {
-      centers.push([this.presentationFocusChunkX, this.presentationFocusChunkY, -120]);
+      centers.push([this.presentationFocusChunkX, this.presentationFocusChunkY]);
     }
     const signature = `${radiusX},${radiusY}|${centers.map(([x, y]) => `${x},${y}`).join('|')}`;
     if (signature === this.lastGroundGrassPreloadSignature) {
@@ -534,13 +582,12 @@ export class ChunkManager {
     }
     this.lastGroundGrassPreloadSignature = signature;
 
-    centers.forEach(([centerX, centerY, basePriority]) => {
+    centers.forEach(([centerX, centerY]) => {
       for (let y = centerY - radiusY; y <= centerY + radiusY; y += 1) {
         for (let x = centerX - radiusX; x <= centerX + radiusX; x += 1) {
-          const distance = Math.abs(x - centerX) + Math.abs(y - centerY);
-          // The presentation window remains first; directional preload work is deliberately
-          // lower priority so it can never delay terrain that is already on screen.
-          this.queueChunk(x, y, basePriority + distance);
+          // Dynamic sorting below always keeps the camera presentation ahead of this outer
+          // preload ring, regardless of when a direction or boundary focus changes.
+          this.queueChunk(x, y);
         }
       }
     });
@@ -562,86 +609,122 @@ export class ChunkManager {
     }
 
     this.lastPrefetchSignature = signature;
-    const centersX = [this.activeChunkX, this.streamFocusChunkX];
-    const centersY = [this.activeChunkY, this.streamFocusChunkY];
-
-    if (horizontalDirection > 0) {
-      centersX.push(this.activeChunkX + 1);
-    } else if (horizontalDirection < 0) {
-      centersX.push(this.activeChunkX - 1);
+    // Keep real predicted positions as coordinate pairs. Building a Cartesian product of X and Y
+    // centers previously turned three useful diagonal lookahead points into nine neighborhoods.
+    const centers = new Map<string, readonly [number, number]>();
+    const addCenter = (x: number, y: number): void => {
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        centers.set(`${x},${y}`, [x, y]);
+      }
+    };
+    addCenter(this.activeChunkX, this.activeChunkY);
+    addCenter(this.streamFocusChunkX, this.streamFocusChunkY);
+    if (horizontalDirection !== 0 || verticalDirection !== 0) {
+      addCenter(this.activeChunkX + horizontalDirection, this.activeChunkY + verticalDirection);
     }
-    if (verticalDirection > 0) {
-      centersY.push(this.activeChunkY + 1);
-    } else if (verticalDirection < 0) {
-      centersY.push(this.activeChunkY - 1);
-    }
-
-    Array.from(new Set(centersX)).forEach((centerX) => Array.from(new Set(centersY)).forEach((centerY) => {
+    centers.forEach(([centerX, centerY]) => {
+      this.queuePresentationWindow(centerX, centerY);
       this.queueChunkNeighborhood(centerX, centerY);
-    }));
+    });
     this.sortPendingChunks();
   }
 
   private queueChunkNeighborhood(centerChunkX: number, centerChunkY: number): void {
     for (let y = centerChunkY - this.chunkGenerationRadius; y <= centerChunkY + this.chunkGenerationRadius; y += 1) {
       for (let x = centerChunkX - this.chunkGenerationRadius; x <= centerChunkX + this.chunkGenerationRadius; x += 1) {
-        this.queueChunk(x, y, this.chunkPriority(x, y));
+        this.queueChunk(x, y);
       }
     }
 
-  }
-
-  private queueVisibleChunks(): void {
-    for (let y = this.activeChunkY - CHUNK_STREAM_VISIBLE_RADIUS_Y; y <= this.activeChunkY + CHUNK_STREAM_VISIBLE_RADIUS_Y; y += 1) {
-      for (let x = this.activeChunkX - CHUNK_STREAM_VISIBLE_RADIUS_X; x <= this.activeChunkX + CHUNK_STREAM_VISIBLE_RADIUS_X; x += 1) {
-        const distance = Math.abs(x - this.activeChunkX) + Math.abs(y - this.activeChunkY);
-        this.queueChunk(x, y, -100 + distance);
-      }
-    }
-
-    this.sortPendingChunks();
   }
 
   private queuePresentationWindow(centerChunkX: number, centerChunkY: number): void {
-    const radiusX = this.groundGrassEnabled
-      ? Math.max(CHUNK_STREAM_VISIBLE_RADIUS_X, this.groundGrassRenderRadiusX())
-      : CHUNK_STREAM_VISIBLE_RADIUS_X;
-    const radiusY = this.groundGrassEnabled
-      ? Math.max(CHUNK_STREAM_VISIBLE_RADIUS_Y, this.groundGrassRenderRadiusY())
-      : CHUNK_STREAM_VISIBLE_RADIUS_Y;
+    const radiusX = this.presentationRadiusX();
+    const radiusY = this.presentationRadiusY();
     for (let y = centerChunkY - radiusY; y <= centerChunkY + radiusY; y += 1) {
       for (let x = centerChunkX - radiusX; x <= centerChunkX + radiusX; x += 1) {
-        const distance = Math.max(Math.abs(x - centerChunkX), Math.abs(y - centerChunkY));
-        this.queueChunk(x, y, -240 + distance);
+        this.queueChunk(x, y);
       }
     }
   }
 
-  private queueChunk(x: number, y: number, priority: number): void {
+  private queueCameraTerrainWindow(worldX: number, worldY: number): void {
+    const bounds = this.cameraChunkBoundsAt(worldX, worldY);
+    for (let y = bounds.minimumY; y <= bounds.maximumY; y += 1) {
+      for (let x = bounds.minimumX; x <= bounds.maximumX; x += 1) {
+        this.queueChunk(x, y);
+      }
+    }
+  }
+
+  private queueChunk(x: number, y: number): void {
     const key = `${x},${y}`;
     if (this.chunks.has(key) || this.pendingChunkBuilds.has(key)) {
       return;
     }
 
-    const existing = this.pendingChunks.get(key);
-    if (existing) {
-      existing.priority = Math.min(existing.priority, priority);
+    if (this.pendingChunks.has(key)) {
       return;
     }
 
-    const candidate = { x, y, priority };
+    const candidate = { x, y };
     this.pendingChunkCoordinates.push(candidate);
     this.pendingChunks.set(key, candidate);
   }
 
-  private chunkPriority(x: number, y: number): number {
-    const activeDistance = Math.abs(x - this.activeChunkX) + Math.abs(y - this.activeChunkY);
-    const focusDistance = Math.abs(x - this.streamFocusChunkX) + Math.abs(y - this.streamFocusChunkY);
+  private shouldRetainCoordinate(x: number, y: number): boolean {
+    const activeDistance = Math.max(Math.abs(x - this.activeChunkX), Math.abs(y - this.activeChunkY));
+    const focusDistance = Number.isFinite(this.streamFocusChunkX) && Number.isFinite(this.streamFocusChunkY)
+      ? Math.max(Math.abs(x - this.streamFocusChunkX), Math.abs(y - this.streamFocusChunkY))
+      : Number.POSITIVE_INFINITY;
+    const insidePresentation = Number.isFinite(this.presentationFocusChunkX)
+      && Number.isFinite(this.presentationFocusChunkY)
+      && Math.abs(x - this.presentationFocusChunkX) <= this.presentationRadiusX()
+      && Math.abs(y - this.presentationFocusChunkY) <= this.presentationRadiusY();
+    return activeDistance <= this.chunkUnloadRadius
+      || focusDistance <= CHUNK_STREAM_MAX_LOOKAHEAD_CHUNKS
+      || insidePresentation;
+  }
+
+  private streamingPriority(x: number, y: number): number {
+    const activeX = Math.abs(x - this.activeChunkX);
+    const activeY = Math.abs(y - this.activeChunkY);
+    const activeDistance = activeX + activeY;
+    const hasStreamFocus = Number.isFinite(this.streamFocusChunkX) && Number.isFinite(this.streamFocusChunkY);
+    const focusX = hasStreamFocus ? Math.abs(x - this.streamFocusChunkX) : Number.POSITIVE_INFINITY;
+    const focusY = hasStreamFocus ? Math.abs(y - this.streamFocusChunkY) : Number.POSITIVE_INFINITY;
+    const focusDistance = focusX + focusY;
+    if (this.isWithinFocusedCameraWindow(x, y)) {
+      return -500 + this.presentationFocusDistance(x, y);
+    }
+    if (Number.isFinite(this.presentationFocusChunkX)
+      && Math.abs(x - this.presentationFocusChunkX) <= this.presentationRadiusX()
+      && Math.abs(y - this.presentationFocusChunkY) <= this.presentationRadiusY()) {
+      return -400 + this.presentationFocusDistance(x, y);
+    }
+    if (activeX <= this.presentationRadiusX() && activeY <= this.presentationRadiusY()) {
+      return -300 + activeDistance;
+    }
+    if (focusX <= this.presentationRadiusX() && focusY <= this.presentationRadiusY()) {
+      return -200 + focusDistance;
+    }
     return Math.min(activeDistance, focusDistance * 0.7 + 0.15);
   }
 
   private sortPendingChunks(): void {
-    this.pendingChunkCoordinates.sort((first, second) => first.priority - second.priority);
+    // Drop stale travel requests before sorting, then calculate priority from the current active,
+    // predicted, and boundary-focus windows. Old low numeric priorities can no longer linger in
+    // front of terrain needed by a newly changed direction.
+    for (let index = this.pendingChunkCoordinates.length - 1; index >= 0; index -= 1) {
+      const candidate = this.pendingChunkCoordinates[index];
+      if (!this.shouldRetainCoordinate(candidate.x, candidate.y)) {
+        this.pendingChunkCoordinates.splice(index, 1);
+        this.pendingChunks.delete(`${candidate.x},${candidate.y}`);
+      }
+    }
+    this.pendingChunkCoordinates.sort((first, second) =>
+      this.streamingPriority(first.x, first.y) - this.streamingPriority(second.x, second.y)
+    );
   }
 
   private updateStreamFocus(playerWorldX: number, playerWorldY: number, time: number): void {
@@ -649,14 +732,19 @@ export class ChunkManager {
     const currentChunkY = worldToChunk(playerWorldY);
     if (Number.isFinite(this.lastPlayerSampleTime)) {
       const elapsed = Math.max(1, time - this.lastPlayerSampleTime);
+      const velocityBlend = 1 - Math.exp(-elapsed / 180);
+      const instantVelocityX = (playerWorldX - this.lastPlayerWorldX) / elapsed;
+      const instantVelocityY = (playerWorldY - this.lastPlayerWorldY) / elapsed;
+      this.smoothedVelocityX += (instantVelocityX - this.smoothedVelocityX) * velocityBlend;
+      this.smoothedVelocityY += (instantVelocityY - this.smoothedVelocityY) * velocityBlend;
       const maximumLead = CHUNK_STREAM_MAX_LOOKAHEAD_CHUNKS * CHUNK_SIZE_PIXELS;
       const leadX = Phaser.Math.Clamp(
-        ((playerWorldX - this.lastPlayerWorldX) / elapsed) * CHUNK_STREAM_LOOKAHEAD_MS,
+        this.smoothedVelocityX * CHUNK_STREAM_LOOKAHEAD_MS,
         -maximumLead,
         maximumLead
       );
       const leadY = Phaser.Math.Clamp(
-        ((playerWorldY - this.lastPlayerWorldY) / elapsed) * CHUNK_STREAM_LOOKAHEAD_MS,
+        this.smoothedVelocityY * CHUNK_STREAM_LOOKAHEAD_MS,
         -maximumLead,
         maximumLead
       );
@@ -675,9 +763,10 @@ export class ChunkManager {
   private processPendingChunks(
     time: number,
     buildBudget = this.chunkBuildBudget,
-    force = false
+    bypassInterval = false,
+    deferRendererCommit = true
   ): void {
-    if (!force && time - this.lastChunkBuildTime < this.chunkBuildIntervalMs) {
+    if (!bypassInterval && time - this.lastChunkBuildTime < this.chunkBuildIntervalMs) {
       return;
     }
 
@@ -697,27 +786,27 @@ export class ChunkManager {
 
       const key = `${coordinate.x},${coordinate.y}`;
       this.pendingChunks.delete(key);
-      const distance = Math.max(
-        Math.abs(coordinate.x - this.activeChunkX),
-        Math.abs(coordinate.y - this.activeChunkY)
-      );
-      const focusDistance = Math.max(
-        Math.abs(coordinate.x - this.streamFocusChunkX),
-        Math.abs(coordinate.y - this.streamFocusChunkY)
-      );
-      const presentationDistance = this.presentationFocusDistance(coordinate.x, coordinate.y);
       if (
-        (distance > this.chunkUnloadRadius
-          && focusDistance > CHUNK_STREAM_MAX_LOOKAHEAD_CHUNKS
-          && presentationDistance > Math.max(CHUNK_STREAM_VISIBLE_RADIUS_X, CHUNK_STREAM_VISIBLE_RADIUS_Y))
+        !this.shouldRetainCoordinate(coordinate.x, coordinate.y)
         || this.chunks.has(key)
         || this.pendingChunkBuilds.has(key)
       ) {
         continue;
       }
 
-      const build = WorldChunk.create(this.scene, this.seed, this.sessionState, coordinate.x, coordinate.y, !force)
+      const build = WorldChunk.create(
+        this.scene,
+        this.seed,
+        this.sessionState,
+        coordinate.x,
+        coordinate.y,
+        deferRendererCommit,
+        () => !this.destroyed && !this.chunks.has(key) && this.shouldRetainCoordinate(coordinate.x, coordinate.y)
+      )
         .then((chunk) => {
+          if (!chunk) {
+            return;
+          }
           // A player can leave the request window while the worker is baking. Discard its
           // finished scene objects instead of allowing obsolete chunks to pop into memory.
           if (this.destroyed || this.chunks.has(key)) {
@@ -725,20 +814,7 @@ export class ChunkManager {
             return;
           }
 
-          const completedDistance = Math.max(
-            Math.abs(coordinate.x - this.activeChunkX),
-            Math.abs(coordinate.y - this.activeChunkY)
-          );
-          const completedFocusDistance = Math.max(
-            Math.abs(coordinate.x - this.streamFocusChunkX),
-            Math.abs(coordinate.y - this.streamFocusChunkY)
-          );
-          const completedPresentationDistance = this.presentationFocusDistance(coordinate.x, coordinate.y);
-          if (
-            completedDistance > this.chunkUnloadRadius
-            && completedFocusDistance > CHUNK_STREAM_MAX_LOOKAHEAD_CHUNKS
-            && completedPresentationDistance > Math.max(CHUNK_STREAM_VISIBLE_RADIUS_X, CHUNK_STREAM_VISIBLE_RADIUS_Y)
-          ) {
+          if (!this.shouldRetainCoordinate(coordinate.x, coordinate.y)) {
             this.deferChunkDisposal(chunk);
             return;
           }
@@ -751,6 +827,9 @@ export class ChunkManager {
         })
         .finally(() => {
           this.pendingChunkBuilds.delete(key);
+          // Allow the next rendered update to refill this worker slot immediately instead of
+          // waiting out a cadence interval that began before the worker finished.
+          this.lastChunkBuildTime = Number.NEGATIVE_INFINITY;
         });
       this.pendingChunkBuilds.set(key, build);
       built += 1;
@@ -782,35 +861,36 @@ export class ChunkManager {
     tileBudget = GROUND_GRASS_BUILD_TILES_PER_TICK,
     force = false
   ): boolean {
-    if (!this.groundGrassEnabled || (!force && time - this.lastGroundGrassBuildTime < GROUND_GRASS_BUILD_INTERVAL_MS)) {
+    if (!this.groundGrassEnabled
+      || (!force && time < this.backgroundWorkPausedUntil)
+      || (!force && time - this.lastGroundGrassBuildTime < GROUND_GRASS_BUILD_INTERVAL_MS)) {
       return false;
     }
 
-    const candidates = new Map<string, WorldChunk>();
+    // Select the next grass batch in one pass over loaded chunks. The old path rebuilt coordinate
+    // strings for three overlapping windows and sorted every candidate on every animation frame.
     const preloadRadiusX = this.groundGrassPreloadRadiusX();
     const preloadRadiusY = this.groundGrassPreloadRadiusY();
-    const centers = new Map<string, readonly [number, number]>();
-    const addCenter = (x: number, y: number): void => {
-      if (Number.isFinite(x) && Number.isFinite(y)) {
-        centers.set(`${x},${y}`, [x, y]);
+    const insideWindow = (candidate: WorldChunk, centerX: number, centerY: number): boolean =>
+      Number.isFinite(centerX)
+      && Number.isFinite(centerY)
+      && Math.abs(candidate.x - centerX) <= preloadRadiusX
+      && Math.abs(candidate.y - centerY) <= preloadRadiusY;
+    let chunk: WorldChunk | undefined;
+    let bestPriority = Number.POSITIVE_INFINITY;
+    this.chunks.forEach((candidate) => {
+      if (!candidate.hasPendingGroundGrassBuild
+        || (!insideWindow(candidate, this.presentationFocusChunkX, this.presentationFocusChunkY)
+          && !insideWindow(candidate, this.activeChunkX, this.activeChunkY)
+          && !insideWindow(candidate, this.streamFocusChunkX, this.streamFocusChunkY))) {
+        return;
       }
-    };
-    addCenter(this.presentationFocusChunkX, this.presentationFocusChunkY);
-    addCenter(this.activeChunkX, this.activeChunkY);
-    addCenter(this.streamFocusChunkX, this.streamFocusChunkY);
-    centers.forEach(([centerX, centerY]) => {
-      for (let y = centerY - preloadRadiusY; y <= centerY + preloadRadiusY; y += 1) {
-        for (let x = centerX - preloadRadiusX; x <= centerX + preloadRadiusX; x += 1) {
-          const chunk = this.chunks.get(`${x},${y}`);
-          if (chunk?.hasPendingGroundGrassBuild) {
-            candidates.set(chunk.key, chunk);
-          }
-        }
+      const priority = this.groundGrassPriority(candidate);
+      if (priority < bestPriority) {
+        chunk = candidate;
+        bestPriority = priority;
       }
     });
-    const orderedCandidates = Array.from(candidates.values())
-      .sort((first, second) => this.groundGrassPriority(first) - this.groundGrassPriority(second));
-    const chunk = orderedCandidates[0];
     if (!chunk) {
       return false;
     }
@@ -827,28 +907,44 @@ export class ChunkManager {
   // expose more terrain at the same zoom. Derive the real camera footprint so grass coverage
   // always reaches the viewport edge instead of relying on a resolution-specific constant.
   private groundGrassRenderRadiusX(): number {
-    const camera = this.scene.cameras.main;
-    const worldWidth = camera.width / Math.max(0.001, camera.zoom);
-    return Math.max(GROUND_GRASS_RENDER_RADIUS_X, Math.ceil(worldWidth / (CHUNK_SIZE_PIXELS * 2)));
+    return Math.max(GROUND_GRASS_RENDER_RADIUS_X, this.visibleRadiusX());
   }
 
   private groundGrassRenderRadiusY(): number {
+    return Math.max(GROUND_GRASS_RENDER_RADIUS_Y, this.visibleRadiusY());
+  }
+
+  private visibleRadiusX(): number {
+    const camera = this.scene.cameras.main;
+    const worldWidth = camera.width / Math.max(0.001, camera.zoom);
+    return Math.max(CHUNK_STREAM_VISIBLE_RADIUS_X, Math.ceil(worldWidth / (CHUNK_SIZE_PIXELS * 2)));
+  }
+
+  private visibleRadiusY(): number {
     const camera = this.scene.cameras.main;
     const worldHeight = camera.height / Math.max(0.001, camera.zoom);
-    return Math.max(GROUND_GRASS_RENDER_RADIUS_Y, Math.ceil(worldHeight / (CHUNK_SIZE_PIXELS * 2)));
+    return Math.max(CHUNK_STREAM_VISIBLE_RADIUS_Y, Math.ceil(worldHeight / (CHUNK_SIZE_PIXELS * 2)));
+  }
+
+  private presentationRadiusX(): number {
+    return this.groundGrassEnabled ? Math.max(this.visibleRadiusX(), this.groundGrassRenderRadiusX()) : this.visibleRadiusX();
+  }
+
+  private presentationRadiusY(): number {
+    return this.groundGrassEnabled ? Math.max(this.visibleRadiusY(), this.groundGrassRenderRadiusY()) : this.visibleRadiusY();
   }
 
   private groundGrassPreloadRadiusX(): number {
-    return Math.max(GROUND_GRASS_PRELOAD_RADIUS_X, this.groundGrassRenderRadiusX() + 2);
+    return Math.max(GROUND_GRASS_PRELOAD_RADIUS_X, this.groundGrassRenderRadiusX() + 1);
   }
 
   private groundGrassPreloadRadiusY(): number {
-    return Math.max(GROUND_GRASS_PRELOAD_RADIUS_Y, this.groundGrassRenderRadiusY() + 2);
+    return Math.max(GROUND_GRASS_PRELOAD_RADIUS_Y, this.groundGrassRenderRadiusY() + 1);
   }
 
   private isWithinRenderWindow(chunkX: number, chunkY: number): boolean {
-    return Math.abs(chunkX - this.activeChunkX) <= CHUNK_RENDER_RADIUS_X
-      && Math.abs(chunkY - this.activeChunkY) <= CHUNK_RENDER_RADIUS_Y;
+    return Math.abs(chunkX - this.activeChunkX) <= Math.max(CHUNK_RENDER_RADIUS_X, this.visibleRadiusX() + 1)
+      && Math.abs(chunkY - this.activeChunkY) <= Math.max(CHUNK_RENDER_RADIUS_Y, this.visibleRadiusY() + 1);
   }
 
   private isWithinForegroundWindow(chunkX: number, chunkY: number): boolean {
@@ -873,12 +969,8 @@ export class ChunkManager {
   private isPresentationReadyAt(worldX: number, worldY: number): boolean {
     const centerChunkX = worldToChunk(worldX);
     const centerChunkY = worldToChunk(worldY);
-    const radiusX = this.groundGrassEnabled
-      ? Math.max(CHUNK_STREAM_VISIBLE_RADIUS_X, this.groundGrassRenderRadiusX())
-      : CHUNK_STREAM_VISIBLE_RADIUS_X;
-    const radiusY = this.groundGrassEnabled
-      ? Math.max(CHUNK_STREAM_VISIBLE_RADIUS_Y, this.groundGrassRenderRadiusY())
-      : CHUNK_STREAM_VISIBLE_RADIUS_Y;
+    const radiusX = this.presentationRadiusX();
+    const radiusY = this.presentationRadiusY();
     for (let y = centerChunkY - radiusY; y <= centerChunkY + radiusY; y += 1) {
       for (let x = centerChunkX - radiusX; x <= centerChunkX + radiusX; x += 1) {
         const chunk = this.chunks.get(`${x},${y}`);
@@ -890,9 +982,47 @@ export class ChunkManager {
     return true;
   }
 
-  private isEntryChunkReady(chunkX: number, chunkY: number): boolean {
-    const chunk = this.chunks.get(`${chunkX},${chunkY}`);
-    return chunk !== undefined && (!this.groundGrassEnabled || chunk.isGroundGrassReady);
+  private isCameraTerrainReadyAt(worldX: number, worldY: number): boolean {
+    const bounds = this.cameraChunkBoundsAt(worldX, worldY);
+    for (let y = bounds.minimumY; y <= bounds.maximumY; y += 1) {
+      for (let x = bounds.minimumX; x <= bounds.maximumX; x += 1) {
+        if (!this.chunks.has(`${x},${y}`)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  private cameraChunkBoundsAt(worldX: number, worldY: number): {
+    minimumX: number;
+    maximumX: number;
+    minimumY: number;
+    maximumY: number;
+  } {
+    const camera = this.scene.cameras.main;
+    const zoom = Math.max(0.001, camera.zoom);
+    const halfWidth = camera.width / zoom / 2;
+    const halfHeight = camera.height / zoom / 2;
+    // Include a tiny overlap so floating-point camera transforms cannot expose a one-pixel seam.
+    const edgePadding = 2;
+    return {
+      minimumX: worldToChunk(worldX - halfWidth - edgePadding),
+      maximumX: worldToChunk(worldX + halfWidth + edgePadding),
+      minimumY: worldToChunk(worldY - halfHeight - edgePadding),
+      maximumY: worldToChunk(worldY + halfHeight + edgePadding)
+    };
+  }
+
+  private isWithinFocusedCameraWindow(chunkX: number, chunkY: number): boolean {
+    if (!Number.isFinite(this.presentationFocusWorldX) || !Number.isFinite(this.presentationFocusWorldY)) {
+      return false;
+    }
+    const bounds = this.cameraChunkBoundsAt(this.presentationFocusWorldX, this.presentationFocusWorldY);
+    return chunkX >= bounds.minimumX
+      && chunkX <= bounds.maximumX
+      && chunkY >= bounds.minimumY
+      && chunkY <= bounds.maximumY;
   }
 
   private groundGrassPriority(chunk: WorldChunk): number {
@@ -937,9 +1067,12 @@ export class ChunkManager {
         Math.abs(chunk.y - this.streamFocusChunkY)
       );
       const presentationDistance = this.presentationFocusDistance(chunk.x, chunk.y);
+      const insidePresentation = Number.isFinite(presentationDistance)
+        && Math.abs(chunk.x - this.presentationFocusChunkX) <= this.presentationRadiusX()
+        && Math.abs(chunk.y - this.presentationFocusChunkY) <= this.presentationRadiusY();
       if (distance > this.chunkUnloadRadius
         && focusDistance > CHUNK_STREAM_MAX_LOOKAHEAD_CHUNKS
-        && presentationDistance > Math.max(CHUNK_STREAM_VISIBLE_RADIUS_X, CHUNK_STREAM_VISIBLE_RADIUS_Y)) {
+        && !insidePresentation) {
         this.chunks.delete(key);
         this.deferChunkDisposal(chunk);
       }
@@ -954,6 +1087,11 @@ export class ChunkManager {
       chunk.destroy();
       return;
     }
+    // Unloading removes a chunk from the manager before the next presentation pass. Make every
+    // renderer object (especially its grass Container) inactive immediately; otherwise sustained
+    // travel leaves retired fields traversable until an idle callback eventually destroys them.
+    chunk.setGroundGrassVisible(false);
+    chunk.setRenderVisible(false);
     this.pendingChunkDisposals.push(chunk);
     this.deferChunkDisposalQueue();
   }

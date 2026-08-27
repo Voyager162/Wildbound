@@ -16,6 +16,7 @@ interface WorkerResultMessage {
   readonly id: number;
   readonly pixels: ArrayBuffer;
   readonly waterKinds: ArrayBuffer;
+  readonly imageBitmap: ImageBitmap | null;
 }
 
 interface WorkerFailureMessage {
@@ -30,6 +31,7 @@ interface PendingBake {
   readonly resolve: (bake: TerrainBake) => void;
   readonly reject: (reason: Error) => void;
   readonly worker: TerrainBakeWorker;
+  readonly cacheKey: string;
 }
 
 interface TerrainBakeWorker {
@@ -41,24 +43,40 @@ export interface TerrainBake {
   readonly pixels: Uint8ClampedArray;
   // One compact 8px visual cell per entry: 0 = dry, 1 = ocean/surf, 2 = swamp water.
   readonly waterKinds: Uint8Array;
+  // Workers can hand Chromium a ready image source for dry chunks, avoiding a renderer-thread
+  // ImageData copy and Canvas refresh before the WebGL upload.
+  readonly imageBitmap: ImageBitmap | null;
 }
 
 // The detailed terrain colour bake is pure seeded math. Keep it in a dedicated worker so a
 // streamed chunk cannot block input, camera motion, or Phaser's renderer. Phaser still owns the
 // final texture upload on the main thread, which keeps masks and all existing scene systems safe.
 class TerrainBakeService {
+  // Re-entering recently visited terrain should only recreate its lightweight Phaser objects,
+  // not repeat millions of deterministic noise/material operations. Forty full RGBA bakes use
+  // roughly 41 MB and give ordinary backtracking a substantial hot cache without unbounded RAM.
+  private static readonly MAX_CACHED_BAKES = 40;
   private readonly workers: TerrainBakeWorker[] = [];
   private nextRequestId = 1;
   private readonly pending = new Map<number, PendingBake>();
+  private readonly completed = new Map<string, TerrainBake>();
   private materials: TerrainMaterialSet | null = null;
 
   request(scene: Phaser.Scene, seed: string, chunkX: number, chunkY: number): Promise<TerrainBake> {
+    const cacheKey = `${seed}:${chunkX},${chunkY}`;
+    const cached = this.completed.get(cacheKey);
+    if (cached) {
+      // Map insertion order is the LRU order. Refresh a hit without copying the immutable arrays.
+      this.completed.delete(cacheKey);
+      this.completed.set(cacheKey, cached);
+      return Promise.resolve(cached);
+    }
     const worker = this.selectWorker(scene);
     const id = this.nextRequestId;
     this.nextRequestId += 1;
 
     return new Promise<TerrainBake>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, worker });
+      this.pending.set(id, { resolve, reject, worker, cacheKey });
       worker.requestIds.add(id);
       worker.worker.postMessage({ type: 'bake', id, seed, chunkX, chunkY });
     });
@@ -93,8 +111,9 @@ class TerrainBakeService {
 
   private workerCount(): number {
     const cores = typeof navigator === 'undefined' ? 4 : navigator.hardwareConcurrency || 4;
-    if (cores >= 12) return 3;
-    if (cores >= 6) return 2;
+    if (cores >= 12) return 4;
+    if (cores >= 8) return 3;
+    if (cores >= 4) return 2;
     return 1;
   }
 
@@ -143,10 +162,20 @@ class TerrainBakeService {
     this.pending.delete(message.id);
     worker.requestIds.delete(message.id);
     if (message.type === 'complete') {
-      pending.resolve({
+      const bake = {
         pixels: new Uint8ClampedArray(message.pixels),
-        waterKinds: new Uint8Array(message.waterKinds)
-      });
+        waterKinds: new Uint8Array(message.waterKinds),
+        imageBitmap: message.imageBitmap
+      };
+      this.completed.set(pending.cacheKey, bake);
+      while (this.completed.size > TerrainBakeService.MAX_CACHED_BAKES) {
+        const oldestKey = this.completed.keys().next().value as string | undefined;
+        if (!oldestKey) {
+          break;
+        }
+        this.completed.delete(oldestKey);
+      }
+      pending.resolve(bake);
     } else {
       pending.reject(new Error(message.message));
     }
