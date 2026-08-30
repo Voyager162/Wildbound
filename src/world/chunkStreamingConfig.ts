@@ -22,9 +22,11 @@ export const CHUNK_STREAM_VISIBLE_RADIUS_Y = 2;
 export const CHUNK_STREAM_LOOKAHEAD_MS = 3600;
 export const CHUNK_STREAM_MAX_LOOKAHEAD_CHUNKS = 4;
 
-// Grass patches are created off-screen in short, deterministic batches. At this rate a full
-// chunk is prepared well inside the one-chunk grass preload margin, while a batch only creates
-// a handful of visible patch sprites on average.
+// Grass candidate calculation runs with the other procedural data in a worker. The renderer only
+// turns those compact descriptors into lightweight Bobs, and remains bounded by both patch count
+// and wall time so faster grass coverage does not steal an open-ended portion of a frame.
 export const GROUND_GRASS_BUILD_INTERVAL_MS = 16;
-export const GROUND_GRASS_BUILD_TILES_PER_TICK = 24;
-export const GROUND_GRASS_INITIAL_BUILD_TILES_PER_TICK = 128;
+export const GROUND_GRASS_BUILD_PATCHES_PER_TICK = 48;
+export const GROUND_GRASS_BUILD_TIME_BUDGET_MS = 1.25;
+export const GROUND_GRASS_INITIAL_BUILD_PATCHES_PER_TICK = 256;
+export const GROUND_GRASS_INITIAL_CHUNKS_PER_TICK = 4;

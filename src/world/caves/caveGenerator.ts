@@ -1,5 +1,6 @@
 import { Biome, biomeAtTile } from '../generation/biomeGenerator';
 import { featureAtTile } from '../generation/featureGenerator';
+import { isLandmarkReservedTile } from '../generation/landmarkGenerator';
 import { coherentNoise, randomAtTile } from '../generation/noise';
 import { surfaceAtTile } from '../generation/terrainGenerator';
 import {
@@ -242,7 +243,14 @@ const hasNearestCandidatePriority = (seed: string, tileX: number, tileY: number)
 const surfaceCanHostCave = (seed: string, tileX: number, tileY: number): boolean => {
   const surface = surfaceAtTile(seed, tileX, tileY);
   const biome = biomeAtTile(seed, tileX, tileY);
-  return !surface.isWater && !featureAtTile(seed, tileX, tileY) && biome !== Biome.Ocean && biome !== Biome.Beach;
+  // Landmark macro reservations deliberately remain broader than their exact walk collision.
+  // Caves need that safety margin because their exposed rock face spans several neighboring
+  // tiles and would otherwise carve through a root system, crater rim, or tower foundation.
+  return !surface.isWater
+    && !isLandmarkReservedTile(seed, tileX, tileY)
+    && !featureAtTile(seed, tileX, tileY)
+    && biome !== Biome.Ocean
+    && biome !== Biome.Beach;
 };
 
 const createSurfaceEntrance = (

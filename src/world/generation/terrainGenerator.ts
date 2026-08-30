@@ -1,4 +1,13 @@
-import { BEACH_ELEVATION_MAX, biomeForClimate, Biome, climateAtTile, OCEAN_ELEVATION_MAX } from './biomeGenerator';
+import {
+  BEACH_ELEVATION_MAX,
+  biomeForClimate,
+  Biome,
+  climateAtTile,
+  HIGH_SNOW_ELEVATION_MIN,
+  HIGH_SNOW_TEMPERATURE_MAX,
+  OCEAN_ELEVATION_MAX,
+  SNOW_TEMPERATURE_MAX
+} from './biomeGenerator';
 import { coherentNoise, randomAtTile } from './noise';
 import { sampleTopographyVisual, type TopographySample } from './topographyGenerator';
 import { CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from '../worldConfig';
@@ -6,7 +15,8 @@ import {
   BIOME_BLEND_WIDTH_SCALE,
   OCEAN_SHORELINE_RIPPLE_ELEVATION,
   OCEAN_SHORELINE_WOBBLE_ELEVATION,
-  OCEAN_SURF_BLEND_ELEVATION
+  OCEAN_SURF_BLEND_ELEVATION,
+  SNOW_NEIGHBOR_VISUAL_MAX
 } from '../worldVisualConfig';
 import {
   SWAMP_POOL_CLIMATE_END,
@@ -111,6 +121,40 @@ const biomeBlend = (start: number, end: number, value: number): number => {
   return smoothRange(midpoint - halfRange, midpoint + halfRange, value);
 };
 
+// Keep the rendered snow transition centred on the exact gameplay thresholds. The previous
+// ranges were offset toward warmer/lower terrain, so a weak snow signal could become the
+// strongest material in dry plains while an actual snow boundary was already almost white.
+// These centred fields remain broad and continuous, including where high-altitude snow needs
+// both elevation and temperature, but neither side gets a discontinuous head start.
+export const snowVisualAmountForClimate = (elevation: number, temperature: number): number => {
+  const coldHalfWidth = 0.075;
+  const highElevationHalfWidth = 0.075;
+  const highTemperatureHalfWidth = 0.09;
+  const biasedMembership = (amount: number, inside: boolean): number => inside
+    ? SNOW_NEIGHBOR_VISUAL_MAX
+      + (1 - SNOW_NEIGHBOR_VISUAL_MAX) * smoothRange(0.5, 1, amount)
+    : SNOW_NEIGHBOR_VISUAL_MAX * smoothRange(0, 0.5, amount);
+  const coldSnowRaw = 1 - biomeBlend(
+    SNOW_TEMPERATURE_MAX - coldHalfWidth,
+    SNOW_TEMPERATURE_MAX + coldHalfWidth,
+    temperature
+  );
+  const highElevationRaw = biomeBlend(
+    HIGH_SNOW_ELEVATION_MIN - highElevationHalfWidth,
+    HIGH_SNOW_ELEVATION_MIN + highElevationHalfWidth,
+    elevation
+  );
+  const highTemperatureRaw = 1 - biomeBlend(
+    HIGH_SNOW_TEMPERATURE_MAX - highTemperatureHalfWidth,
+    HIGH_SNOW_TEMPERATURE_MAX + highTemperatureHalfWidth,
+    temperature
+  );
+  const coldSnow = biasedMembership(coldSnowRaw, temperature < SNOW_TEMPERATURE_MAX);
+  const highSnow = biasedMembership(highElevationRaw, elevation > HIGH_SNOW_ELEVATION_MIN)
+    * biasedMembership(highTemperatureRaw, temperature < HIGH_SNOW_TEMPERATURE_MAX);
+  return Math.max(coldSnow, highSnow);
+};
+
 // This intentionally has no biome-label branch. It lets wetlands, their colors, and their pools
 // taper through a climate boundary rather than stepping when biomeForClimate changes its label.
 const swampClimateAmount = (climate: ReturnType<typeof climateAtTile>): number =>
@@ -136,9 +180,7 @@ const blendedLandColor = (climate: ReturnType<typeof climateAtTile>): number => 
   color = blendColor(color, TERRAIN_COLORS[TerrainType.Dirt], hillAmount);
   color = blendColor(color, TERRAIN_COLORS[TerrainType.Mountain], mountainAmount);
 
-  const coldSnow = 1 - biomeBlend(0.14, 0.34, temperature);
-  const highSnow = biomeBlend(0.72, 0.92, elevation) * (1 - biomeBlend(0.5, 0.68, temperature));
-  color = blendColor(color, TERRAIN_COLORS[TerrainType.Snow], Math.max(coldSnow, highSnow));
+  color = blendColor(color, TERRAIN_COLORS[TerrainType.Snow], snowVisualAmountForClimate(elevation, temperature));
 
   return color;
 };

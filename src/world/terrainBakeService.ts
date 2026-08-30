@@ -1,13 +1,8 @@
 import Phaser from 'phaser';
 import { TERRAIN_MATERIAL_TEXTURE_KEYS } from './terrainMaterialConfig';
+import type { TerrainMaterialPixels } from './terrainMaterialBlend';
 
 type TerrainMaterialName = keyof typeof TERRAIN_MATERIAL_TEXTURE_KEYS;
-
-interface TerrainMaterialPixels {
-  readonly width: number;
-  readonly height: number;
-  readonly pixels: Uint8ClampedArray;
-}
 
 type TerrainMaterialSet = Readonly<Record<TerrainMaterialName, TerrainMaterialPixels | null>>;
 

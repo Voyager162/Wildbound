@@ -227,6 +227,9 @@ export class PlaceableManager {
       case PlaceableId.Waypoint:
         this.drawWaypoint(centerX, centerY);
         return;
+      case PlaceableId.TravelStone:
+        this.drawTravelStone(centerX, centerY);
+        return;
       case PlaceableId.Workbench:
         this.drawWorkbench(centerX, centerY);
         return;
@@ -299,6 +302,41 @@ export class PlaceableManager {
     g.strokeTriangle(x + 1, y - 18, x + 12, y - 14, x + 1, y - 7);
     g.fillStyle(0x7edbff, 0.9);
     g.fillCircle(x, y - 20, 2.4);
+  }
+
+  private drawTravelStone(x: number, y: number): void {
+    const g = this.graphics;
+    // A squat ancient monolith remains readable beneath the player while its inset cyan channels
+    // visually connect it to the travel-map markers without looking like an ordinary waypoint.
+    g.fillStyle(0x172326, 0.78);
+    g.fillEllipse(x, y + 14, 42, 16);
+    g.fillStyle(0x27373a, 1);
+    g.fillPoints([
+      new Phaser.Geom.Point(x - 15, y + 12),
+      new Phaser.Geom.Point(x - 12, y - 13),
+      new Phaser.Geom.Point(x - 5, y - 22),
+      new Phaser.Geom.Point(x + 7, y - 20),
+      new Phaser.Geom.Point(x + 14, y - 10),
+      new Phaser.Geom.Point(x + 16, y + 12)
+    ], true);
+    g.fillStyle(0x65777a, 1);
+    g.fillPoints([
+      new Phaser.Geom.Point(x - 10, y + 9),
+      new Phaser.Geom.Point(x - 8, y - 11),
+      new Phaser.Geom.Point(x - 3, y - 17),
+      new Phaser.Geom.Point(x + 5, y - 16),
+      new Phaser.Geom.Point(x + 9, y - 8),
+      new Phaser.Geom.Point(x + 10, y + 9)
+    ], true);
+    g.lineStyle(2.1, 0x52d7dc, 0.95);
+    g.strokeCircle(x, y - 5, 6.5);
+    g.lineBetween(x, y - 12, x, y - 17);
+    g.lineBetween(x + 5.5, y - 1.5, x + 9, y + 4);
+    g.lineBetween(x - 5.5, y - 1.5, x - 9, y + 4);
+    g.fillStyle(0xb5ffff, 0.95);
+    g.fillCircle(x, y - 5, 2.1);
+    g.lineStyle(1, 0xc9ffff, 0.48);
+    g.lineBetween(x - 8, y + 8, x + 8, y + 8);
   }
 
   private drawWorkbench(x: number, y: number): void {

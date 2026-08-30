@@ -5,13 +5,9 @@ import { Biome } from './generation/biomeGenerator';
 export enum LandmarkType {
   GiantAncientTree = 'giant-ancient-tree',
   Waterfall = 'waterfall',
-  CrystalFormation = 'crystal-formation',
-  LargeLake = 'large-lake',
   MeteorCrater = 'meteor-crater',
-  Volcano = 'volcano',
   StoneCircle = 'stone-circle',
   GiantSkeleton = 'giant-skeleton',
-  AbandonedCampsite = 'abandoned-campsite',
   Watchtower = 'watchtower'
 }
 
@@ -31,6 +27,7 @@ export interface ProceduralLandmark {
   readonly id: string;
   readonly type: LandmarkType;
   readonly label: string;
+  readonly biome: Biome;
   readonly centerTileX: number;
   readonly centerTileY: number;
   readonly footprintRadiusTiles: number;
@@ -67,11 +64,11 @@ export interface LandmarkRandomSalts {
 // These values intentionally make landmarks much rarer than normal terrain features. A macro
 // cell is 384 tiles across (24 chunks), so an accepted landmark is typically several screens away.
 export const LANDMARK_GENERATION_CONFIG: LandmarkGenerationConfig = {
-  generationVersion: 1,
+  generationVersion: 2,
   macroCellSizeTiles: 384,
-  candidateChance: 0.34,
-  candidatePositionPaddingTiles: 42,
-  minimumSeparationTiles: 104,
+  candidateChance: 0.38,
+  candidatePositionPaddingTiles: 54,
+  minimumSeparationTiles: 132,
   spawnTileX: 0,
   spawnTileY: 0,
   spawnExclusionRadiusTiles: 96,
@@ -90,108 +87,69 @@ export const LANDMARK_RANDOM_SALTS: LandmarkRandomSalts = {
   priority: 0x96a4d5fb
 };
 
-// Placeholder map colors are deliberately high contrast, allowing the world map to distinguish
-// a discovered landmark from the surrounding biome before dedicated art is added.
+// Macro footprints reserve enough room for complete locations rather than a single emblem. The
+// surface plan still uses exact component shapes for feature clearance and collision, leaving
+// courtyards, stone-circle centers, and natural terrain open inside these broad bounds.
 export const LANDMARK_DEFINITIONS = [
   {
     type: LandmarkType.GiantAncientTree,
     label: 'Giant Ancient Tree',
     validBiomes: [Biome.Forest, Biome.Plains, Biome.Swamp],
     selectionWeight: 1.1,
-    footprintRadiusTiles: 12,
-    visualRadiusTiles: 26,
-    reservationPaddingTiles: 6,
-    mapColor: 0x1d4f2a
+    footprintRadiusTiles: 18,
+    visualRadiusTiles: 35,
+    reservationPaddingTiles: 8,
+    mapColor: 0x2d7540
   },
   {
     type: LandmarkType.Waterfall,
     label: 'Waterfall',
     validBiomes: [Biome.Hills, Biome.Mountains, Biome.Snow],
     selectionWeight: 0.72,
-    footprintRadiusTiles: 14,
-    visualRadiusTiles: 28,
-    reservationPaddingTiles: 6,
+    footprintRadiusTiles: 22,
+    visualRadiusTiles: 39,
+    reservationPaddingTiles: 8,
     mapColor: 0x67d9e8
-  },
-  {
-    type: LandmarkType.CrystalFormation,
-    label: 'Crystal Formation',
-    validBiomes: [Biome.Desert, Biome.Hills, Biome.Mountains, Biome.Snow],
-    selectionWeight: 0.9,
-    footprintRadiusTiles: 11,
-    visualRadiusTiles: 22,
-    reservationPaddingTiles: 6,
-    mapColor: 0xb77cff
-  },
-  {
-    type: LandmarkType.LargeLake,
-    label: 'Large Lake',
-    validBiomes: [Biome.Plains, Biome.Forest, Biome.Swamp, Biome.Hills],
-    selectionWeight: 0.65,
-    footprintRadiusTiles: 24,
-    visualRadiusTiles: 34,
-    reservationPaddingTiles: 7,
-    mapColor: 0x2f87c6
   },
   {
     type: LandmarkType.MeteorCrater,
     label: 'Meteor Crater',
     validBiomes: [Biome.Plains, Biome.Forest, Biome.Desert, Biome.Hills, Biome.Snow],
     selectionWeight: 0.78,
-    footprintRadiusTiles: 21,
-    visualRadiusTiles: 31,
-    reservationPaddingTiles: 7,
-    mapColor: 0x72534a
-  },
-  {
-    type: LandmarkType.Volcano,
-    label: 'Volcano',
-    validBiomes: [Biome.Hills, Biome.Mountains, Biome.Snow],
-    selectionWeight: 0.34,
-    footprintRadiusTiles: 26,
+    footprintRadiusTiles: 25,
     visualRadiusTiles: 38,
     reservationPaddingTiles: 8,
-    mapColor: 0x7f2d20
+    mapColor: 0x9b6048
   },
   {
     type: LandmarkType.StoneCircle,
     label: 'Stone Circle',
     validBiomes: [Biome.Plains, Biome.Forest, Biome.Hills, Biome.Snow],
     selectionWeight: 0.82,
-    footprintRadiusTiles: 12,
-    visualRadiusTiles: 21,
+    footprintRadiusTiles: 17,
+    visualRadiusTiles: 28,
     reservationPaddingTiles: 6,
-    mapColor: 0x969a9b
+    mapColor: 0xb6b9b2
   },
   {
     type: LandmarkType.GiantSkeleton,
     label: 'Giant Skeleton',
     validBiomes: [Biome.Plains, Biome.Desert, Biome.Hills, Biome.Snow],
     selectionWeight: 0.52,
-    footprintRadiusTiles: 17,
-    visualRadiusTiles: 28,
-    reservationPaddingTiles: 7,
+    footprintRadiusTiles: 22,
+    visualRadiusTiles: 35,
+    reservationPaddingTiles: 8,
     mapColor: 0xe7dfbb
-  },
-  {
-    type: LandmarkType.AbandonedCampsite,
-    label: 'Abandoned Campsite',
-    validBiomes: [Biome.Plains, Biome.Forest, Biome.Hills, Biome.Beach],
-    selectionWeight: 0.98,
-    footprintRadiusTiles: 9,
-    visualRadiusTiles: 17,
-    reservationPaddingTiles: 5,
-    mapColor: 0xd39a4b
   },
   {
     type: LandmarkType.Watchtower,
     label: 'Watchtower',
     validBiomes: [Biome.Plains, Biome.Forest, Biome.Desert, Biome.Hills, Biome.Mountains, Biome.Snow],
     selectionWeight: 0.84,
-    footprintRadiusTiles: 8,
-    visualRadiusTiles: 24,
-    reservationPaddingTiles: 5,
-    mapColor: 0xb98a55
+    footprintRadiusTiles: 13,
+    visualRadiusTiles: 31,
+    reservationPaddingTiles: 7,
+    mapColor: 0xd3a566
   }
 ] as const satisfies readonly LandmarkDefinition[];
 

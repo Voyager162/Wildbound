@@ -70,6 +70,7 @@ export interface FurnaceState {
 export interface SessionWorldStateData {
   harvestedFeatureKeys: string[];
   harvestedCaveOreKeys?: string[];
+  harvestedLandmarkMaterialKeys?: string[];
   drops: DroppedItem[];
   nextDropId: number;
   placedObjects?: PlacedObject[];
@@ -165,6 +166,14 @@ const isFurnaceState = (value: unknown): value is FurnaceState => {
 };
 
 const LEGACY_SURVEY_BEACON_ID = 'survey beacon';
+const LANDMARK_MATERIAL_KEY_MAX_LENGTH = 240;
+const MAX_HARVESTED_LANDMARK_MATERIAL_KEYS = 50_000;
+
+const isLandmarkMaterialKey = (value: unknown): value is string =>
+  typeof value === 'string'
+  && value.length > 0
+  && value.length <= LANDMARK_MATERIAL_KEY_MAX_LENGTH
+  && !/[\u0000-\u001f\u007f]/.test(value);
 
 const normalizeWaypointLabel = (label: unknown): string => {
   if (typeof label !== 'string') {
@@ -206,6 +215,7 @@ const isPlacedObject = (value: unknown): value is PlacedObject => {
 export class SessionWorldState {
   private readonly harvestedFeatureKeys = new Set<string>();
   private readonly harvestedCaveOreKeys = new Set<string>();
+  private readonly harvestedLandmarkMaterialKeys = new Set<string>();
   private readonly drops = new Map<string, DroppedItem>();
   private readonly placedObjects = new Map<string, PlacedObject>();
   private readonly exploredRegionKeys = new Set<string>();
@@ -707,6 +717,21 @@ export class SessionWorldState {
     return true;
   }
 
+  isLandmarkMaterialHarvested(materialId: string): boolean {
+    return isLandmarkMaterialKey(materialId) && this.harvestedLandmarkMaterialKeys.has(materialId);
+  }
+
+  harvestLandmarkMaterial(materialId: string): boolean {
+    if (!isLandmarkMaterialKey(materialId)
+      || this.harvestedLandmarkMaterialKeys.has(materialId)
+      || this.harvestedLandmarkMaterialKeys.size >= MAX_HARVESTED_LANDMARK_MATERIAL_KEYS) {
+      return false;
+    }
+
+    this.harvestedLandmarkMaterialKeys.add(materialId);
+    return true;
+  }
+
   revealRegion(regionX: number, regionY: number): boolean {
     if (!Number.isInteger(regionX) || !Number.isInteger(regionY)) {
       return false;
@@ -807,6 +832,7 @@ export class SessionWorldState {
     return {
       harvestedFeatureKeys: Array.from(this.harvestedFeatureKeys),
       harvestedCaveOreKeys: Array.from(this.harvestedCaveOreKeys),
+      harvestedLandmarkMaterialKeys: Array.from(this.harvestedLandmarkMaterialKeys),
       drops: this.getDrops(),
       nextDropId: this.nextDropId,
       placedObjects: this.getPlacedObjects(),
@@ -821,6 +847,7 @@ export class SessionWorldState {
   restore(data: unknown): void {
     this.harvestedFeatureKeys.clear();
     this.harvestedCaveOreKeys.clear();
+    this.harvestedLandmarkMaterialKeys.clear();
     this.drops.clear();
     this.placedObjects.clear();
     this.exploredRegionKeys.clear();
@@ -899,6 +926,16 @@ export class SessionWorldState {
       });
     }
 
+    if (Array.isArray(state.harvestedLandmarkMaterialKeys)) {
+      const limit = Math.min(state.harvestedLandmarkMaterialKeys.length, MAX_HARVESTED_LANDMARK_MATERIAL_KEYS);
+      for (let index = 0; index < limit; index += 1) {
+        const key = state.harvestedLandmarkMaterialKeys[index];
+        if (isLandmarkMaterialKey(key)) {
+          this.harvestedLandmarkMaterialKeys.add(key);
+        }
+      }
+    }
+
     if (Array.isArray(state.exploredRegionKeys)) {
       const savedSize = typeof state.explorationRegionSizeTiles === 'number'
         && Number.isInteger(state.explorationRegionSizeTiles)
@@ -958,6 +995,10 @@ export class SessionWorldState {
 
   get harvestedCaveOreCount(): number {
     return this.harvestedCaveOreKeys.size;
+  }
+
+  get harvestedLandmarkMaterialCount(): number {
+    return this.harvestedLandmarkMaterialKeys.size;
   }
 
   get exploredRegionCount(): number {

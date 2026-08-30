@@ -16,6 +16,7 @@ declare global {
     };
     wildboundMusic?: {
       listMainMenuTracks: () => Promise<unknown>;
+      listGameTracks: () => Promise<unknown>;
     };
   }
 }

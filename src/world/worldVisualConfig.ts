@@ -10,6 +10,11 @@ export const GROUND_GRASS_FREQUENCY_SCALE = 1.45;
 // border. Reduce it for crisper regions or increase it for longer transitional ecotones.
 export const BIOME_BLEND_WIDTH_SCALE = 65;
 
+// Snow may tint a neighboring biome before its gameplay boundary, but it should read as light
+// frost rather than turning a plains region white. The snow side starts at the same continuous
+// value and then rises toward full coverage, so lowering this does not create a hard edge.
+export const SNOW_NEIGHBOR_VISUAL_MAX = 0.18;
+
 export const GROUND_GRASS_BASE_HEIGHT_PIXELS = 28;
 export const GROUND_GRASS_HEIGHT_VARIATION_PIXELS = 8;
 // GPU foliage animation is expressed in texture UV space so every blade in the transparent

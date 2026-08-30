@@ -1,5 +1,6 @@
 import { generateChunkCaveEntrances } from './caves/caveGenerator';
 import { generateChunkFeatures } from './generation/featureGenerator';
+import { generateChunkGroundGrassCandidates } from './generation/groundGrassGenerator';
 
 interface GenerateMessage {
   readonly type: 'generate';
@@ -23,7 +24,8 @@ workerScope.addEventListener('message', (event) => {
       type: 'complete',
       id: message.id,
       features: generateChunkFeatures(message.seed, message.chunkX, message.chunkY),
-      caveEntrances: generateChunkCaveEntrances(message.seed, message.chunkX, message.chunkY)
+      caveEntrances: generateChunkCaveEntrances(message.seed, message.chunkX, message.chunkY),
+      groundGrassCandidates: generateChunkGroundGrassCandidates(message.seed, message.chunkX, message.chunkY)
     });
   } catch (error) {
     workerScope.postMessage({

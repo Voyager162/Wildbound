@@ -34,6 +34,19 @@ interface LandmarkSeedCache {
 
 const seedCaches = new Map<string, LandmarkSeedCache>();
 
+// Versioning changes the coordinate streams themselves, not just a display label. A v2 world
+// can therefore overhaul landmark sizes/types without silently reusing a v1 landmark identity.
+const landmarkSalt = (salt: number): number => (
+  salt ^ Math.imul(LANDMARK_GENERATION_CONFIG.generationVersion, 0x9e3779b1)
+) >>> 0;
+
+const landmarkRandomAt = (
+  seed: string,
+  tileX: number,
+  tileY: number,
+  salt: number
+): number => randomAtTile(seed, tileX, tileY, landmarkSalt(salt));
+
 const cellKey = (cellX: number, cellY: number): string => `${cellX},${cellY}`;
 
 const distanceSquared = (firstX: number, firstY: number, secondX: number, secondY: number): number => {
@@ -99,7 +112,7 @@ const chooseDefinition = (seed: string, tileX: number, tileY: number): LandmarkD
   }
 
   const totalWeight = definitions.reduce((total, definition) => total + definition.selectionWeight, 0);
-  let selectedWeight = randomAtTile(seed, tileX, tileY, LANDMARK_RANDOM_SALTS.type) * totalWeight;
+  let selectedWeight = landmarkRandomAt(seed, tileX, tileY, LANDMARK_RANDOM_SALTS.type) * totalWeight;
 
   for (const definition of definitions) {
     selectedWeight -= definition.selectionWeight;
@@ -163,7 +176,7 @@ const fitsLandmarkTerrain = (
 };
 
 const createRawLandmark = (seed: string, cellX: number, cellY: number): RawLandmark | null => {
-  if (randomAtTile(seed, cellX, cellY, LANDMARK_RANDOM_SALTS.candidate) >= LANDMARK_GENERATION_CONFIG.candidateChance) {
+  if (landmarkRandomAt(seed, cellX, cellY, LANDMARK_RANDOM_SALTS.candidate) >= LANDMARK_GENERATION_CONFIG.candidateChance) {
     return null;
   }
 
@@ -172,10 +185,10 @@ const createRawLandmark = (seed: string, cellX: number, cellY: number): RawLandm
   const firstTileX = cellX * macroCellSizeTiles + candidatePositionPaddingTiles;
   const firstTileY = cellY * macroCellSizeTiles + candidatePositionPaddingTiles;
   const centerTileX = firstTileX + Math.floor(
-    randomAtTile(seed, cellX, cellY, LANDMARK_RANDOM_SALTS.centerX) * candidateSpan
+    landmarkRandomAt(seed, cellX, cellY, LANDMARK_RANDOM_SALTS.centerX) * candidateSpan
   );
   const centerTileY = firstTileY + Math.floor(
-    randomAtTile(seed, cellX, cellY, LANDMARK_RANDOM_SALTS.centerY) * candidateSpan
+    landmarkRandomAt(seed, cellX, cellY, LANDMARK_RANDOM_SALTS.centerY) * candidateSpan
   );
   const definition = chooseDefinition(seed, centerTileX, centerTileY);
 
@@ -183,7 +196,7 @@ const createRawLandmark = (seed: string, cellX: number, cellY: number): RawLandm
     return null;
   }
 
-  const variation = randomAtTile(seed, centerTileX, centerTileY, LANDMARK_RANDOM_SALTS.variation);
+  const variation = landmarkRandomAt(seed, centerTileX, centerTileY, LANDMARK_RANDOM_SALTS.variation);
   // A restrained radius variation prevents repeated landmark silhouettes while leaving enough
   // reserved space for the largest placeholder visuals.
   const radiusScale = 0.9 + variation * 0.2;
@@ -197,20 +210,21 @@ const createRawLandmark = (seed: string, cellX: number, cellY: number): RawLandm
     return null;
   }
   const landmark: RawLandmark = {
-    id: `landmark:${definition.type}:${centerTileX}:${centerTileY}`,
+    id: `landmark:v${LANDMARK_GENERATION_CONFIG.generationVersion}:${definition.type}:${centerTileX}:${centerTileY}`,
     type: definition.type,
     label: definition.label,
+    biome: biomeAtTile(seed, centerTileX, centerTileY),
     centerTileX,
     centerTileY,
     footprintRadiusTiles,
     visualRadiusTiles,
     reservationRadiusTiles,
-    rotation: randomAtTile(seed, centerTileX, centerTileY, LANDMARK_RANDOM_SALTS.rotation) * Math.PI * 2,
+    rotation: landmarkRandomAt(seed, centerTileX, centerTileY, LANDMARK_RANDOM_SALTS.rotation) * Math.PI * 2,
     variation,
     mapColor: definition.mapColor,
     cellX,
     cellY,
-    priority: randomAtTile(seed, cellX, cellY, LANDMARK_RANDOM_SALTS.priority)
+    priority: landmarkRandomAt(seed, cellX, cellY, LANDMARK_RANDOM_SALTS.priority)
   };
 
   return isInsideSpawnExclusion(landmark) ? null : landmark;
@@ -332,6 +346,7 @@ const copyLandmark = (landmark: RawLandmark): ProceduralLandmark => ({
   id: landmark.id,
   type: landmark.type,
   label: landmark.label,
+  biome: landmark.biome,
   centerTileX: landmark.centerTileX,
   centerTileY: landmark.centerTileY,
   footprintRadiusTiles: landmark.footprintRadiusTiles,
@@ -433,6 +448,117 @@ export const landmarkAtTile = (seed: string, tileX: number, tileY: number): Proc
   }
 
   return closest ? copyLandmark(closest) : null;
+};
+
+export interface NearestLandmark {
+  readonly landmark: ProceduralLandmark;
+  readonly centerDistanceTiles: number;
+  readonly edgeDistanceTiles: number;
+  readonly deltaTileX: number;
+  readonly deltaTileY: number;
+}
+
+// Finds the globally nearest landmark without generating an arbitrary square of world tiles.
+// Macro cells are visited in expanding rings; once the closest possible candidate in every
+// unvisited cell is farther away than the best result, the search is mathematically complete.
+// In practice this normally resolves after one or two rings and only runs while F3 is visible.
+export const nearestLandmarkToTile = (
+  seed: string,
+  tileX: number,
+  tileY: number
+): NearestLandmark | null => {
+  if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) {
+    return null;
+  }
+
+  const { macroCellSizeTiles, candidatePositionPaddingTiles } = LANDMARK_GENERATION_CONFIG;
+  const centerCellX = Math.floor(tileX / macroCellSizeTiles);
+  const centerCellY = Math.floor(tileY / macroCellSizeTiles);
+  const cache = getSeedCache(seed);
+  let nearest: RawLandmark | null = null;
+  let nearestCenterDistanceSquared = Number.POSITIVE_INFINITY;
+  let nearestEdgeDistance = Number.POSITIVE_INFINITY;
+
+  // Sixty-four rings cover more than 49,000 tiles across. The cap is defensive against a
+  // corrupted configuration while remaining far beyond any plausible deterministic dry spell.
+  for (let ring = 0; ring <= 64; ring += 1) {
+    for (let cellY = centerCellY - ring; cellY <= centerCellY + ring; cellY += 1) {
+      for (let cellX = centerCellX - ring; cellX <= centerCellX + ring; cellX += 1) {
+        if (ring > 0 && Math.abs(cellX - centerCellX) !== ring && Math.abs(cellY - centerCellY) !== ring) {
+          continue;
+        }
+
+        const landmark = landmarkInCell(seed, cellX, cellY, cache);
+        if (!landmark) {
+          continue;
+        }
+
+        const candidateCenterDistanceSquared = distanceSquared(
+          tileX,
+          tileY,
+          landmark.centerTileX,
+          landmark.centerTileY
+        );
+        const candidateEdgeDistance = Math.max(
+          0,
+          Math.sqrt(candidateCenterDistanceSquared) - landmark.footprintRadiusTiles
+        );
+        if (
+          candidateEdgeDistance < nearestEdgeDistance
+          || (
+            candidateEdgeDistance === nearestEdgeDistance
+            && (
+              candidateCenterDistanceSquared < nearestCenterDistanceSquared
+              || (candidateCenterDistanceSquared === nearestCenterDistanceSquared && (!nearest || landmark.id < nearest.id))
+            )
+          )
+        ) {
+          nearest = landmark;
+          nearestCenterDistanceSquared = candidateCenterDistanceSquared;
+          nearestEdgeDistance = candidateEdgeDistance;
+        }
+      }
+    }
+
+    if (!nearest) {
+      continue;
+    }
+
+    const nextLeftCenterX = (centerCellX - ring) * macroCellSizeTiles - candidatePositionPaddingTiles - 1;
+    const nextRightCenterX = (centerCellX + ring + 1) * macroCellSizeTiles + candidatePositionPaddingTiles;
+    const nextTopCenterY = (centerCellY - ring) * macroCellSizeTiles - candidatePositionPaddingTiles - 1;
+    const nextBottomCenterY = (centerCellY + ring + 1) * macroCellSizeTiles + candidatePositionPaddingTiles;
+    const closestUnvisitedDistance = Math.min(
+      Math.abs(tileX - nextLeftCenterX),
+      Math.abs(nextRightCenterX - tileX),
+      Math.abs(tileY - nextTopCenterY),
+      Math.abs(nextBottomCenterY - tileY)
+    );
+    const closestUnvisitedEdgeDistance = Math.max(
+      0,
+      closestUnvisitedDistance - MAX_LANDMARK_FOOTPRINT_RADIUS_TILES
+    );
+    if (nearestEdgeDistance <= closestUnvisitedEdgeDistance) {
+      break;
+    }
+  }
+
+  // TypeScript does not carry the loop assignment into its post-loop narrowing here.
+  const resolvedNearest = nearest as RawLandmark | null;
+  if (!resolvedNearest) {
+    return null;
+  }
+
+  const deltaTileX = resolvedNearest.centerTileX - tileX;
+  const deltaTileY = resolvedNearest.centerTileY - tileY;
+  const centerDistanceTiles = Math.sqrt(nearestCenterDistanceSquared);
+  return {
+    landmark: copyLandmark(resolvedNearest),
+    centerDistanceTiles,
+    edgeDistanceTiles: Math.max(0, centerDistanceTiles - resolvedNearest.footprintRadiusTiles),
+    deltaTileX,
+    deltaTileY
+  };
 };
 
 // Reservations extend beyond a gameplay footprint so ordinary terrain features can be skipped

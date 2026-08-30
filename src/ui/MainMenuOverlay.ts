@@ -553,8 +553,8 @@ export class MainMenuOverlay {
     overline.textContent = 'A procedural adventure';
     const title = document.createElement('div');
     title.className = 'wildbound-brand__title';
-    // Keep the baseline title tilt on the outer element. The inner word can then settle to a
-    // neutral rotation before its transform origin moves to the opposite edge, avoiding a jump.
+    // Keep the baseline perspective on the outer element. The inner word owns one continuous,
+    // centre-pivoted rotation, so its animation never fights the static title transform.
     const titleMotion = document.createElement('div');
     titleMotion.className = 'wildbound-brand__title-motion';
     titleMotion.innerHTML = '<span>Wild</span><span>bound</span>';

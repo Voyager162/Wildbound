@@ -1,18 +1,12 @@
 import Phaser from 'phaser';
-import {
-  BEACH_ELEVATION_MAX,
-  Biome,
-  DESERT_MOISTURE_MAX,
-  DESERT_TEMPERATURE_MIN,
-  HIGH_SNOW_ELEVATION_MIN,
-  HIGH_SNOW_TEMPERATURE_MAX,
-  MOUNTAIN_ELEVATION_MIN,
-  SNOW_TEMPERATURE_MAX
-} from './generation/biomeGenerator';
+import { Biome } from './generation/biomeGenerator';
 import { generateChunkFeatures, type TerrainFeature, TerrainFeatureType } from './generation/featureGenerator';
 import { TOPOGRAPHY_GENERATION_VERSION } from './generation/topographyGenerator';
 import { coherentNoise, randomAtTile } from './generation/noise';
-import { surfaceAtTile, type TerrainSurface } from './generation/terrainGenerator';
+import {
+  snowVisualAmountForClimate,
+  surfaceAtTile
+} from './generation/terrainGenerator';
 import { SessionWorldState } from './SessionWorldState';
 import {
   OCEAN_SURF_TRAVEL_PIXELS,
@@ -22,7 +16,8 @@ import {
 import { WATER_WAVES_PER_VISIBLE_CHUNK } from './ambientPerformanceConfig';
 import {
   createAnimatedGroundGrassPatch,
-  createGroundGrassBlitters,
+  createGroundGrassBlitter,
+  ensureGroundGrassTextures,
   type AnimatedGroundGrassPatch,
   updateAnimatedGroundGrassPatch
 } from './GroundGrassAnimation';
@@ -41,19 +36,11 @@ import {
   GROUND_GRASS_PATTERN_VARIANTS,
   HARVESTABLE_GRASS_SCALE_MULTIPLIER
 } from './foliageAnimationConfig';
-import {
-  GROUND_GRASS_DENSITY_BY_BIOME,
-  GROUND_GRASS_EDGE_FADE_POWER,
-  GROUND_GRASS_ZERO_BIOME_FADE_LEAD_SCALE
-} from './groundGrassConfig';
 import { TERRAIN_MATERIAL_TEXTURE_KEYS } from './terrainMaterialConfig';
 import {
-  BIOME_BLEND_WIDTH_SCALE,
-  GROUND_GRASS_BASE_HEIGHT_PIXELS,
-  GROUND_GRASS_FREQUENCY_SCALE,
-  GROUND_GRASS_HEIGHT_VARIATION_PIXELS,
-  GROUND_GRASS_SIZE_SCALE
-} from './worldVisualConfig';
+  accumulateTerrainMaterial,
+  type TerrainMaterialPixels
+} from './terrainMaterialBlend';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 import {
   caveFormationContainsWorldPoint,
@@ -70,6 +57,10 @@ import {
   requestProceduralChunkNeighborhood,
   type ProceduralChunkData
 } from './proceduralChunkDataService';
+import {
+  generateChunkGroundGrassCandidates,
+  type GroundGrassCandidate
+} from './generation/groundGrassGenerator';
 
 // Terrain is sampled in compact 8px cells, then bilinearly painted into one continuous canvas.
 // This keeps chunk generation bounded while avoiding a visible grid in the world itself.
@@ -115,12 +106,6 @@ interface TerrainVisualVertex {
 }
 
 type TerrainMaterialName = keyof typeof TERRAIN_MATERIAL_TEXTURE_KEYS;
-
-interface TerrainMaterialPixels {
-  width: number;
-  height: number;
-  pixels: Uint8ClampedArray;
-}
 
 interface CaveTerrainInfluence {
   entrance: CaveEntrance;
@@ -235,7 +220,8 @@ export class WorldChunk {
   private readonly featureImages = new Map<string, Phaser.GameObjects.Image>();
   // One Blitter per shared art pattern renders all of this chunk's grass as lightweight Bobs.
   // Hundreds of patches therefore add only six objects to Phaser's scene/display traversal.
-  private readonly groundGrassBlitters: Phaser.GameObjects.Blitter[];
+  private readonly groundGrassBlitters: Array<Phaser.GameObjects.Blitter | null>;
+  private readonly groundGrassCandidates: readonly GroundGrassCandidate[];
   private readonly features: TerrainFeature[];
   private readonly caveEntrances: readonly CaveEntrance[];
   private readonly caveTerrainInfluences: readonly CaveTerrainInfluence[];
@@ -250,7 +236,7 @@ export class WorldChunk {
   private groundGrassVisible = false;
   private groundGrassPreloadEnabled = false;
   private groundGrassBuildCursor = 0;
-  private groundGrassBuildPending = true;
+  private groundGrassBuildPending: boolean;
   private animatedFeatureFoliageInitialized = false;
   private lastGroundGrassFrame = Number.NEGATIVE_INFINITY;
   private lastFeatureFoliageFrame = Number.NEGATIVE_INFINITY;
@@ -313,8 +299,12 @@ export class WorldChunk {
   ) {
     this.key = `${x},${y}`;
     this.textureKey = `terrain:v${TOPOGRAPHY_GENERATION_VERSION}:${seed}:${x}:${y}`;
-    this.features = [...(this.preGeneratedDataFor(x, y)?.features ?? generateChunkFeatures(seed, x, y))];
-    this.caveEntrances = this.preGeneratedDataFor(x, y)?.caveEntrances ?? generateChunkCaveEntrances(seed, x, y);
+    const preGeneratedData = this.preGeneratedDataFor(x, y);
+    this.features = [...(preGeneratedData?.features ?? generateChunkFeatures(seed, x, y))];
+    this.caveEntrances = preGeneratedData?.caveEntrances ?? generateChunkCaveEntrances(seed, x, y);
+    this.groundGrassCandidates = preGeneratedData?.groundGrassCandidates
+      ?? generateChunkGroundGrassCandidates(seed, x, y);
+    this.groundGrassBuildPending = this.groundGrassCandidates.length > 0;
     this.caveTerrainInfluences = this.collectCaveTerrainInfluences();
 
     const hasPreBakedWater = this.preBakedWaterKinds?.some((kind) => kind !== 0) ?? false;
@@ -338,11 +328,11 @@ export class WorldChunk {
     // This scratch pad creates a small shared texture once per feature/mirror variant. Streamed
     // chunks then reuse those textures instead of uploading a large unique feature canvas.
     this.featureGraphics = scene.add.graphics().setVisible(false);
-    this.groundGrassBlitters = createGroundGrassBlitters(
-      scene,
-      x * CHUNK_SIZE_PIXELS,
-      y * CHUNK_SIZE_PIXELS
-    );
+    // Atlas creation is shared and paid once. Per-pattern Blitters are allocated lazily only when
+    // this particular chunk contains a matching patch, avoiding six empty display objects for
+    // every sparse, desert, beach, snow, mountain, and ocean chunk.
+    ensureGroundGrassTextures(scene);
+    this.groundGrassBlitters = Array.from({ length: GROUND_GRASS_PATTERN_VARIANTS }, () => null);
 
     if (!canUseBitmap) {
       this.drawTerrain(terrainTexture as Phaser.Textures.CanvasTexture);
@@ -405,22 +395,20 @@ export class WorldChunk {
     return this.groundGrassPreloadEnabled && this.groundGrassBuildPending;
   }
 
-  buildGroundGrassBatch(time: number, tileBudget: number): boolean {
-    if (!this.groundGrassPreloadEnabled || !this.groundGrassBuildPending || tileBudget < 1) {
+  buildGroundGrassBatch(time: number, patchBudget: number): boolean {
+    if (!this.groundGrassPreloadEnabled || !this.groundGrassBuildPending || patchBudget < 1) {
       return false;
     }
 
-    let builtTiles = 0;
-    while (this.groundGrassBuildCursor < CHUNK_SIZE_TILES * CHUNK_SIZE_TILES && builtTiles < tileBudget) {
-      const cursor = this.groundGrassBuildCursor;
+    let builtPatches = 0;
+    while (this.groundGrassBuildCursor < this.groundGrassCandidates.length && builtPatches < patchBudget) {
+      const candidate = this.groundGrassCandidates[this.groundGrassBuildCursor];
       this.groundGrassBuildCursor += 1;
-      builtTiles += 1;
-      const localX = cursor % CHUNK_SIZE_TILES;
-      const localY = Math.floor(cursor / CHUNK_SIZE_TILES);
-      this.createGroundGrassAt(localX, localY, time);
+      builtPatches += 1;
+      this.createGroundGrassCandidate(candidate, time);
     }
 
-    if (this.groundGrassBuildCursor >= CHUNK_SIZE_TILES * CHUNK_SIZE_TILES) {
+    if (this.groundGrassBuildCursor >= this.groundGrassCandidates.length) {
       this.groundGrassBuildPending = false;
       this.syncGroundGrassVisibility();
     }
@@ -641,7 +629,7 @@ export class WorldChunk {
     this.oceanWaterMaskImage?.destroy();
     this.swampWaterMaskImage?.destroy();
     this.animatedGroundGrass.length = 0;
-    this.groundGrassBlitters.forEach((blitter) => blitter.destroy());
+    this.groundGrassBlitters.forEach((blitter) => blitter?.destroy());
     this.featureContainer.removeAll(true);
     this.featureImages.clear();
     this.featureContainer.destroy();
@@ -1335,6 +1323,7 @@ export class WorldChunk {
       const clamped = Math.max(0, Math.min(1, value));
       return clamped * clamped * (3 - 2 * clamped);
     };
+    const materialAccumulator = new Float64Array(4);
     const caveRockHeightAt = (sampleX: number, sampleY: number): number => (
       coherentNoise(this.seed, sampleX, sampleY, 76, 0x74b20f) * 0.42
       + coherentNoise(this.seed, sampleX + 149, sampleY - 91, 27, 0x1a2e7b) * 0.34
@@ -1566,17 +1555,17 @@ export class WorldChunk {
 
             const beach = (1 - smooth(0.28, 0.43, elevation)) * landAmount;
             const desert = smooth(0.56, 0.78, temperature) * (1 - smooth(0.27, 0.47, moisture));
-            const snow = Math.max(
-              1 - smooth(0.16, 0.34, temperature),
-              smooth(0.73, 0.92, elevation) * (1 - smooth(0.5, 0.68, temperature))
-            );
+            const snow = snowVisualAmountForClimate(elevation, temperature) * landAmount;
             const rocky = smooth(0.61, 0.9, elevation) * (1 - snow * 0.35);
             const forest = smooth(0.46, 0.68, moisture) * (1 - desert) * (1 - snow) * (1 - rocky);
             const swamp = smooth(0.7, 0.86, moisture)
               * smooth(0.34, 0.56, temperature) * (1 - rocky);
             const hills = smooth(0.58, 0.79, elevation) * (1 - rocky) * (1 - snow);
-            const plains = smooth(0.24, 0.58, moisture)
-              * (1 - desert) * (1 - snow) * (1 - rocky) * (1 - beach);
+            // Temperate ground is the material fallback for every ordinary land climate, not
+            // only moist grassland. This prevents a dry plains pixel from giving a tiny nearby
+            // snow/rock signal priority merely because its old plains weight collapsed to zero.
+            const temperateGround = landAmount
+              * (1 - beach) * (1 - desert) * (1 - snow) * (1 - rocky);
             const broadMound = smooth(0.47, 0.72, landformNoise);
             const materialVariation = materialNoise - 0.5;
 
@@ -1590,7 +1579,7 @@ export class WorldChunk {
             green += (151 - green) * desertAmount;
             blue += (74 - blue) * desertAmount;
 
-            const soilAmount = plains * (0.055 + materialVariation * 0.085);
+            const soilAmount = temperateGround * (0.055 + materialVariation * 0.085);
             red += (117 - red) * soilAmount;
             green += (88 - green) * soilAmount;
             blue += (57 - blue) * soilAmount;
@@ -1605,70 +1594,29 @@ export class WorldChunk {
             green += (252 - green) * snowMoundAmount;
             blue += (255 - blue) * snowMoundAmount;
 
-            // Generated materials are crossfaded exactly like the base colour. Sampling the
-            // strongest two fields avoids a texture hand-off line, while keeping chunk baking
-            // compact enough for streaming terrain.
-            let primaryMaterial = materials.plains;
-            let primaryWeight = Math.max(plains, forest * 0.9, swamp * 0.62);
-            let secondaryMaterial: TerrainMaterialPixels | null = null;
-            let secondaryWeight = 0;
+            // Every active material participates in one normalized mix. Dropping the third
+            // strongest field made a hard diagonal contour where snow, rock, and ground met.
+            const plainsWeight = Math.max(temperateGround, forest * 0.9, swamp * 0.62);
             const beachWeight = beach;
             const desertWeight = desert;
             const rockyWeight = Math.max(rocky, hills * 0.72);
             const snowWeight = snow;
-            if (beachWeight > primaryWeight) {
-              secondaryMaterial = primaryMaterial;
-              secondaryWeight = primaryWeight;
-              primaryMaterial = materials.beach;
-              primaryWeight = beachWeight;
-            } else if (beachWeight > secondaryWeight) {
-              secondaryMaterial = materials.beach;
-              secondaryWeight = beachWeight;
-            }
-            if (desertWeight > primaryWeight) {
-              secondaryMaterial = primaryMaterial;
-              secondaryWeight = primaryWeight;
-              primaryMaterial = materials.desert;
-              primaryWeight = desertWeight;
-            } else if (desertWeight > secondaryWeight) {
-              secondaryMaterial = materials.desert;
-              secondaryWeight = desertWeight;
-            }
-            if (rockyWeight > primaryWeight) {
-              secondaryMaterial = primaryMaterial;
-              secondaryWeight = primaryWeight;
-              primaryMaterial = materials.rocky;
-              primaryWeight = rockyWeight;
-            } else if (rockyWeight > secondaryWeight) {
-              secondaryMaterial = materials.rocky;
-              secondaryWeight = rockyWeight;
-            }
-            if (snowWeight > primaryWeight) {
-              secondaryMaterial = primaryMaterial;
-              secondaryWeight = primaryWeight;
-              primaryMaterial = materials.snow;
-              primaryWeight = snowWeight;
-            } else if (snowWeight > secondaryWeight) {
-              secondaryMaterial = materials.snow;
-              secondaryWeight = snowWeight;
-            }
-            if (primaryMaterial && primaryWeight > 0.01) {
-              const primaryX = ((worldPixelX % primaryMaterial.width) + primaryMaterial.width) % primaryMaterial.width;
-              const primaryY = ((worldPixelY % primaryMaterial.height) + primaryMaterial.height) % primaryMaterial.height;
-              const primaryPixel = (primaryY * primaryMaterial.width + primaryX) * 4;
-              let materialRed = primaryMaterial.pixels[primaryPixel];
-              let materialGreen = primaryMaterial.pixels[primaryPixel + 1];
-              let materialBlue = primaryMaterial.pixels[primaryPixel + 2];
-              if (secondaryMaterial && secondaryWeight > 0.01) {
-                const secondaryX = ((worldPixelX % secondaryMaterial.width) + secondaryMaterial.width) % secondaryMaterial.width;
-                const secondaryY = ((worldPixelY % secondaryMaterial.height) + secondaryMaterial.height) % secondaryMaterial.height;
-                const secondaryPixel = (secondaryY * secondaryMaterial.width + secondaryX) * 4;
-                const totalWeight = primaryWeight + secondaryWeight;
-                materialRed = (materialRed * primaryWeight + secondaryMaterial.pixels[secondaryPixel] * secondaryWeight) / totalWeight;
-                materialGreen = (materialGreen * primaryWeight + secondaryMaterial.pixels[secondaryPixel + 1] * secondaryWeight) / totalWeight;
-                materialBlue = (materialBlue * primaryWeight + secondaryMaterial.pixels[secondaryPixel + 2] * secondaryWeight) / totalWeight;
-              }
-              const materialBlend = 0.08 + primaryWeight * 0.2;
+            materialAccumulator[0] = 0;
+            materialAccumulator[1] = 0;
+            materialAccumulator[2] = 0;
+            materialAccumulator[3] = 0;
+            accumulateTerrainMaterial(materialAccumulator, materials.plains, plainsWeight, worldPixelX, worldPixelY);
+            accumulateTerrainMaterial(materialAccumulator, materials.beach, beachWeight, worldPixelX, worldPixelY);
+            accumulateTerrainMaterial(materialAccumulator, materials.desert, desertWeight, worldPixelX, worldPixelY);
+            accumulateTerrainMaterial(materialAccumulator, materials.rocky, rockyWeight, worldPixelX, worldPixelY);
+            accumulateTerrainMaterial(materialAccumulator, materials.snow, snowWeight, worldPixelX, worldPixelY);
+            const totalMaterialWeight = materialAccumulator[3];
+            if (totalMaterialWeight > 0.01) {
+              const materialRed = materialAccumulator[0] / totalMaterialWeight;
+              const materialGreen = materialAccumulator[1] / totalMaterialWeight;
+              const materialBlue = materialAccumulator[2] / totalMaterialWeight;
+              const dominantWeight = Math.max(plainsWeight, beachWeight, desertWeight, rockyWeight, snowWeight);
+              const materialBlend = 0.08 + dominantWeight * 0.2;
               red += (materialRed - red) * materialBlend;
               green += (materialGreen - green) * materialBlend;
               blue += (materialBlue - blue) * materialBlend;
@@ -1800,170 +1748,39 @@ export class WorldChunk {
   }
 
 
-  private mixColor(first: number, second: number, amount: number): number {
-    const mixChannel = (shift: number): number => {
-      const start = (first >> shift) & 0xff;
-      const end = (second >> shift) & 0xff;
-      return Math.round(start + (end - start) * amount);
-    };
-
-    return (mixChannel(16) << 16) | (mixChannel(8) << 8) | mixChannel(0);
-  }
-
-  private shadeColor(color: number, amount: number): number {
-    const multiplier = 1 + amount;
-    const red = Math.round(Math.min(255, Math.max(0, ((color >> 16) & 0xff) * multiplier)));
-    const green = Math.round(Math.min(255, Math.max(0, ((color >> 8) & 0xff) * multiplier)));
-    const blue = Math.round(Math.min(255, Math.max(0, (color & 0xff) * multiplier)));
-    return (red << 16) | (green << 8) | blue;
-  }
-
-  private tintToTargetColor(sourceColor: number, targetColor: number): number {
-    const tintChannel = (shift: number): number => {
-      const source = (sourceColor >> shift) & 0xff;
-      const target = (targetColor >> shift) & 0xff;
-      return Math.round(Math.min(1, target / Math.max(1, source)) * 255);
-    };
-    return (tintChannel(16) << 16) | (tintChannel(8) << 8) | tintChannel(0);
-  }
-
-  private groundGrassTint(surface: TerrainSurface): number {
-    // `surface.color` comes from continuous climate fields, so this preserves subtle biome
-    // blending in the grass itself instead of abruptly changing a texture palette at the label.
-    const brightGrassSource = 0xa3d377;
-    const target = this.mixColor(brightGrassSource, this.shadeColor(surface.color, 0.22), 0.52);
-    return this.tintToTargetColor(brightGrassSource, target);
-  }
-
-  private groundGrassDensity(surface: TerrainSurface): number {
-    // The configuration is authoritative: a zero density guarantees this animated layer does
-    // not appear in that gameplay biome. Terrain colour and small baked details still blend
-    // continuously underneath, so this does not reintroduce tiled ground.
-    if (surface.waterVisualAmount > 0.24) {
-      return 0;
-    }
-    const configuredDensity = GROUND_GRASS_DENSITY_BY_BIOME[surface.biome];
-    if (configuredDensity === 0) {
-      return 0;
-    }
-
-    const forestAmount = this.visualBiomeBlend(0.39, 0.57, surface.moisture);
-    const hillAmount = this.visualBiomeBlend(0.44, 0.62, surface.elevation);
-    const swampAmount = this.visualBiomeBlend(0.58, 0.76, surface.moisture)
-      * this.visualBiomeBlend(0.24, 0.42, surface.temperature)
-      * (1 - hillAmount);
-    const blend = (from: number, to: number, amount: number): number => from + (to - from) * amount;
-    // Positive-density biomes blend into each other before their gameplay label changes. The
-    // direct-biome zero check above still guarantees that disabled biomes never emit a patch.
-    let blendedDensity = GROUND_GRASS_DENSITY_BY_BIOME[Biome.Plains];
-    blendedDensity = blend(blendedDensity, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Forest], forestAmount);
-    blendedDensity = blend(blendedDensity, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Swamp], swampAmount);
-    blendedDensity = blend(blendedDensity, GROUND_GRASS_DENSITY_BY_BIOME[Biome.Hills], hillAmount);
-    return Math.min(
-      0.96,
-      blendedDensity * this.groundGrassEdgeFade(surface) * GROUND_GRASS_FREQUENCY_SCALE
-    );
-  }
-
-  private visualBiomeBlend(start: number, end: number, value: number): number {
-    const midpoint = (start + end) * 0.5;
-    const halfRange = (end - start) * 0.5 * Math.max(0.01, BIOME_BLEND_WIDTH_SCALE / 50);
-    const normalized = Math.max(0, Math.min(1, (value - (midpoint - halfRange)) / (halfRange * 2)));
-    return normalized * normalized * (3 - 2 * normalized);
-  }
-
-  private edgePressure(
-    value: number,
-    boundary: number,
-    leadIn: number,
-    increasesTowardZeroDensity: boolean
-  ): number {
-    // Unlike a centred colour blend, this curve finishes at the gameplay boundary itself.
-    // This is what removes the last visible grass step: a zero-density biome starts only after
-    // every nearby patch has already shrunk and faded to zero.
-    const scaledLeadIn = leadIn
-      * GROUND_GRASS_ZERO_BIOME_FADE_LEAD_SCALE
-      * Math.max(0.1, BIOME_BLEND_WIDTH_SCALE / 50);
-    if (increasesTowardZeroDensity) {
-      return this.smoothRange(boundary - scaledLeadIn, boundary, value);
-    }
-    return 1 - this.smoothRange(boundary, boundary + scaledLeadIn, value);
-  }
-
-  private smoothRange(start: number, end: number, value: number): number {
-    const normalized = Math.max(0, Math.min(1, (value - start) / (end - start)));
-    return normalized * normalized * (3 - 2 * normalized);
-  }
-
-  private groundGrassEdgeFade(surface: TerrainSurface): number {
-    // Grass remains rooted only in an enabled gameplay biome, yet it thins out before a nearby
-    // zero-density biome takes over. The widened ranges intentionally begin before the gameplay
-    // label flips, avoiding a hard line at plains/desert, plains/beach, and hill/mountain edges.
-    // Each pressure reaches one exactly at the corresponding gameplay threshold, regardless
-    // of the configured visual blend width. The grass is therefore fully gone before a
-    // zero-density label can create a visible binary edge.
-    const beachPressure = this.edgePressure(surface.elevation, BEACH_ELEVATION_MAX, 0.12, false);
-    const desertPressure = this.edgePressure(surface.temperature, DESERT_TEMPERATURE_MIN, 0.14, true)
-      * this.edgePressure(surface.moisture, DESERT_MOISTURE_MAX, 0.14, false);
-    const coldSnowPressure = this.edgePressure(surface.temperature, SNOW_TEMPERATURE_MAX, 0.12, false);
-    const highSnowPressure = this.edgePressure(surface.elevation, HIGH_SNOW_ELEVATION_MIN, 0.1, true)
-      * this.edgePressure(surface.temperature, HIGH_SNOW_TEMPERATURE_MAX, 0.14, false);
-    const mountainPressure = this.edgePressure(surface.elevation, MOUNTAIN_ELEVATION_MIN, 0.13, true);
-    const zeroDensityPressure = Math.max(
-      beachPressure,
-      desertPressure,
-      coldSnowPressure,
-      highSnowPressure,
-      mountainPressure
-    );
-    return (1 - zeroDensityPressure) ** GROUND_GRASS_EDGE_FADE_POWER;
-  }
-
-  private createGroundGrassAt(localX: number, localY: number, time: number): void {
-    const worldTileX = this.x * CHUNK_SIZE_TILES + localX;
-    const worldTileY = this.y * CHUNK_SIZE_TILES + localY;
+  private createGroundGrassCandidate(candidate: GroundGrassCandidate, time: number): void {
+    const worldTileX = this.x * CHUNK_SIZE_TILES + candidate.localTileX;
+    const worldTileY = this.y * CHUNK_SIZE_TILES + candidate.localTileY;
     if (this.isCaveFeatureTile(worldTileX, worldTileY)) {
       return;
     }
-    const surface = surfaceAtTile(this.seed, worldTileX + 0.5, worldTileY + 0.5);
-    const density = this.groundGrassDensity(surface);
-    const edgeFade = this.groundGrassEdgeFade(surface);
-    const placement = randomAtTile(this.seed, worldTileX, worldTileY, 0x6d42aeb9);
-    if (density === 0 || placement > density) {
-      return;
+    let blitter = this.groundGrassBlitters[candidate.pattern];
+    if (!blitter) {
+      blitter = createGroundGrassBlitter(
+        this.scene,
+        this.x * CHUNK_SIZE_PIXELS,
+        this.y * CHUNK_SIZE_PIXELS,
+        candidate.pattern
+      );
+      this.groundGrassBlitters[candidate.pattern] = blitter;
     }
-
-    // One patch already contains thirteen individually animated blades. Its slight overlap
-    // into neighboring tiles makes a thick field without creating per-blade game objects.
-    const height = (GROUND_GRASS_BASE_HEIGHT_PIXELS
-      + randomAtTile(this.seed, worldTileX, worldTileY, 0x4b5edc37) * GROUND_GRASS_HEIGHT_VARIATION_PIXELS)
-      * GROUND_GRASS_SIZE_SCALE * (0.58 + edgeFade * 0.42);
-    const pattern = Math.floor(randomAtTile(
-      this.seed,
-      worldTileX,
-      worldTileY,
-      0x7959e2d1
-    ) * GROUND_GRASS_PATTERN_VARIANTS);
     const patch = createAnimatedGroundGrassPatch(
-      this.groundGrassBlitters[pattern],
-      localX * WORLD_TILE_SIZE + 5 + randomAtTile(this.seed, worldTileX, worldTileY, 0x11a5d1f7) * 22,
-      localY * WORLD_TILE_SIZE + 29,
-      height / 34,
-      this.groundGrassTint(surface),
-      pattern,
-      randomAtTile(this.seed, worldTileX, worldTileY, 0x53da69c7),
+      blitter,
+      candidate.localX,
+      candidate.localY,
+      candidate.scale,
+      candidate.tint,
+      candidate.pattern,
+      candidate.framePhase,
       time
     );
-    // Density reduces the number of patches near a transition; these visual changes make
-    // surviving edge patches shorter and more transparent as well, so a field peters out
-    // instead of ending as a random binary band.
-    patch.bob.setAlpha(0.22 + edgeFade * 0.78);
+    patch.bob.setAlpha(candidate.alpha);
     this.animatedGroundGrass.push(patch);
   }
 
   private syncGroundGrassVisibility(): void {
     const visible = this.renderVisible && this.groundGrassVisible && !this.groundGrassBuildPending;
-    this.groundGrassBlitters.forEach((blitter) => blitter.setVisible(visible));
+    this.groundGrassBlitters.forEach((blitter) => blitter?.setVisible(visible));
   }
 
   private syncAnimatedFeatureFoliage(): void {

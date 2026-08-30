@@ -10,6 +10,7 @@
     "dev": "electron-forge start",
     "start": "electron-forge start",
     "typecheck": "tsc --noEmit",
+    "verify:landmarks": "node scripts/verify-landmarks.mjs",
     "package": "npm run typecheck && electron-forge package",
     "make": "npm run typecheck && electron-forge make",
     "make:win": "npm run typecheck && electron-forge make --platform=win32"

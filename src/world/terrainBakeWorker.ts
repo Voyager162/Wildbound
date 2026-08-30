@@ -1,6 +1,10 @@
 import { coherentNoise } from './generation/noise';
 import { Biome } from './generation/biomeGenerator';
-import { surfaceAtTile } from './generation/terrainGenerator';
+import { snowVisualAmountForClimate, surfaceAtTile } from './generation/terrainGenerator';
+import {
+  accumulateTerrainMaterial,
+  type TerrainMaterialPixels
+} from './terrainMaterialBlend';
 import { CHUNK_SIZE_PIXELS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
 
 const VISUAL_TERRAIN_CELL_SIZE = 8;
@@ -10,12 +14,6 @@ const TERRAIN_TEXTURE_SIZE = CHUNK_SIZE_PIXELS + TERRAIN_TEXTURE_PADDING * 2;
 const TERRAIN_VERTEX_MARGIN_CELLS = Math.ceil(TERRAIN_TEXTURE_PADDING / VISUAL_TERRAIN_CELL_SIZE);
 
 type TerrainMaterialName = 'plains' | 'desert' | 'beach' | 'rocky' | 'snow';
-
-interface TerrainMaterialPixels {
-  readonly width: number;
-  readonly height: number;
-  readonly pixels: Uint8ClampedArray;
-}
 
 type TerrainMaterialSet = Readonly<Record<TerrainMaterialName, TerrainMaterialPixels | null>>;
 
@@ -111,6 +109,7 @@ const bakeTerrain = (seed: string, chunkX: number, chunkY: number, materialSet: 
     const bottom = bottomLeft + (bottomRight - bottomLeft) * horizontalAmount;
     return top + (bottom - top) * verticalAmount;
   };
+  const materialAccumulator = new Float64Array(4);
 
   for (let cellY = -TERRAIN_VERTEX_MARGIN_CELLS; cellY < cellsPerChunk + TERRAIN_VERTEX_MARGIN_CELLS; cellY += 1) {
     const top = vertices[cellY + TERRAIN_VERTEX_MARGIN_CELLS];
@@ -177,17 +176,14 @@ const bakeTerrain = (seed: string, chunkX: number, chunkY: number, materialSet: 
 
           const beach = (1 - smooth(0.28, 0.43, elevation)) * landAmount;
           const desert = smooth(0.56, 0.78, temperature) * (1 - smooth(0.27, 0.47, moisture));
-          const snow = Math.max(
-            1 - smooth(0.16, 0.34, temperature),
-            smooth(0.73, 0.92, elevation) * (1 - smooth(0.5, 0.68, temperature))
-          );
+          const snow = snowVisualAmountForClimate(elevation, temperature) * landAmount;
           const rocky = smooth(0.61, 0.9, elevation) * (1 - snow * 0.35);
           const forest = smooth(0.46, 0.68, moisture) * (1 - desert) * (1 - snow) * (1 - rocky);
           const swamp = smooth(0.7, 0.86, moisture)
             * smooth(0.34, 0.56, temperature) * (1 - rocky);
           const hills = smooth(0.58, 0.79, elevation) * (1 - rocky) * (1 - snow);
-          const plains = smooth(0.24, 0.58, moisture)
-            * (1 - desert) * (1 - snow) * (1 - rocky) * (1 - beach);
+          const temperateGround = landAmount
+            * (1 - beach) * (1 - desert) * (1 - snow) * (1 - rocky);
           const broadMound = smooth(0.47, 0.72, landformNoise);
           const materialVariation = materialNoise - 0.5;
 
@@ -201,7 +197,7 @@ const bakeTerrain = (seed: string, chunkX: number, chunkY: number, materialSet: 
           green += (151 - green) * desertAmount;
           blue += (74 - blue) * desertAmount;
 
-          const soilAmount = plains * (0.055 + materialVariation * 0.085);
+          const soilAmount = temperateGround * (0.055 + materialVariation * 0.085);
           red += (117 - red) * soilAmount;
           green += (88 - green) * soilAmount;
           blue += (57 - blue) * soilAmount;
@@ -218,67 +214,27 @@ const bakeTerrain = (seed: string, chunkX: number, chunkY: number, materialSet: 
 
           const worldPixelX = chunkWorldX + cellX * VISUAL_TERRAIN_CELL_SIZE + offsetX;
           const worldPixelY = chunkWorldY + cellY * VISUAL_TERRAIN_CELL_SIZE + offsetY;
-          let primaryMaterial = materialSet.plains;
-          let primaryWeight = Math.max(plains, forest * 0.9, swamp * 0.62);
-          let secondaryMaterial: TerrainMaterialPixels | null = null;
-          let secondaryWeight = 0;
+          const plainsWeight = Math.max(temperateGround, forest * 0.9, swamp * 0.62);
           const beachWeight = beach;
           const desertWeight = desert;
           const rockyWeight = Math.max(rocky, hills * 0.72);
           const snowWeight = snow;
-          if (beachWeight > primaryWeight) {
-            secondaryMaterial = primaryMaterial;
-            secondaryWeight = primaryWeight;
-            primaryMaterial = materialSet.beach;
-            primaryWeight = beachWeight;
-          } else if (beachWeight > secondaryWeight) {
-            secondaryMaterial = materialSet.beach;
-            secondaryWeight = beachWeight;
-          }
-          if (desertWeight > primaryWeight) {
-            secondaryMaterial = primaryMaterial;
-            secondaryWeight = primaryWeight;
-            primaryMaterial = materialSet.desert;
-            primaryWeight = desertWeight;
-          } else if (desertWeight > secondaryWeight) {
-            secondaryMaterial = materialSet.desert;
-            secondaryWeight = desertWeight;
-          }
-          if (rockyWeight > primaryWeight) {
-            secondaryMaterial = primaryMaterial;
-            secondaryWeight = primaryWeight;
-            primaryMaterial = materialSet.rocky;
-            primaryWeight = rockyWeight;
-          } else if (rockyWeight > secondaryWeight) {
-            secondaryMaterial = materialSet.rocky;
-            secondaryWeight = rockyWeight;
-          }
-          if (snowWeight > primaryWeight) {
-            secondaryMaterial = primaryMaterial;
-            secondaryWeight = primaryWeight;
-            primaryMaterial = materialSet.snow;
-            primaryWeight = snowWeight;
-          } else if (snowWeight > secondaryWeight) {
-            secondaryMaterial = materialSet.snow;
-            secondaryWeight = snowWeight;
-          }
-          if (primaryMaterial && primaryWeight > 0.01) {
-            const primaryX = ((worldPixelX % primaryMaterial.width) + primaryMaterial.width) % primaryMaterial.width;
-            const primaryY = ((worldPixelY % primaryMaterial.height) + primaryMaterial.height) % primaryMaterial.height;
-            const primaryPixel = (primaryY * primaryMaterial.width + primaryX) * 4;
-            let materialRed = primaryMaterial.pixels[primaryPixel];
-            let materialGreen = primaryMaterial.pixels[primaryPixel + 1];
-            let materialBlue = primaryMaterial.pixels[primaryPixel + 2];
-            if (secondaryMaterial && secondaryWeight > 0.01) {
-              const secondaryX = ((worldPixelX % secondaryMaterial.width) + secondaryMaterial.width) % secondaryMaterial.width;
-              const secondaryY = ((worldPixelY % secondaryMaterial.height) + secondaryMaterial.height) % secondaryMaterial.height;
-              const secondaryPixel = (secondaryY * secondaryMaterial.width + secondaryX) * 4;
-              const totalWeight = primaryWeight + secondaryWeight;
-              materialRed = (materialRed * primaryWeight + secondaryMaterial.pixels[secondaryPixel] * secondaryWeight) / totalWeight;
-              materialGreen = (materialGreen * primaryWeight + secondaryMaterial.pixels[secondaryPixel + 1] * secondaryWeight) / totalWeight;
-              materialBlue = (materialBlue * primaryWeight + secondaryMaterial.pixels[secondaryPixel + 2] * secondaryWeight) / totalWeight;
-            }
-            const materialBlend = 0.08 + primaryWeight * 0.2;
+          materialAccumulator[0] = 0;
+          materialAccumulator[1] = 0;
+          materialAccumulator[2] = 0;
+          materialAccumulator[3] = 0;
+          accumulateTerrainMaterial(materialAccumulator, materialSet.plains, plainsWeight, worldPixelX, worldPixelY);
+          accumulateTerrainMaterial(materialAccumulator, materialSet.beach, beachWeight, worldPixelX, worldPixelY);
+          accumulateTerrainMaterial(materialAccumulator, materialSet.desert, desertWeight, worldPixelX, worldPixelY);
+          accumulateTerrainMaterial(materialAccumulator, materialSet.rocky, rockyWeight, worldPixelX, worldPixelY);
+          accumulateTerrainMaterial(materialAccumulator, materialSet.snow, snowWeight, worldPixelX, worldPixelY);
+          const totalMaterialWeight = materialAccumulator[3];
+          if (totalMaterialWeight > 0.01) {
+            const materialRed = materialAccumulator[0] / totalMaterialWeight;
+            const materialGreen = materialAccumulator[1] / totalMaterialWeight;
+            const materialBlue = materialAccumulator[2] / totalMaterialWeight;
+            const dominantWeight = Math.max(plainsWeight, beachWeight, desertWeight, rockyWeight, snowWeight);
+            const materialBlend = 0.08 + dominantWeight * 0.2;
             red += (materialRed - red) * materialBlend;
             green += (materialGreen - green) * materialBlend;
             blue += (materialBlue - blue) * materialBlend;

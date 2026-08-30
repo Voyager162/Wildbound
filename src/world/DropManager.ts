@@ -10,6 +10,7 @@ export const PICKUP_RADIUS_PIXELS = 48;
 const PICKUP_RADIUS_SQUARED = PICKUP_RADIUS_PIXELS * PICKUP_RADIUS_PIXELS;
 // Rendering scale only: the drop's pickup range and deterministic saved position stay unchanged.
 const DROP_VISUAL_SCALE = 1.6;
+const TWO_PI = Math.PI * 2;
 
 export class DropManager {
   private readonly dropGraphics = new Map<string, Phaser.GameObjects.Graphics>();
@@ -120,12 +121,246 @@ export class DropManager {
         graphics.lineStyle(1.15 * scale, 0xe8ffff, 0.92);
         graphics.lineBetween(x - 7 * scale, y, x + 7 * scale, y);
         break;
+      case ResourceType.AncientWood:
+      case ResourceType.AmberSap:
+      case ResourceType.GlowSpores:
+      case ResourceType.VineFiber:
+      case ResourceType.Heartwood:
+      case ResourceType.DampCrystal:
+      case ResourceType.MossFiber:
+      case ResourceType.SpringStone:
+      case ResourceType.LuminousMushrooms:
+      case ResourceType.MapFragments:
+      case ResourceType.MechanicalParts:
+      case ResourceType.LensGlass:
+      case ResourceType.Starstone:
+      case ResourceType.MeteorIron:
+      case ResourceType.GlowingFragments:
+      case ResourceType.RuneStone:
+      case ResourceType.AncientFragments:
+      case ResourceType.RelicMaterials:
+      case ResourceType.BoneFragments:
+      case ResourceType.FossilResin:
+      case ResourceType.AncientRemains:
+        this.drawRareResourceDrop(graphics, x, y, scale, drop.item);
+        break;
       }
     }
 
     graphics.lineStyle(1.2 * scale, 0xffffff, 0.7);
     graphics.strokeCircle(x, y, 10 * scale);
     this.dropGraphics.set(drop.id, graphics);
+  }
+
+  private drawRareResourceDrop(
+    graphics: Phaser.GameObjects.Graphics,
+    x: number,
+    y: number,
+    scale: number,
+    resource: ResourceType
+  ): void {
+    const color = RESOURCE_COLORS[resource];
+    switch (resource) {
+      case ResourceType.AncientWood:
+      case ResourceType.Heartwood: {
+        const heartwood = resource === ResourceType.Heartwood;
+        graphics.fillStyle(heartwood ? 0x492319 : 0x35271c, 1);
+        graphics.fillRoundedRect(x - 9 * scale, y - 5 * scale, 18 * scale, 10 * scale, 4 * scale);
+        graphics.fillStyle(color, 1);
+        graphics.fillRoundedRect(x - 7.5 * scale, y - 3.8 * scale, 15 * scale, 7.6 * scale, 3 * scale);
+        graphics.lineStyle(1.1 * scale, heartwood ? 0xffa36b : 0xc89a58, 0.86);
+        graphics.strokeCircle(x - 4.7 * scale, y, 2.2 * scale);
+        graphics.lineBetween(x - scale, y - 2.2 * scale, x + 6 * scale, y - 2.2 * scale);
+        graphics.lineBetween(x, y + 1.6 * scale, x + 5 * scale, y + 1.6 * scale);
+        break;
+      }
+      case ResourceType.AmberSap:
+      case ResourceType.FossilResin: {
+        const sap = resource === ResourceType.AmberSap;
+        graphics.fillStyle(sap ? 0x7d4216 : 0x68401d, 0.95);
+        graphics.fillCircle(x, y + 2 * scale, 7.4 * scale);
+        graphics.fillTriangle(x, y - 10 * scale, x - 5.5 * scale, y + 1.5 * scale, x + 5.5 * scale, y + 1.5 * scale);
+        graphics.fillStyle(color, 1);
+        graphics.fillCircle(x, y + 1.5 * scale, 5.7 * scale);
+        graphics.fillTriangle(x, y - 8 * scale, x - 4.1 * scale, y + 1.5 * scale, x + 4.1 * scale, y + 1.5 * scale);
+        graphics.fillStyle(0xfff0a3, 0.78);
+        graphics.fillEllipse(x - 2 * scale, y - 1.8 * scale, 2.2 * scale, 4.5 * scale);
+        break;
+      }
+      case ResourceType.GlowSpores: {
+        graphics.fillStyle(0x29472e, 0.95);
+        graphics.fillEllipse(x, y + 4 * scale, 16 * scale, 7 * scale);
+        graphics.fillStyle(color, 0.3);
+        graphics.fillCircle(x, y, 10 * scale);
+        graphics.fillStyle(color, 1);
+        graphics.fillCircle(x - 5 * scale, y + scale, 2.3 * scale);
+        graphics.fillCircle(x, y - 4 * scale, 2.7 * scale);
+        graphics.fillCircle(x + 5 * scale, y, 2 * scale);
+        graphics.fillStyle(0xf2ffd4, 0.95);
+        graphics.fillCircle(x - 4.5 * scale, y + 0.5 * scale, 0.7 * scale);
+        graphics.fillCircle(x + 0.5 * scale, y - 4.5 * scale, 0.8 * scale);
+        break;
+      }
+      case ResourceType.VineFiber:
+      case ResourceType.MossFiber: {
+        const moss = resource === ResourceType.MossFiber;
+        graphics.lineStyle(3.7 * scale, 0x223c29, 1);
+        for (let strand = -2; strand <= 2; strand += 1) {
+          const offset = strand * 2.4 * scale;
+          graphics.lineBetween(x + offset, y + 7 * scale, x + offset * 0.45, y - 7 * scale);
+        }
+        graphics.lineStyle(2 * scale, color, 1);
+        for (let strand = -2; strand <= 2; strand += 1) {
+          const offset = strand * 2.4 * scale;
+          graphics.lineBetween(x + offset, y + 7 * scale, x + offset * 0.45, y - 7 * scale);
+        }
+        if (moss) {
+          graphics.fillStyle(0x9abe65, 0.9);
+          graphics.fillCircle(x - 4 * scale, y - 3 * scale, 1.6 * scale);
+          graphics.fillCircle(x + 3 * scale, y + 2 * scale, 1.8 * scale);
+        }
+        break;
+      }
+      case ResourceType.DampCrystal:
+      case ResourceType.Starstone:
+      case ResourceType.GlowingFragments: {
+        const glow = resource !== ResourceType.Starstone ? 0.32 : 0.24;
+        graphics.fillStyle(color, glow);
+        graphics.fillCircle(x, y, 11 * scale);
+        graphics.fillStyle(0x17232b, 0.92);
+        graphics.fillTriangle(x - 9 * scale, y + 7 * scale, x - 4 * scale, y - 6 * scale, x, y + 6 * scale);
+        graphics.fillTriangle(x - scale, y + 7 * scale, x + 4 * scale, y - 10 * scale, x + 9 * scale, y + 7 * scale);
+        graphics.fillStyle(color, 1);
+        graphics.fillTriangle(x - 7 * scale, y + 5 * scale, x - 4 * scale, y - 5 * scale, x - scale, y + 5 * scale);
+        graphics.fillTriangle(x, y + 5 * scale, x + 4 * scale, y - 8 * scale, x + 7 * scale, y + 5 * scale);
+        graphics.lineStyle(1.05 * scale, 0xe9ffff, 0.86);
+        graphics.lineBetween(x + 4 * scale, y - 7 * scale, x + 2 * scale, y + 3 * scale);
+        break;
+      }
+      case ResourceType.SpringStone:
+      case ResourceType.RuneStone:
+      case ResourceType.MeteorIron: {
+        graphics.fillStyle(0x273337, 1);
+        graphics.fillPoints([
+          new Phaser.Geom.Point(x - 8 * scale, y + 5 * scale),
+          new Phaser.Geom.Point(x - 5 * scale, y - 5 * scale),
+          new Phaser.Geom.Point(x + scale, y - 8 * scale),
+          new Phaser.Geom.Point(x + 8 * scale, y - 2 * scale),
+          new Phaser.Geom.Point(x + 6 * scale, y + 6 * scale)
+        ], true);
+        graphics.fillStyle(color, 1);
+        graphics.fillPoints([
+          new Phaser.Geom.Point(x - 6.3 * scale, y + 3.8 * scale),
+          new Phaser.Geom.Point(x - 3.8 * scale, y - 3.8 * scale),
+          new Phaser.Geom.Point(x + scale, y - 6 * scale),
+          new Phaser.Geom.Point(x + 6 * scale, y - 1.2 * scale),
+          new Phaser.Geom.Point(x + 4.5 * scale, y + 4.5 * scale)
+        ], true);
+        graphics.lineStyle(1.2 * scale, resource === ResourceType.RuneStone ? 0xd9c9ff : 0xd6efea, 0.86);
+        if (resource === ResourceType.RuneStone) {
+          graphics.lineBetween(x - 2 * scale, y - 4 * scale, x + 2 * scale, y + 3 * scale);
+          graphics.lineBetween(x - 3 * scale, y + scale, x + 3 * scale, y - scale);
+        } else {
+          graphics.lineBetween(x - 3 * scale, y - 2 * scale, x + 3 * scale, y + 2 * scale);
+        }
+        break;
+      }
+      case ResourceType.LuminousMushrooms: {
+        graphics.fillStyle(0x27363a, 1);
+        graphics.fillRect(x - 5.5 * scale, y, 2.8 * scale, 7 * scale);
+        graphics.fillRect(x + 2.5 * scale, y - 2 * scale, 2.6 * scale, 9 * scale);
+        graphics.fillStyle(color, 0.34);
+        graphics.fillCircle(x, y - 2 * scale, 11 * scale);
+        graphics.fillStyle(color, 1);
+        graphics.fillEllipse(x - 4 * scale, y - scale, 9 * scale, 5.5 * scale);
+        graphics.fillEllipse(x + 4 * scale, y - 3 * scale, 10 * scale, 6 * scale);
+        graphics.fillStyle(0xf4dcff, 0.9);
+        graphics.fillCircle(x + 2.5 * scale, y - 4 * scale, 1.1 * scale);
+        break;
+      }
+      case ResourceType.MapFragments: {
+        graphics.fillStyle(0x3c3022, 1);
+        graphics.fillRoundedRect(x - 9 * scale, y - 7 * scale, 18 * scale, 14 * scale, 2 * scale);
+        graphics.fillStyle(color, 1);
+        graphics.fillPoints([
+          new Phaser.Geom.Point(x - 7.5 * scale, y - 5.5 * scale),
+          new Phaser.Geom.Point(x - scale, y - 4 * scale),
+          new Phaser.Geom.Point(x + 7 * scale, y - 6 * scale),
+          new Phaser.Geom.Point(x + 6 * scale, y + 5.5 * scale),
+          new Phaser.Geom.Point(x - 6.5 * scale, y + 5 * scale)
+        ], true);
+        graphics.lineStyle(1 * scale, 0x806b45, 0.9);
+        graphics.lineBetween(x - 4 * scale, y - 2 * scale, x + 4 * scale, y + 2 * scale);
+        graphics.strokeCircle(x + 2 * scale, y - scale, 2 * scale);
+        break;
+      }
+      case ResourceType.MechanicalParts: {
+        graphics.fillStyle(0x263034, 1);
+        graphics.fillCircle(x, y, 8.5 * scale);
+        graphics.fillStyle(color, 1);
+        graphics.fillCircle(x, y, 6.5 * scale);
+        graphics.fillStyle(0x273338, 1);
+        graphics.fillCircle(x, y, 2.5 * scale);
+        graphics.lineStyle(2 * scale, 0xd5e0da, 0.68);
+        for (let spoke = 0; spoke < 6; spoke += 1) {
+          const angle = spoke / 6 * TWO_PI;
+          graphics.lineBetween(
+            x + Math.cos(angle) * 3 * scale,
+            y + Math.sin(angle) * 3 * scale,
+            x + Math.cos(angle) * 8 * scale,
+            y + Math.sin(angle) * 8 * scale
+          );
+        }
+        break;
+      }
+      case ResourceType.LensGlass: {
+        graphics.fillStyle(0x263638, 1);
+        graphics.fillCircle(x, y - scale, 8.5 * scale);
+        graphics.fillStyle(color, 0.72);
+        graphics.fillCircle(x, y - scale, 6.5 * scale);
+        graphics.fillStyle(0xeaffff, 0.82);
+        graphics.fillEllipse(x - 2.3 * scale, y - 3.2 * scale, 2.2 * scale, 4.2 * scale);
+        graphics.lineStyle(2.2 * scale, 0xb58c55, 1);
+        graphics.lineBetween(x + 5.5 * scale, y + 4.5 * scale, x + 10 * scale, y + 9 * scale);
+        break;
+      }
+      case ResourceType.AncientFragments:
+      case ResourceType.RelicMaterials: {
+        const relic = resource === ResourceType.RelicMaterials;
+        graphics.fillStyle(0x302a24, 1);
+        graphics.fillTriangle(x - 9 * scale, y + 6 * scale, x - 4 * scale, y - 7 * scale, x + scale, y + 5 * scale);
+        graphics.fillTriangle(x - scale, y + 6 * scale, x + 5 * scale, y - 5 * scale, x + 9 * scale, y + 5 * scale);
+        graphics.fillStyle(color, 1);
+        graphics.fillTriangle(x - 7 * scale, y + 4 * scale, x - 4 * scale, y - 5 * scale, x - scale, y + 3 * scale);
+        graphics.fillTriangle(x + scale, y + 4 * scale, x + 5 * scale, y - 3 * scale, x + 7 * scale, y + 3 * scale);
+        if (relic) {
+          graphics.lineStyle(1.1 * scale, 0xffefa4, 0.92);
+          graphics.strokeCircle(x, y, 3 * scale);
+        }
+        break;
+      }
+      case ResourceType.BoneFragments:
+      case ResourceType.AncientRemains: {
+        graphics.lineStyle(5.2 * scale, 0x5b5143, 1);
+        graphics.lineBetween(x - 7 * scale, y + 6 * scale, x + 7 * scale, y - 6 * scale);
+        graphics.lineStyle(3.4 * scale, color, 1);
+        graphics.lineBetween(x - 7 * scale, y + 6 * scale, x + 7 * scale, y - 6 * scale);
+        graphics.fillStyle(color, 1);
+        graphics.fillCircle(x - 7 * scale, y + 6 * scale, 3.2 * scale);
+        graphics.fillCircle(x + 7 * scale, y - 6 * scale, 3.2 * scale);
+        if (resource === ResourceType.AncientRemains) {
+          graphics.fillStyle(0x574d40, 0.9);
+          graphics.fillCircle(x + 2 * scale, y + 4 * scale, 3.2 * scale);
+        }
+        break;
+      }
+      default:
+        graphics.fillStyle(color, 1);
+        graphics.fillCircle(x, y, 6 * scale);
+        graphics.lineStyle(1.1 * scale, 0xffffff, 0.72);
+        graphics.strokeCircle(x, y, 4 * scale);
+        break;
+    }
   }
 
   private drawToolDrop(

@@ -3,7 +3,9 @@ import type { InventoryItem, InventorySlot } from '../player/Inventory';
 import { HOTBAR_SLOT_COUNT, Inventory, INVENTORY_SLOT_COUNT } from '../player/Inventory';
 import { FacingDirection } from '../player/interaction';
 import { PLAYER_SPEED_SCALE } from '../player/playerConfig';
+import { FootprintTrail } from '../player/FootprintTrail';
 import { mainMenuMusic } from '../audio/MainMenuMusic';
+import { gameMusic } from '../audio/GameMusic';
 import type { InteractionTarget } from '../player/interaction';
 import { isSaveGameData, type SaveGameData } from '../save/SaveGameData';
 import { MAX_WORLD_SEED_LENGTH, isWorldMode, type WorldMode } from '../save/WorldLibrary';
@@ -56,7 +58,29 @@ import {
   EXPLORATION_REVEAL_STAMP_SPACING_TILES,
   WORLD_TIME_SAVE_INTERVAL_MS
 } from '../world/explorationConfig';
-import { landmarkAtTile, landmarksIntersectingTiles } from '../world/generation/landmarkGenerator';
+import {
+  landmarkAtTile,
+  landmarksIntersectingTiles,
+  nearestLandmarkToTile
+} from '../world/generation/landmarkGenerator';
+import type { ProceduralLandmark } from '../world/landmarkConfig';
+import type {
+  LandmarkEntrance,
+  LandmarkMaterialNode
+} from '../world/landmarks/landmarkSurfaceGenerator';
+import {
+  generateLandmarkInterior,
+  isLandmarkInteriorType,
+  landmarkInteriorContainsPoint,
+  landmarkInteriorWorldOrigin,
+  landmarkInteriorWorldTilePosition,
+  type LandmarkInteriorDecoration,
+  type LandmarkInteriorLayout,
+  type LandmarkInteriorMaterialNode,
+  type LandmarkInteriorRoom,
+  type LandmarkInteriorType,
+  type LandmarkInteriorWorldPoint
+} from '../world/landmarks/landmarkInteriorGenerator';
 import { WORLD_SEED, WORLD_TILE_SIZE, worldToTile } from '../world/worldConfig';
 import { TERRAIN_MATERIAL_ASSETS } from '../world/terrainMaterialConfig';
 import { type CraftingRecipe } from '../crafting/recipeConfig';
@@ -112,6 +136,7 @@ const NIGHT_AMBIENT_LIGHT_UPDATE_INTERVAL_MS = 33;
 const FOOTSTEP_SOUND_INTERVAL_MS = 265;
 const MINIMAP_TILES_PER_CELL = Math.max(1, Math.round(16 * (MINIMAP_AREA_SCALE / 50)));
 const CAVE_ENTRANCE_INTERACTION_RADIUS_PIXELS = 84;
+const LANDMARK_ENTRANCE_INTERACTION_RADIUS_PIXELS = 92;
 const CAVE_INTERACTION_BUCKET_SIZE_TILES = 6;
 // Kept visual-only: designers can reshape the cave wall art without changing layouts or
 // collision. The clamp also protects the renderer from accidental extreme configuration.
@@ -163,6 +188,15 @@ interface ActiveCave {
   readonly exitVisuals: ReadonlyMap<string, CaveExitVisual>;
 }
 
+interface ActiveLandmarkInterior {
+  readonly landmark: ProceduralLandmark & { readonly type: LandmarkInteriorType };
+  readonly layout: LandmarkInteriorLayout;
+  readonly origin: LandmarkInteriorWorldPoint;
+  readonly materialBuckets: ReadonlyMap<string, readonly LandmarkInteriorMaterialNode[]>;
+  readonly returnWorldX: number;
+  readonly returnWorldY: number;
+}
+
 interface CaveRenderPoint {
   readonly x: number;
   readonly y: number;
@@ -174,6 +208,8 @@ interface CaveExitVisual extends CaveRenderPoint {
 }
 
 const caveOreBucketKey = (bucketX: number, bucketY: number): string => `${bucketX}:${bucketY}`;
+
+const landmarkMaterialBucketKey = (bucketX: number, bucketY: number): string => `${bucketX}:${bucketY}`;
 
 const createCaveOreBuckets = (ores: readonly CaveOre[]): ReadonlyMap<string, readonly CaveOre[]> => {
   const buckets = new Map<string, CaveOre[]>();
@@ -192,9 +228,29 @@ const createCaveOreBuckets = (ores: readonly CaveOre[]): ReadonlyMap<string, rea
   return buckets;
 };
 
+const createLandmarkMaterialBuckets = (
+  materials: readonly LandmarkInteriorMaterialNode[]
+): ReadonlyMap<string, readonly LandmarkInteriorMaterialNode[]> => {
+  const buckets = new Map<string, LandmarkInteriorMaterialNode[]>();
+  materials.forEach((material) => {
+    const key = landmarkMaterialBucketKey(
+      Math.floor(material.tileX / CAVE_INTERACTION_BUCKET_SIZE_TILES),
+      Math.floor(material.tileY / CAVE_INTERACTION_BUCKET_SIZE_TILES)
+    );
+    const bucket = buckets.get(key);
+    if (bucket) {
+      bucket.push(material);
+    } else {
+      buckets.set(key, [material]);
+    }
+  });
+  return buckets;
+};
+
 export class AdventureScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Rectangle;
   private playerAvatar!: Phaser.GameObjects.Graphics;
+  private footprintTrail!: FootprintTrail;
   private controlKeys!: ControlKeys;
   private chunkManager!: ChunkManager;
   private dropManager!: DropManager;
@@ -231,6 +287,10 @@ export class AdventureScene extends Phaser.Scene {
   private caveGraphics!: Phaser.GameObjects.Graphics;
   private caveLavaGraphics!: Phaser.GameObjects.Graphics;
   private caveEntranceLightGraphics!: Phaser.GameObjects.Graphics;
+  private landmarkInteriorGraphics!: Phaser.GameObjects.Graphics;
+  private landmarkInteriorAccentGraphics!: Phaser.GameObjects.Graphics;
+  private landmarkHintPanel!: Phaser.GameObjects.Graphics;
+  private landmarkHint!: Phaser.GameObjects.Text;
   private caveFogOverlay!: SVGSVGElement;
   private caveFogMask!: SVGMaskElement;
   private caveFogMaskBase!: SVGRectElement;
@@ -240,6 +300,7 @@ export class AdventureScene extends Phaser.Scene {
   private inventoryOpen = false;
   private craftingOpen = false;
   private worldMapOpen = false;
+  private travelStoneSourceId: string | null = null;
   private pauseMenuOpen = false;
   private returningToMainMenu = false;
   private worldReady = false;
@@ -256,11 +317,18 @@ export class AdventureScene extends Phaser.Scene {
   private currentTopography: TopographySample | null = null;
   private interactionTarget: InteractionTarget | null = null;
   private nearbyCaveEntrance: CaveEntrance | null = null;
+  private nearbyLandmarkEntrance: LandmarkEntrance | null = null;
   private activeCave: ActiveCave | null = null;
+  private activeLandmarkInterior: ActiveLandmarkInterior | null = null;
   private caveOreTarget: CaveOre | null = null;
   private caveHarvestOre: CaveOre | null = null;
   private caveExitNearby = false;
   private caveExitTarget: CaveSurfaceExit | null = null;
+  private landmarkInteriorExitNearby = false;
+  private surfaceLandmarkMaterialTarget: LandmarkMaterialNode | null = null;
+  private surfaceLandmarkHarvestMaterial: LandmarkMaterialNode | null = null;
+  private interiorLandmarkMaterialTarget: LandmarkInteriorMaterialNode | null = null;
+  private interiorLandmarkHarvestMaterial: LandmarkInteriorMaterialNode | null = null;
   private lastCaveVisibilityWorldX = Number.NaN;
   private lastCaveVisibilityWorldY = Number.NaN;
   private nearbyDrop: DroppedItem | null = null;
@@ -300,8 +368,11 @@ export class AdventureScene extends Phaser.Scene {
   private lastMinimapTileY = Number.NaN;
   private lastCaveEntranceTileX = Number.NaN;
   private lastCaveEntranceTileY = Number.NaN;
+  private lastLandmarkEntranceTileX = Number.NaN;
+  private lastLandmarkEntranceTileY = Number.NaN;
   private lastCaveLavaFrame = Number.NEGATIVE_INFINITY;
   private lastCaveEntranceLightFrame = Number.NEGATIVE_INFINITY;
+  private lastLandmarkInteriorAccentFrame = Number.NEGATIVE_INFINITY;
   private movementSampleStartedAt = Number.NaN;
   private movementSampleFrameCount = 0;
   private movementSampleWorstFrameMs = 0;
@@ -334,10 +405,17 @@ export class AdventureScene extends Phaser.Scene {
     this.inventoryOpen = false;
     this.craftingOpen = false;
     this.worldMapOpen = false;
+    this.travelStoneSourceId = null;
     this.pauseMenuOpen = false;
     this.returningToMainMenu = false;
     this.caveTransitionInProgress = false;
     this.activeCave = null;
+    this.activeLandmarkInterior = null;
+    this.nearbyLandmarkEntrance = null;
+    this.surfaceLandmarkMaterialTarget = null;
+    this.surfaceLandmarkHarvestMaterial = null;
+    this.interiorLandmarkMaterialTarget = null;
+    this.interiorLandmarkHarvestMaterial = null;
     this.activePotionEffects.clear();
     this.drinkingPotion = null;
     this.tonicDrinkElapsedMs = 0;
@@ -357,6 +435,7 @@ export class AdventureScene extends Phaser.Scene {
     this.renderBackend = this.describeRenderBackend();
     this.player = this.add.rectangle(WORLD_TILE_SIZE / 2, WORLD_TILE_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE).setVisible(false);
     this.playerAvatar = this.add.graphics().setDepth(10).setScale(PLAYER_AVATAR_SCALE);
+    this.footprintTrail = new FootprintTrail(this, this.worldSeed);
     this.harvestProgressGraphics = this.add.graphics().setDepth(15);
     this.placementPreviewGraphics = this.add.graphics().setDepth(14).setVisible(false);
     this.placementHint = this.add
@@ -374,6 +453,8 @@ export class AdventureScene extends Phaser.Scene {
     this.caveGraphics = this.add.graphics().setDepth(2).setVisible(false);
     this.caveLavaGraphics = this.add.graphics().setDepth(2.2).setVisible(false);
     this.caveEntranceLightGraphics = this.add.graphics().setDepth(2.1).setVisible(false);
+    this.landmarkInteriorGraphics = this.add.graphics().setDepth(2).setVisible(false);
+    this.landmarkInteriorAccentGraphics = this.add.graphics().setDepth(2.35).setVisible(false);
     this.createCaveFogOverlay();
     this.interactionHighlight = this.add
       .circle(0, 0, 62, 0xf5d76e, 0.09)
@@ -411,6 +492,17 @@ export class AdventureScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
       .setDepth(11)
+      .setVisible(false);
+    this.landmarkHintPanel = this.add.graphics().setDepth(13.8).setVisible(false);
+    this.landmarkHint = this.add
+      .text(0, 0, '', {
+        fontFamily: 'Cascadia Mono, Consolas, system-ui, sans-serif',
+        fontSize: '13px',
+        color: '#f5fff0',
+        fontStyle: '700'
+      })
+      .setOrigin(0.5)
+      .setDepth(14)
       .setVisible(false);
     this.tweens.add({
       targets: [this.interactionHighlight, this.placedObjectHighlight, this.dropHighlight],
@@ -483,7 +575,10 @@ export class AdventureScene extends Phaser.Scene {
     this.dayNightOverlay = new DayNightOverlay(gameElement);
     this.nightAmbientOverlay = new NightAmbientOverlay(gameElement);
     this.placedLightOverlay = new PlacedLightOverlay(gameElement);
-    this.worldMapOverlay = new WorldMapOverlay(gameElement);
+    this.worldMapOverlay = new WorldMapOverlay(gameElement, {
+      onTravelStoneSelected: (id) => void this.travelToStone(id),
+      onCloseRequested: () => this.closeWorldMap()
+    });
     this.pauseMenuOverlay = new PauseMenuOverlay(gameElement, this.gameSettings, {
       onResume: () => this.closePauseMenu(),
       onReturnToMainMenu: () => this.returnToMainMenu(),
@@ -502,6 +597,7 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     this.sampleRenderedFrameRate(time);
+    this.footprintTrail.update(time, this.isInsideInterior());
 
     this.updateWorldTime(time, delta);
     this.updatePotionEffects();
@@ -513,6 +609,17 @@ export class AdventureScene extends Phaser.Scene {
       this.cancelTonicDrinking();
       this.clearPlacementPreview();
       this.updatePlayerAvatar(delta, false);
+      this.persistIfNeeded(time);
+      if (this.isDebugVisible && time - this.lastDebugUpdateMs >= DEBUG_UPDATE_INTERVAL_MS) {
+        this.lastDebugUpdateMs = time;
+        this.updateDebugText();
+      }
+      return;
+    }
+    if (this.activeLandmarkInterior) {
+      this.ambientAudio?.setSwimming(false, false, false);
+      this.clearPlacementPreview();
+      this.updateLandmarkInterior(time, delta);
       this.persistIfNeeded(time);
       if (this.isDebugVisible && time - this.lastDebugUpdateMs >= DEBUG_UPDATE_INTERVAL_MS) {
         this.lastDebugUpdateMs = time;
@@ -614,6 +721,7 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     this.updateSwimmingState();
+    this.footprintTrail.recordMovement(time, this.player.x, this.player.y, isMoving && !this.isSwimming);
     this.updateSurfaceSwimAudio(delta, isMoving);
     this.updateSurfaceFootsteps(delta, isMoving);
     this.chunkManager.update(this.player.x, this.player.y, time);
@@ -633,6 +741,7 @@ export class AdventureScene extends Phaser.Scene {
     this.updateNightAmbientLighting(time);
     this.updateInteractionTarget();
     this.updateCaveEntranceInteraction();
+    this.updateLandmarkEntranceInteraction();
     this.updateDropInteraction(time);
     this.updatePlacedObjectInteraction();
     this.updatePlacementPreview();
@@ -651,6 +760,7 @@ export class AdventureScene extends Phaser.Scene {
   private async loadSavedWorld(): Promise<void> {
     let savedGame: SaveGameData | null = null;
     let savedActiveCave: SaveGameData['activeCave'] | undefined;
+    let savedActiveLandmarkInterior: SaveGameData['activeLandmarkInterior'] | undefined;
 
     await this.loadGameSettings();
 
@@ -679,9 +789,10 @@ export class AdventureScene extends Phaser.Scene {
         : 0;
       this.sessionWorldState.restore(savedGame.world);
       savedActiveCave = savedGame.activeCave;
+      savedActiveLandmarkInterior = savedGame.activeLandmarkInterior;
       this.player.setPosition(
-        savedActiveCave?.returnWorldX ?? savedGame.player.x,
-        savedActiveCave?.returnWorldY ?? savedGame.player.y
+        savedActiveCave?.returnWorldX ?? savedActiveLandmarkInterior?.returnWorldX ?? savedGame.player.x,
+        savedActiveCave?.returnWorldY ?? savedActiveLandmarkInterior?.returnWorldY ?? savedGame.player.y
       );
     }
 
@@ -702,16 +813,30 @@ export class AdventureScene extends Phaser.Scene {
     const savedCaveEntrance = savedActiveCave
       ? caveEntranceAtTile(this.worldSeed, savedActiveCave.entranceTileX, savedActiveCave.entranceTileY)
       : null;
+    const savedLandmark = savedActiveLandmarkInterior
+      ? landmarkAtTile(
+        this.worldSeed,
+        savedActiveLandmarkInterior.centerTileX,
+        savedActiveLandmarkInterior.centerTileY
+      )
+      : null;
+    const savedLandmarkInterior = savedLandmark
+      && savedActiveLandmarkInterior
+      && savedLandmark.id === savedActiveLandmarkInterior.landmarkId
+      && savedLandmark.type === savedActiveLandmarkInterior.landmarkType
+      && isLandmarkInteriorType(savedLandmark.type)
+      ? savedLandmark
+      : null;
     // A save already inside a cave does not need a surface presentation yet. Skipping that prime
     // avoids completing a wilderness loading pass only to immediately begin a second cave pass;
     // the correct surface window is prepared later when the player actually leaves the cave.
-    if (!savedCaveEntrance) {
+    if (!savedCaveEntrance && !savedLandmarkInterior) {
       await this.chunkManager.prime(this.player.x, this.player.y, (progress) => {
         this.updateLoadingProgress(progress.completed, progress.total);
       });
     }
     this.worldReady = true;
-    if (!savedCaveEntrance) {
+    if (!savedCaveEntrance && !savedLandmarkInterior) {
       this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
       this.terrainSurface = this.currentTopography.surface;
       this.placeableManager.refresh(this.player.x, this.player.y);
@@ -728,14 +853,26 @@ export class AdventureScene extends Phaser.Scene {
         false,
         true
       );
+    } else if (savedActiveLandmarkInterior && savedLandmarkInterior) {
+      await this.enterLandmarkInterior(
+        savedLandmarkInterior,
+        savedActiveLandmarkInterior.returnWorldX,
+        savedActiveLandmarkInterior.returnWorldY,
+        false,
+        true
+      );
     }
     this.loadingOverlay.classList.add('is-hidden');
     mainMenuMusic.stop();
-    if (this.activeCave) {
+    void gameMusic.start();
+    if (this.activeLandmarkInterior) {
+      this.updateLandmarkInteriorInteraction(true);
+    } else if (this.activeCave) {
       this.updateCaveInteraction(true);
     } else {
       this.updateInteractionTarget(true);
       this.updateCaveEntranceInteraction(true);
+      this.updateLandmarkEntranceInteraction(true);
       this.updateExploration(true);
     }
     this.updateDropInteraction(0, true);
@@ -752,6 +889,14 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private updateSwimmingState(force = false): void {
+    if (this.activeLandmarkInterior) {
+      this.lastSwimmingTileX = Math.floor(this.player.x / WORLD_TILE_SIZE);
+      this.lastSwimmingTileY = Math.floor((this.player.y + 9) / WORLD_TILE_SIZE);
+      this.isSwimming = false;
+      this.isSwimmingInSwampWater = false;
+      this.swimStrokeElapsedMs = 0;
+      return;
+    }
     if (this.activeCave) {
       this.updateCaveSwimmingState(force);
       return;
@@ -802,7 +947,7 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private updateSurfaceSwimAudio(delta: number, isMoving: boolean): void {
-    const swimmingOnSurface = !this.activeCave && this.isSwimming;
+    const swimmingOnSurface = !this.isInsideInterior() && this.isSwimming;
     this.ambientAudio?.setSwimming(
       swimmingOnSurface,
       swimmingOnSurface && isMoving,
@@ -825,7 +970,7 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private updateSurfaceFootsteps(delta: number, isMoving: boolean): void {
-    if (this.activeCave || this.isSwimming || !isMoving) {
+    if (this.isInsideInterior() || this.isSwimming || !isMoving) {
       this.footstepElapsedMs = 0;
       return;
     }
@@ -887,7 +1032,11 @@ export class AdventureScene extends Phaser.Scene {
   private movePlayer(deltaX: number, deltaY: number, time: number): boolean {
     const nextX = this.player.x + deltaX;
     const nextY = this.player.y + deltaY;
-    if (this.chunkManager.canEnterPosition(nextX, nextY, time)) {
+    const canEnterSurfacePosition = (worldX: number, worldY: number): boolean => (
+      this.chunkManager.canEnterPosition(worldX, worldY, time)
+      && !this.chunkManager.isLandmarkStructureAtWorldPoint(worldX, worldY)
+    );
+    if (canEnterSurfacePosition(nextX, nextY)) {
       this.player.setPosition(nextX, nextY);
       return true;
     }
@@ -898,11 +1047,11 @@ export class AdventureScene extends Phaser.Scene {
     let moved = false;
     let resolvedX = this.player.x;
     let resolvedY = this.player.y;
-    if (deltaX !== 0 && this.chunkManager.canEnterPosition(nextX, resolvedY, time)) {
+    if (deltaX !== 0 && canEnterSurfacePosition(nextX, resolvedY)) {
       resolvedX = nextX;
       moved = true;
     }
-    if (deltaY !== 0 && this.chunkManager.canEnterPosition(resolvedX, nextY, time)) {
+    if (deltaY !== 0 && canEnterSurfacePosition(resolvedX, nextY)) {
       resolvedY = nextY;
       moved = true;
     }
@@ -973,6 +1122,10 @@ export class AdventureScene extends Phaser.Scene {
       right: ['moveRight', 'moveRightAlternate']
     };
     return actions[direction].some((action) => this.isControlDown(action));
+  }
+
+  private isInsideInterior(): boolean {
+    return Boolean(this.activeCave || this.activeLandmarkInterior);
   }
 
   private updateFacing(horizontal: number, vertical: number): void {
@@ -1198,7 +1351,7 @@ export class AdventureScene extends Phaser.Scene {
     }
     this.configureControlKeys();
     this.chunkManager?.applyVideoSettings(this.gameSettings.video);
-    this.nightAmbientOverlay?.setEnabled(this.gameSettings.video.quality.showNightLights && !this.activeCave);
+    this.nightAmbientOverlay?.setEnabled(this.gameSettings.video.quality.showNightLights && !this.isInsideInterior());
     this.nightAmbientOverlay?.setRenderScale(this.gameSettings.video.quality.nightLightResolution);
     if (this.gameSettings.audio.biomeAmbienceEnabled) {
       this.ambientAudio?.activate();
@@ -1287,6 +1440,24 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
+    if (this.activeLandmarkInterior) {
+      if (event.code === 'KeyE' && this.landmarkInteriorExitNearby) {
+        void this.exitLandmarkInterior();
+        return;
+      }
+      if (this.matchesControl('pickUpItem', event) && this.pickupNearbyDrop()) {
+        return;
+      }
+      if (this.matchesControl('enterExitCave', event) && this.landmarkInteriorExitNearby) {
+        void this.exitLandmarkInterior();
+        return;
+      }
+      if (this.matchesControl('openInventory', event)) {
+        this.toggleInventory();
+      }
+      return;
+    }
+
     if (this.activeCave) {
       // A floor drop remains the priority for shared default bindings, matching the original E
       // interaction. Rebound actions can intentionally separate drop pickup from cave travel.
@@ -1303,6 +1474,14 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
+    if (event.code === 'KeyE' && this.nearbyLandmarkEntrance) {
+      void this.enterLandmarkInterior(
+        this.nearbyLandmarkEntrance.landmark,
+        this.player.x,
+        this.player.y
+      );
+      return;
+    }
     if (this.matchesControl('enterExitCave', event) && this.nearbyCaveEntrance) {
       void this.enterCave(this.nearbyCaveEntrance, this.player.x, this.player.y);
       return;
@@ -1362,6 +1541,19 @@ export class AdventureScene extends Phaser.Scene {
       this.toggleWorldMap();
       return;
     }
+    if (this.activeLandmarkInterior) {
+      if (this.matchesPointerControl('pickUpItem', pointer) && this.pickupNearbyDrop()) {
+        return;
+      }
+      if (this.matchesPointerControl('enterExitCave', pointer) && this.landmarkInteriorExitNearby) {
+        void this.exitLandmarkInterior();
+        return;
+      }
+      if (this.matchesPointerControl('openInventory', pointer)) {
+        this.toggleInventory();
+      }
+      return;
+    }
     if (this.activeCave) {
       if (this.matchesPointerControl('pickUpItem', pointer) && this.pickupNearbyDrop()) {
         return;
@@ -1373,6 +1565,14 @@ export class AdventureScene extends Phaser.Scene {
       if (this.matchesPointerControl('openInventory', pointer)) {
         this.toggleInventory();
       }
+      return;
+    }
+    if (this.matchesPointerControl('enterExitCave', pointer) && this.nearbyLandmarkEntrance) {
+      void this.enterLandmarkInterior(
+        this.nearbyLandmarkEntrance.landmark,
+        this.player.x,
+        this.player.y
+      );
       return;
     }
     if (this.matchesPointerControl('enterExitCave', pointer) && this.nearbyCaveEntrance) {
@@ -1521,7 +1721,7 @@ export class AdventureScene extends Phaser.Scene {
     this.handleInventoryChanged();
     this.inventoryOverlay.refresh();
     this.clearPlacementPreview();
-    if (placeable === PlaceableId.Waypoint) {
+    if (placeable === PlaceableId.Waypoint || placeable === PlaceableId.TravelStone) {
       this.updateMinimap(0, true);
       this.updateWorldMap();
     }
@@ -1561,6 +1761,10 @@ export class AdventureScene extends Phaser.Scene {
     this.cancelTonicDrinking();
     this.cancelHarvesting();
     this.harvestRequiresControlRelease = true;
+    if (object.placeable === PlaceableId.TravelStone) {
+      this.openTravelStone(object);
+      return;
+    }
     this.placedObjectOverlay.open(object);
     this.updateHotbarVisibility();
   }
@@ -1734,7 +1938,7 @@ export class AdventureScene extends Phaser.Scene {
     }
     this.handleInventoryChanged();
     this.inventoryOverlay.refresh();
-    if (removed.placeable === PlaceableId.Waypoint) {
+    if (removed.placeable === PlaceableId.Waypoint || removed.placeable === PlaceableId.TravelStone) {
       this.updateMinimap(0, true);
       this.updateWorldMap();
     }
@@ -1771,8 +1975,14 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
+    if (this.worldMapOpen) {
+      this.closeWorldMap();
+      return;
+    }
+
     this.cancelTonicDrinking();
-    this.worldMapOpen = !this.worldMapOpen;
+    this.travelStoneSourceId = null;
+    this.worldMapOpen = true;
     if (this.worldMapOpen && this.placedObjectOverlay.isOpen) {
       this.placedObjectOverlay.close();
     }
@@ -1786,11 +1996,153 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     this.cancelHarvesting();
-    this.worldMapOverlay.setOpen(this.worldMapOpen);
+    this.worldMapOverlay.setTravelSource(null);
+    this.worldMapOverlay.centerOn(this.player.x / WORLD_TILE_SIZE, this.player.y / WORLD_TILE_SIZE);
+    this.worldMapOverlay.setOpen(true);
     this.updateHotbarVisibility();
-    if (this.worldMapOpen) {
-      this.updateWorldMap();
+    this.updateWorldMap();
+  }
+
+  private closeWorldMap(): void {
+    if (!this.worldMapOpen) {
+      return;
     }
+    this.worldMapOpen = false;
+    this.travelStoneSourceId = null;
+    this.worldMapOverlay.setOpen(false);
+    this.worldMapOverlay.setTravelSource(null);
+    this.updateHotbarVisibility();
+  }
+
+  private openTravelStone(source: PlacedObject): void {
+    if (!this.worldReady || source.placeable !== PlaceableId.TravelStone) {
+      return;
+    }
+    this.cancelTonicDrinking();
+    this.cancelHarvesting();
+    if (this.placedObjectOverlay.isOpen) {
+      this.placedObjectOverlay.close();
+    }
+    if (this.inventoryOpen) {
+      this.inventoryOpen = false;
+      this.inventoryOverlay.setOpen(false);
+    }
+    if (this.craftingOpen) {
+      this.craftingOpen = false;
+      this.inventoryOverlay.setCraftingOpen(false);
+      this.inventoryOverlay.setOpen(false);
+    }
+    this.travelStoneSourceId = source.id;
+    this.worldMapOpen = true;
+    this.worldMapOverlay.setTravelSource(source.id);
+    this.worldMapOverlay.centerOn(source.tileX + 0.5, source.tileY + 0.5);
+    this.worldMapOverlay.setOpen(true);
+    this.updateWorldMap();
+    this.updateHotbarVisibility();
+  }
+
+  private async travelToStone(destinationId: string): Promise<void> {
+    const sourceId = this.travelStoneSourceId;
+    const source = sourceId ? this.sessionWorldState.getPlacedObject(sourceId) : null;
+    const destination = this.sessionWorldState.getPlacedObject(destinationId);
+    if (!source || !destination || source.id === destination.id
+      || source.placeable !== PlaceableId.TravelStone
+      || destination.placeable !== PlaceableId.TravelStone
+      || this.caveTransitionInProgress) {
+      return;
+    }
+    const arrival = this.travelStoneArrival(destination);
+    if (!arrival) {
+      this.closeWorldMap();
+      this.showWorldFeedback(this.player.x, this.player.y - 28, 'The destination stone is blocked');
+      return;
+    }
+
+    this.closeWorldMap();
+    this.caveTransitionInProgress = true;
+    this.worldReady = false;
+    this.showTerrainLoading();
+    this.ambientAudio?.setSwimming(false, false, false);
+    this.footstepElapsedMs = 0;
+    this.cancelHarvesting();
+    try {
+      await this.waitForTerrainLoadingPaint();
+      await this.chunkManager.prime(arrival.x, arrival.y, (progress) => {
+        const ratio = progress.completed / Math.max(1, progress.total);
+        this.updateLoadingProgress(8 + ratio * 84, 100, 'Opening the travel route');
+      });
+      this.updateLoadingProgress(94, 100, 'Opening the travel route');
+      await this.waitForTerrainLoadingPaint();
+      this.player.setPosition(arrival.x, arrival.y);
+      this.cameras.main.centerOn(arrival.x, arrival.y);
+      this.footprintTrail.clear();
+      this.currentTopography = this.chunkManager.getTopographyAt(arrival.x, arrival.y);
+      this.terrainSurface = this.currentTopography.surface;
+      this.placeableManager.refresh(arrival.x, arrival.y);
+      this.updateSwimmingState(true);
+      this.chunkManager.update(arrival.x, arrival.y);
+      this.updateExploration(true);
+      this.updateInteractionTarget(true);
+      this.updateCaveEntranceInteraction(true);
+      this.updateDropInteraction(0, true);
+      this.updatePlacedObjectInteraction();
+      this.lastMinimapUpdateMs = Number.NEGATIVE_INFINITY;
+      this.updateMinimap(0, true);
+      this.updatePlayerAvatar(0, false);
+      this.markSaveDirty();
+      await this.finishTerrainLoading();
+      this.showWorldFeedback(arrival.x, arrival.y - 34, 'Travel route complete');
+    } catch (error) {
+      this.recoverFromTerrainLoadingFailure('travel between stones', error);
+    }
+  }
+
+  private travelStoneArrival(stone: PlacedObject): { x: number; y: number } | null {
+    // Prefer arriving just below the monolith, then walk a deterministic spiral if another
+    // placed object or natural feature occupies that tile. This keeps teleporting safe without
+    // altering any procedural terrain or silently harvesting the destination.
+    const offsets: Array<readonly [number, number]> = [
+      [0, 1], [1, 0], [-1, 0], [0, -1],
+      [1, 1], [-1, 1], [1, -1], [-1, -1],
+      [0, 2], [2, 0], [-2, 0], [0, -2],
+      [1, 2], [-1, 2], [2, 1], [-2, 1], [1, -2], [-1, -2], [2, -1], [-2, -1]
+    ];
+    const placedObjects = this.sessionWorldState.getPlacedObjects();
+    for (const [offsetX, offsetY] of offsets) {
+      const tileX = stone.tileX + offsetX;
+      const tileY = stone.tileY + offsetY;
+      if (!this.isTravelArrivalTileOpen(tileX, tileY, stone.id, placedObjects)) {
+        continue;
+      }
+      return {
+        x: (tileX + 0.5) * WORLD_TILE_SIZE,
+        y: (tileY + 0.5) * WORLD_TILE_SIZE - 9
+      };
+    }
+    return null;
+  }
+
+  private isTravelArrivalTileOpen(
+    tileX: number,
+    tileY: number,
+    destinationStoneId: string,
+    placedObjects: readonly PlacedObject[]
+  ): boolean {
+    const surface = surfaceAtTile(this.worldSeed, tileX + 0.5, tileY + 0.5);
+    if (surface.isWater || surface.isSwampWater
+      || (featureAtTile(this.worldSeed, tileX, tileY) && !this.sessionWorldState.isFeatureHarvested(tileX, tileY))
+      || this.chunkManager.isCaveFormationAtTile(tileX, tileY)
+      || landmarkAtTile(this.worldSeed, tileX, tileY)) {
+      return false;
+    }
+    return placedObjects.every((object) => {
+      if (object.id === destinationStoneId) {
+        return true;
+      }
+      const [width, height] = PLACEABLE_DEFINITIONS[object.placeable].footprint;
+      return tileX < object.tileX || tileX >= object.tileX + width
+        || tileY < object.tileY || tileY >= object.tileY + height;
+    });
   }
 
   private openPauseMenu(): void {
@@ -1811,8 +2163,7 @@ export class AdventureScene extends Phaser.Scene {
       this.inventoryOverlay.setOpen(false);
     }
     if (this.worldMapOpen) {
-      this.worldMapOpen = false;
-      this.worldMapOverlay.setOpen(false);
+      this.closeWorldMap();
     }
     this.pauseMenuOverlay.setOpen(true);
     this.updateHotbarVisibility();
@@ -1851,6 +2202,8 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private handleShutdown(): void {
+    gameMusic.stop();
+    this.footprintTrail.destroy();
     this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     this.input.keyboard?.off('keydown', this.handleGameKeyDown, this);
     this.input.off('pointerdown', this.handleWorldPointerDown, this);
@@ -1887,7 +2240,7 @@ export class AdventureScene extends Phaser.Scene {
     this.nightAmount = sampleDayNight(this.worldTimeMs).nightAmount;
     this.ambientLightAmount = ambientLightScheduleAmount(this.worldTimeMs);
 
-    if (!this.activeCave && time - this.lastDayNightOverlayUpdateMs >= DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS) {
+    if (!this.isInsideInterior() && time - this.lastDayNightOverlayUpdateMs >= DAY_NIGHT_OVERLAY_UPDATE_INTERVAL_MS) {
       this.lastDayNightOverlayUpdateMs = time;
       this.dayNightOverlay.update(this.worldTimeMs);
     }
@@ -1903,7 +2256,7 @@ export class AdventureScene extends Phaser.Scene {
   private updateNightAmbientLighting(time: number): void {
     // Surface ambience and placed lights must never leak into cave rendering. Caves use their
     // own static fog, wall shading, exit shafts, and lava glow, independent of world time.
-    if (this.activeCave) {
+    if (this.isInsideInterior()) {
       this.placedLightOverlay.update(this.cameras.main, []);
       this.nightAmbientOverlay.setEnabled(false);
       return;
@@ -1947,8 +2300,8 @@ export class AdventureScene extends Phaser.Scene {
       playerWorldY: this.player.y,
       worldTimeMs: this.worldTimeMs,
       daylightAmount: sampleDayNight(this.worldTimeMs).lightLevel,
-      isCave: Boolean(this.activeCave),
-      caveDepthMeters: this.caveDepthMetersAt(this.player.x, this.player.y),
+      isCave: this.isInsideInterior(),
+      caveDepthMeters: this.activeLandmarkInterior ? 160 : this.caveDepthMetersAt(this.player.x, this.player.y),
       nearLava: this.isSwimming,
       isPaused: this.pauseMenuOpen,
       enabled: this.gameSettings.audio.biomeAmbienceEnabled,
@@ -2050,6 +2403,15 @@ export class AdventureScene extends Phaser.Scene {
           tileX: waypoint.tileX + 0.5,
           tileY: waypoint.tileY + 0.5,
           label: waypoint.label
+        })),
+      travelStones: this.sessionWorldState.getPlacedObjects()
+        .filter((object) => object.placeable === PlaceableId.TravelStone)
+        .sort((first, second) => first.id.localeCompare(second.id, undefined, { numeric: true }))
+        .map((stone, index) => ({
+          id: stone.id,
+          tileX: stone.tileX + 0.5,
+          tileY: stone.tileY + 0.5,
+          label: `Travel Stone ${index + 1}`
         }))
     });
   }
@@ -2065,7 +2427,10 @@ export class AdventureScene extends Phaser.Scene {
     const animationFrame = isMoving
       ? Math.floor(this.animationElapsedMs / (this.isSwimming ? 145 : 115)) % (this.isSwimming ? 3 : 2)
       : 0;
-    const harvestAnimationFrame = this.harvestTarget || this.caveHarvestOre ? Math.floor(this.harvestElapsedMs / 45) % 8 : -1;
+    const harvestAnimationFrame = this.harvestTarget || this.caveHarvestOre
+      || this.surfaceLandmarkHarvestMaterial || this.interiorLandmarkHarvestMaterial
+      ? Math.floor(this.harvestElapsedMs / 45) % 8
+      : -1;
     const heldResource = this.heldHotbarResource();
     const heldPlaceable = this.heldPlaceable();
     const heldTonic = this.heldTonic();
@@ -2084,7 +2449,12 @@ export class AdventureScene extends Phaser.Scene {
       ? Math.sin(animationFrame / 3 * Math.PI * 2) * 2
       : animationFrame === 1 ? 3 : -3;
     const harvestSwing = this.harvestSwingAmount();
-    const isUnarmedHarvesting = !this.equippedTool && (this.harvestTarget !== null || this.caveHarvestOre !== null);
+    const isUnarmedHarvesting = !this.equippedTool && (
+      this.harvestTarget !== null
+      || this.caveHarvestOre !== null
+      || this.surfaceLandmarkHarvestMaterial !== null
+      || this.interiorLandmarkHarvestMaterial !== null
+    );
     const heldResource = this.heldHotbarResource();
     const heldPlaceable = this.heldPlaceable();
     const heldTonic = this.heldTonic();
@@ -2164,7 +2534,8 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private harvestSwingAmount(): number {
-    if (!this.harvestTarget && !this.caveHarvestOre) {
+    if (!this.harvestTarget && !this.caveHarvestOre
+      && !this.surfaceLandmarkHarvestMaterial && !this.interiorLandmarkHarvestMaterial) {
       return 0;
     }
 
@@ -2338,7 +2709,8 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private harvestStrikeReach(): number {
-    if (!this.harvestTarget && !this.caveHarvestOre) {
+    if (!this.harvestTarget && !this.caveHarvestOre
+      && !this.surfaceLandmarkHarvestMaterial && !this.interiorLandmarkHarvestMaterial) {
       return 0;
     }
 
@@ -2381,6 +2753,8 @@ export class AdventureScene extends Phaser.Scene {
 
     switch (resource) {
       case ResourceType.Wood:
+      case ResourceType.AncientWood:
+      case ResourceType.Heartwood:
         avatar.fillStyle(outline, 1);
         avatar.fillRoundedRect(handX - 6, handY - 3.5, 12, 7, 3);
         avatar.fillStyle(RESOURCE_COLORS[resource], 1);
@@ -2403,6 +2777,8 @@ export class AdventureScene extends Phaser.Scene {
         avatar.fillTriangle(handX, handY - 4.5, handX + 2.2, handY + 3.7, handX - 3.8, handY + 2.2);
         break;
       case ResourceType.Fiber:
+      case ResourceType.VineFiber:
+      case ResourceType.MossFiber:
         avatar.lineStyle(3.2, outline, 1);
         avatar.lineBetween(handX - 3.5, handY + 4, handX - 3.5, handY - 5);
         avatar.lineBetween(handX, handY + 4, handX, handY - 6);
@@ -2417,6 +2793,37 @@ export class AdventureScene extends Phaser.Scene {
         avatar.fillRoundedRect(handX - 3.5, handY - 6, 7, 12, 3);
         avatar.fillStyle(RESOURCE_COLORS[resource], 1);
         avatar.fillRoundedRect(handX - 2.3, handY - 5, 4.6, 10, 2);
+        break;
+      case ResourceType.MapFragments:
+        avatar.fillStyle(outline, 1);
+        avatar.fillRoundedRect(handX - 6, handY - 5, 12, 10, 2);
+        avatar.fillStyle(RESOURCE_COLORS[resource], 1);
+        avatar.fillRoundedRect(handX - 4.8, handY - 4, 9.6, 8, 1.5);
+        avatar.lineStyle(1, 0x705f43, 0.84);
+        avatar.lineBetween(handX - 3, handY - 1.5, handX + 3, handY + 1.5);
+        break;
+      case ResourceType.GlowSpores:
+      case ResourceType.LuminousMushrooms:
+      case ResourceType.AmberSap:
+      case ResourceType.FossilResin:
+        avatar.fillStyle(outline, 1);
+        avatar.fillCircle(handX, handY, 6.2);
+        avatar.fillStyle(RESOURCE_COLORS[resource], 1);
+        avatar.fillCircle(handX, handY, 4.8);
+        avatar.fillStyle(0xffffff, 0.55);
+        avatar.fillCircle(handX - 1.7, handY - 1.8, 1.4);
+        break;
+      default:
+        // Every rare landmark material remains legible when selected even if it does not map to
+        // one of the legacy wood/stone/fiber silhouettes.
+        avatar.fillStyle(outline, 1);
+        avatar.fillTriangle(handX, handY - 6.5, handX + 6.5, handY, handX + 2, handY + 6);
+        avatar.fillTriangle(handX, handY - 6.5, handX + 2, handY + 6, handX - 5.5, handY + 2.5);
+        avatar.fillStyle(RESOURCE_COLORS[resource], 1);
+        avatar.fillTriangle(handX, handY - 5, handX + 5, handY, handX + 1.5, handY + 4.5);
+        avatar.fillTriangle(handX, handY - 5, handX + 1.5, handY + 4.5, handX - 4, handY + 2);
+        avatar.fillStyle(0xffffff, 0.46);
+        avatar.fillTriangle(handX - 0.5, handY - 3.8, handX + 2.5, handY - 0.5, handX, handY + 0.5);
         break;
     }
   }
@@ -2474,6 +2881,23 @@ export class AdventureScene extends Phaser.Scene {
       avatar.fillTriangle(handX, handY - 12, handX + 9, handY - 8, handX, handY - 4);
       avatar.lineStyle(1, 0xc9efff, 0.9);
       avatar.strokeTriangle(handX, handY - 12, handX + 9, handY - 8, handX, handY - 4);
+      return;
+    }
+    if (definition.interaction === 'travel') {
+      avatar.fillStyle(outline, 1);
+      avatar.fillPoints([
+        new Phaser.Geom.Point(handX - 7, handY + 5),
+        new Phaser.Geom.Point(handX - 5, handY - 7),
+        new Phaser.Geom.Point(handX, handY - 11),
+        new Phaser.Geom.Point(handX + 6, handY - 6),
+        new Phaser.Geom.Point(handX + 7, handY + 5)
+      ], true);
+      avatar.fillStyle(0x65777a, 1);
+      avatar.fillTriangle(handX - 4, handY + 3, handX, handY - 8, handX + 4, handY + 3);
+      avatar.lineStyle(1.5, 0x67f1e7, 0.95);
+      avatar.strokeCircle(handX, handY - 2, 3);
+      avatar.fillStyle(0xd6fffb, 1);
+      avatar.fillCircle(handX, handY - 2, 1.1);
       return;
     }
     if (definition.interaction === 'storage') {
@@ -2559,7 +2983,7 @@ export class AdventureScene extends Phaser.Scene {
     avatar.lineBetween(-2 + faceOffset, headY + 4, 2 + faceOffset, headY + 4);
   }
   private updateMinimap(time: number, force = false): void {
-    if (this.activeCave) {
+    if (this.isInsideInterior()) {
       this.minimapOverlay.setVisible(false);
       return;
     }
@@ -2615,6 +3039,1063 @@ export class AdventureScene extends Phaser.Scene {
       .setVisible(true);
   }
 
+  private updateLandmarkEntranceInteraction(force = false): void {
+    const tileX = worldToTile(this.player.x);
+    const tileY = worldToTile(this.player.y);
+    if (!force && tileX === this.lastLandmarkEntranceTileX && tileY === this.lastLandmarkEntranceTileY) {
+      return;
+    }
+
+    this.lastLandmarkEntranceTileX = tileX;
+    this.lastLandmarkEntranceTileY = tileY;
+    const entrance = this.chunkManager.findNearbyLandmarkEntrance(
+      this.player.x,
+      this.player.y,
+      LANDMARK_ENTRANCE_INTERACTION_RADIUS_PIXELS
+    );
+    this.nearbyLandmarkEntrance = entrance;
+
+    if (entrance) {
+      this.surfaceLandmarkMaterialTarget = null;
+      this.interactionHighlight
+        .setRadius(38)
+        .setPosition(entrance.worldX, entrance.worldY)
+        .setVisible(true);
+      this.drawLandmarkHint('Press E to enter', entrance.worldX, entrance.worldY - 54, 0x9ed9a5);
+      return;
+    }
+
+    this.hideLandmarkHint();
+    const material = this.chunkManager.findNearbyLandmarkMaterial(this.player.x, this.player.y, 88);
+    this.surfaceLandmarkMaterialTarget = material;
+    if (material) {
+      this.interactionHighlight
+        .setRadius(31)
+        .setPosition(material.worldX, material.worldY)
+        .setVisible(true);
+    }
+  }
+
+  private drawLandmarkHint(label: string, worldX: number, worldY: number, color: number): void {
+    this.landmarkHint.setText(label).setPosition(worldX, worldY).setVisible(true);
+    const paddingX = 13;
+    const paddingY = 7;
+    const width = Math.max(126, this.landmarkHint.width + paddingX * 2 + 18);
+    const height = Math.max(31, this.landmarkHint.height + paddingY * 2);
+    const left = worldX - width / 2;
+    const top = worldY - height / 2;
+    this.landmarkHintPanel.clear().setVisible(true);
+    this.landmarkHintPanel.fillStyle(0x07130f, 0.93);
+    this.landmarkHintPanel.fillRoundedRect(left, top, width, height, 9);
+    this.landmarkHintPanel.lineStyle(1.6, color, 0.94);
+    this.landmarkHintPanel.strokeRoundedRect(left, top, width, height, 9);
+    this.landmarkHintPanel.fillStyle(color, 0.95);
+    this.landmarkHintPanel.fillCircle(left + 14, worldY, 4.2);
+  }
+
+  private hideLandmarkHint(): void {
+    this.landmarkHintPanel.clear().setVisible(false);
+    this.landmarkHint.setVisible(false);
+  }
+
+  private async enterLandmarkInterior(
+    landmark: ProceduralLandmark,
+    returnWorldX: number,
+    returnWorldY: number,
+    markDirty = true,
+    continueExistingLoading = false
+  ): Promise<void> {
+    if (this.caveTransitionInProgress || !isLandmarkInteriorType(landmark.type)) {
+      return;
+    }
+
+    this.caveTransitionInProgress = true;
+    this.worldReady = false;
+    this.ambientAudio?.setSwimming(false, false, false);
+    this.footstepElapsedMs = 0;
+    this.showTerrainLoading(continueExistingLoading);
+    this.cancelHarvesting();
+    this.nearbyLandmarkEntrance = null;
+    this.nearbyCaveEntrance = null;
+    this.landmarkInteriorExitNearby = false;
+    this.surfaceLandmarkMaterialTarget = null;
+    this.interactionHighlight.setVisible(false);
+    this.hideLandmarkHint();
+    this.dropHighlight.setVisible(false);
+    this.dropHintPanel.clear().setVisible(false);
+    this.dropHint.setVisible(false);
+
+    try {
+      await this.waitForTerrainLoadingPaint();
+      const layout = generateLandmarkInterior(this.worldSeed, landmark);
+      const origin = landmarkInteriorWorldOrigin(this.worldSeed, landmark);
+      this.updateLoadingProgress(58, 100, `Growing ${layout.themeLabel}`);
+      await this.waitForTerrainLoadingPaint();
+
+      this.activeLandmarkInterior = {
+        landmark: landmark as ProceduralLandmark & { readonly type: LandmarkInteriorType },
+        layout,
+        origin,
+        materialBuckets: createLandmarkMaterialBuckets(layout.materialNodes),
+        returnWorldX,
+        returnWorldY
+      };
+      this.setCaveLightingActive(true);
+      this.caveFogOverlay.classList.remove('is-visible');
+      this.caveGraphics.clear().setVisible(false);
+      this.caveLavaGraphics.clear().setVisible(false);
+      this.caveEntranceLightGraphics.clear().setVisible(false);
+      const spawn = landmarkInteriorWorldTilePosition(origin, layout.spawnTileX, layout.spawnTileY);
+      this.player.setPosition(spawn.x, spawn.y);
+      this.cameras.main.centerOn(spawn.x, spawn.y);
+      this.isSwimming = false;
+      this.isSwimmingInSwampWater = false;
+      this.terrainSurface = layout.floorLabel;
+      this.minimapOverlay.setVisible(false);
+      this.drawActiveLandmarkInterior();
+      this.lastLandmarkInteriorAccentFrame = Number.NEGATIVE_INFINITY;
+      this.updateLandmarkInteriorAccents(this.time.now, true);
+      this.updateLoadingProgress(91, 100, `Entering ${layout.themeLabel}`);
+      await this.waitForTerrainLoadingPaint();
+      this.updateLandmarkInteriorInteraction(true);
+      this.updateDropInteraction(0, true);
+      this.updatePlayerAvatar(0, false);
+      if (markDirty) {
+        this.markSaveDirty();
+      }
+      await this.finishTerrainLoading();
+    } catch (error) {
+      this.activeLandmarkInterior = null;
+      this.landmarkInteriorGraphics.clear().setVisible(false);
+      this.landmarkInteriorAccentGraphics.clear().setVisible(false);
+      this.setCaveLightingActive(false);
+      this.player.setPosition(returnWorldX, returnWorldY);
+      this.cameras.main.centerOn(returnWorldX, returnWorldY);
+      this.currentTopography = this.chunkManager.getTopographyAt(returnWorldX, returnWorldY);
+      this.terrainSurface = this.currentTopography.surface;
+      this.updateInteractionTarget(true);
+      this.updateCaveEntranceInteraction(true);
+      this.updateLandmarkEntranceInteraction(true);
+      this.recoverFromTerrainLoadingFailure('enter the landmark', error);
+    }
+  }
+
+  private async exitLandmarkInterior(): Promise<void> {
+    const interior = this.activeLandmarkInterior;
+    if (!interior || this.caveTransitionInProgress) {
+      return;
+    }
+
+    this.caveTransitionInProgress = true;
+    this.worldReady = false;
+    this.ambientAudio?.setSwimming(false, false, false);
+    this.footstepElapsedMs = 0;
+    this.showTerrainLoading();
+    this.cancelHarvesting();
+    this.hideLandmarkHint();
+
+    try {
+      await this.waitForTerrainLoadingPaint();
+      await this.chunkManager.prime(interior.returnWorldX, interior.returnWorldY, (progress) => {
+        const ratio = progress.completed / Math.max(1, progress.total);
+        this.updateLoadingProgress(8 + ratio * 82, 100, 'Returning to the wilderness');
+      });
+      this.updateLoadingProgress(93, 100, 'Returning to the wilderness');
+      await this.waitForTerrainLoadingPaint();
+
+      this.activeLandmarkInterior = null;
+      this.landmarkInteriorExitNearby = false;
+      this.interiorLandmarkMaterialTarget = null;
+      this.interiorLandmarkHarvestMaterial = null;
+      this.landmarkInteriorGraphics.clear().setVisible(false);
+      this.landmarkInteriorAccentGraphics.clear().setVisible(false);
+      this.setCaveLightingActive(false);
+      this.player.setPosition(interior.returnWorldX, interior.returnWorldY);
+      this.cameras.main.centerOn(this.player.x, this.player.y);
+      this.currentTopography = this.chunkManager.getTopographyAt(this.player.x, this.player.y);
+      this.terrainSurface = this.currentTopography.surface;
+      this.placeableManager.refresh(this.player.x, this.player.y);
+      this.updateSwimmingState(true);
+      this.chunkManager.update(this.player.x, this.player.y, this.time.now);
+      this.updateInteractionTarget(true);
+      this.updateCaveEntranceInteraction(true);
+      this.updateLandmarkEntranceInteraction(true);
+      this.updateDropInteraction(0, true);
+      this.minimapOverlay.setVisible(true);
+      this.lastMinimapUpdateMs = Number.NEGATIVE_INFINITY;
+      this.lastMinimapTileX = Number.NaN;
+      this.lastMinimapTileY = Number.NaN;
+      this.updateMinimap(0, true);
+      this.updatePlayerAvatar(0, false);
+      this.markSaveDirty();
+      await this.finishTerrainLoading();
+    } catch (error) {
+      this.recoverFromTerrainLoadingFailure('leave the landmark', error);
+    }
+  }
+
+  private landmarkInteriorRoomPoints(
+    room: LandmarkInteriorRoom,
+    origin: LandmarkInteriorWorldPoint,
+    radiusScale = 1
+  ): CaveRenderPoint[] {
+    const points: CaveRenderPoint[] = [];
+    const pointCount = room.shape === 'ellipse' ? 58 : 48;
+    const cosine = Math.cos(room.rotation);
+    const sine = Math.sin(room.rotation);
+    for (let index = 0; index < pointCount; index += 1) {
+      const angle = index / pointCount * Math.PI * 2;
+      let localX: number;
+      let localY: number;
+      if (room.shape === 'ellipse') {
+        const boundary = 1
+          + Math.sin(angle * room.edgeFrequency + room.edgePhase) * room.edgeRoughness
+          + Math.sin(angle * (room.edgeFrequency + 2) - room.edgePhase * 0.63) * room.edgeRoughness * 0.38;
+        localX = Math.cos(angle) * room.radiusX * boundary * radiusScale;
+        localY = Math.sin(angle) * room.radiusY * boundary * radiusScale;
+      } else {
+        // A high-order superellipse gives the watchtower's rooms genuinely square masonry
+        // corners while retaining the seeded lean and weathered edge variation.
+        const exponent = 0.24;
+        const edge = 1 + Math.sin(angle * room.edgeFrequency + room.edgePhase) * room.edgeRoughness * 0.25;
+        localX = Math.sign(Math.cos(angle)) * Math.abs(Math.cos(angle)) ** exponent
+          * room.radiusX * edge * radiusScale;
+        localY = Math.sign(Math.sin(angle)) * Math.abs(Math.sin(angle)) ** exponent
+          * room.radiusY * edge * radiusScale;
+      }
+      points.push({
+        x: origin.x + (room.x + localX * cosine - localY * sine) * WORLD_TILE_SIZE,
+        y: origin.y + (room.y + localX * sine + localY * cosine) * WORLD_TILE_SIZE
+      });
+    }
+    return points;
+  }
+
+  private drawActiveLandmarkInterior(): void {
+    const interior = this.activeLandmarkInterior;
+    if (!interior) {
+      return;
+    }
+    const graphics = this.landmarkInteriorGraphics;
+    const { layout, origin } = interior;
+    const palette = layout.palette;
+    graphics.clear().setVisible(true);
+    graphics.fillStyle(palette.background, 1);
+    graphics.fillRect(
+      origin.x - WORLD_TILE_SIZE * 2,
+      origin.y - WORLD_TILE_SIZE * 2,
+      (layout.width + 4) * WORLD_TILE_SIZE,
+      (layout.height + 4) * WORLD_TILE_SIZE
+    );
+
+    // Passages are rendered beneath chambers in four concentric, rounded layers. The same
+    // analytic centerlines drive collision, so a corridor never reads as a disconnected icon.
+    const drawPassages = (extraWidth: number, color: number, alpha: number): void => {
+      layout.terrain.passages.forEach((passage) => {
+        for (let index = 1; index < passage.points.length; index += 1) {
+          const from = passage.points[index - 1];
+          const to = passage.points[index];
+          const averageRadius = (from.radius + to.radius) * 0.5 * WORLD_TILE_SIZE;
+          graphics.lineStyle(Math.max(2, averageRadius * 2 + extraWidth), color, alpha);
+          graphics.lineBetween(
+            origin.x + from.x * WORLD_TILE_SIZE,
+            origin.y + from.y * WORLD_TILE_SIZE,
+            origin.x + to.x * WORLD_TILE_SIZE,
+            origin.y + to.y * WORLD_TILE_SIZE
+          );
+        }
+        passage.points.forEach((point) => {
+          graphics.fillStyle(color, alpha);
+          graphics.fillCircle(
+            origin.x + point.x * WORLD_TILE_SIZE,
+            origin.y + point.y * WORLD_TILE_SIZE,
+            point.radius * WORLD_TILE_SIZE + extraWidth * 0.5
+          );
+        });
+      });
+    };
+    drawPassages(52, palette.wallShadow, 1);
+    drawPassages(34, palette.wallBase, 1);
+    drawPassages(16, palette.wallHighlight, 0.96);
+    drawPassages(-2, palette.floorBase, 1);
+
+    layout.terrain.rooms.forEach((room) => {
+      graphics.fillStyle(palette.wallShadow, 1);
+      graphics.fillPoints(this.landmarkInteriorRoomPoints(room, origin, 1.065), true);
+      graphics.fillStyle(palette.wallBase, 1);
+      graphics.fillPoints(this.landmarkInteriorRoomPoints(room, origin, 1.035), true);
+      graphics.fillStyle(palette.wallHighlight, 0.94);
+      graphics.fillPoints(this.landmarkInteriorRoomPoints(room, origin, 1.014), true);
+      graphics.fillStyle(palette.floorBase, 1);
+      graphics.fillPoints(this.landmarkInteriorRoomPoints(room, origin), true);
+    });
+
+    this.drawLandmarkInteriorFloorTexture(interior);
+    layout.decorations.filter((decoration) => decoration.layer === 'floor')
+      .forEach((decoration) => this.drawLandmarkInteriorDecoration(decoration, interior));
+    this.drawLandmarkInteriorExit(interior);
+    layout.decorations.filter((decoration) => decoration.layer === 'object')
+      .forEach((decoration) => this.drawLandmarkInteriorDecoration(decoration, interior));
+    layout.materialNodes.forEach((material) => {
+      if (this.sessionWorldState.isLandmarkMaterialHarvested(material.id)) {
+        this.drawHarvestedLandmarkMaterial(material, interior);
+      } else {
+        this.drawLandmarkInteriorMaterial(material, interior);
+      }
+    });
+    layout.decorations.filter((decoration) => decoration.layer === 'overhead')
+      .forEach((decoration) => this.drawLandmarkInteriorDecoration(decoration, interior));
+  }
+
+  private landmarkInteriorVisualRandom(
+    interior: ActiveLandmarkInterior,
+    tileX: number,
+    tileY: number,
+    salt: number
+  ): number {
+    return randomAtTile(
+      this.worldSeed,
+      interior.landmark.centerTileX * 131 + tileX * 17,
+      interior.landmark.centerTileY * 137 + tileY * 19,
+      salt
+    );
+  }
+
+  private drawLandmarkInteriorFloorTexture(interior: ActiveLandmarkInterior): void {
+    const { layout, origin } = interior;
+    const graphics = this.landmarkInteriorGraphics;
+    for (let tileY = 0; tileY < layout.height; tileY += 1) {
+      for (let tileX = 0; tileX < layout.width; tileX += 1) {
+        if (!layout.floorTiles[tileY]?.[tileX]) {
+          continue;
+        }
+        const random = this.landmarkInteriorVisualRandom(interior, tileX, tileY, 0x6b93);
+        const centerX = origin.x + (tileX + 0.5) * WORLD_TILE_SIZE;
+        const centerY = origin.y + (tileY + 0.5) * WORLD_TILE_SIZE;
+        if (layout.themeId === 'watchtower') {
+          const plankY = origin.y + tileY * WORLD_TILE_SIZE + 8 + (tileX % 3) * 3;
+          graphics.lineStyle(1.4, layout.palette.floorDetail, 0.25 + random * 0.22);
+          graphics.lineBetween(
+            origin.x + tileX * WORLD_TILE_SIZE + 3,
+            plankY,
+            origin.x + (tileX + 1) * WORLD_TILE_SIZE - 3,
+            plankY + (random - 0.5) * 3
+          );
+          graphics.lineStyle(1, layout.palette.wallShadow, 0.34);
+          graphics.lineBetween(
+            origin.x + tileX * WORLD_TILE_SIZE,
+            origin.y + (tileY + 1) * WORLD_TILE_SIZE - 3,
+            origin.x + (tileX + 1) * WORLD_TILE_SIZE,
+            origin.y + (tileY + 1) * WORLD_TILE_SIZE - 3
+          );
+        } else if (random > 0.43) {
+          const angle = this.landmarkInteriorVisualRandom(interior, tileX, tileY, 0x73d1) * Math.PI * 2;
+          const length = 5 + random * 12;
+          graphics.lineStyle(1.2, layout.palette.floorDetail, 0.16 + random * 0.2);
+          graphics.lineBetween(
+            centerX - Math.cos(angle) * length,
+            centerY - Math.sin(angle) * length * 0.35,
+            centerX + Math.cos(angle) * length,
+            centerY + Math.sin(angle) * length * 0.35
+          );
+          if (layout.themeId === 'hollow-tree' && random > 0.78) {
+            graphics.lineStyle(1.4, layout.palette.floorAccent, 0.34);
+            graphics.strokeEllipse(centerX, centerY, 11 + random * 9, 5 + random * 5);
+          }
+        }
+      }
+    }
+  }
+
+  private landmarkInteriorDecorationPosition(
+    decoration: LandmarkInteriorDecoration,
+    interior: ActiveLandmarkInterior
+  ): LandmarkInteriorWorldPoint {
+    return landmarkInteriorWorldTilePosition(interior.origin, decoration.tileX, decoration.tileY);
+  }
+
+  private rotatedInteriorPoint(
+    centerX: number,
+    centerY: number,
+    offsetX: number,
+    offsetY: number,
+    rotation: number
+  ): CaveRenderPoint {
+    const cosine = Math.cos(rotation);
+    const sine = Math.sin(rotation);
+    return {
+      x: centerX + offsetX * cosine - offsetY * sine,
+      y: centerY + offsetX * sine + offsetY * cosine
+    };
+  }
+
+  private drawLandmarkInteriorDecoration(
+    decoration: LandmarkInteriorDecoration,
+    interior: ActiveLandmarkInterior
+  ): void {
+    const graphics = this.landmarkInteriorGraphics;
+    const position = this.landmarkInteriorDecorationPosition(decoration, interior);
+    const scale = decoration.scale;
+    const alpha = decoration.opacity;
+    const palette = interior.layout.palette;
+    const point = (x: number, y: number): CaveRenderPoint => this.rotatedInteriorPoint(
+      position.x, position.y, x * scale, y * scale, decoration.rotation
+    );
+    const line = (fromX: number, fromY: number, toX: number, toY: number, width: number, color: number, opacity = alpha): void => {
+      const from = point(fromX, fromY);
+      const to = point(toX, toY);
+      graphics.lineStyle(width * scale, color, opacity);
+      graphics.lineBetween(from.x, from.y, to.x, to.y);
+    };
+
+    switch (decoration.kind) {
+      case 'growth-rings':
+        graphics.lineStyle(1.4 * scale, palette.floorDetail, alpha * 0.7);
+        for (let ring = 0; ring < 3; ring += 1) {
+          graphics.strokeEllipse(position.x, position.y, (25 + ring * 13) * scale, (10 + ring * 6) * scale);
+        }
+        break;
+      case 'root-ridge':
+      case 'bark-rib':
+        line(-30, 0, 30, 0, decoration.kind === 'root-ridge' ? 10 : 7, palette.wallBase);
+        line(-27, -2, 27, -2, 2, palette.wallHighlight, alpha * 0.74);
+        line(-21, 3, 16, 3, 1.3, palette.wallShadow, alpha * 0.82);
+        break;
+      case 'sap-runnel':
+      case 'rivulet': {
+        const color = decoration.kind === 'sap-runnel' ? palette.primaryAccent : palette.water;
+        const a = point(-26, -3);
+        const b = point(-5, 4);
+        const c = point(24, -2);
+        graphics.lineStyle(7 * scale, color, alpha * 0.45);
+        graphics.strokePoints([a, b, c], false);
+        graphics.lineStyle(2 * scale, palette.wallHighlight, alpha * 0.58);
+        graphics.strokePoints([a, b, c], false);
+        break;
+      }
+      case 'spore-cluster':
+      case 'firefly-motes':
+        for (let mote = 0; mote < 7; mote += 1) {
+          const angle = decoration.rotation + mote * 2.399;
+          const distance = (6 + (mote % 3) * 7) * scale;
+          graphics.fillStyle(palette.glow, alpha * (0.45 + (mote % 2) * 0.3));
+          graphics.fillCircle(position.x + Math.cos(angle) * distance, position.y + Math.sin(angle) * distance, (1.8 + mote % 3) * scale);
+        }
+        break;
+      case 'hanging-vines':
+        for (let vine = -2; vine <= 2; vine += 1) {
+          line(vine * 7, -27, vine * 6 + (vine % 2) * 4, 26, 2.5, palette.secondaryAccent, alpha * 0.85);
+          const leaf = point(vine * 6 + (vine % 2) * 3, vine * 7);
+          graphics.fillStyle(palette.glow, alpha * 0.35);
+          graphics.fillEllipse(leaf.x, leaf.y, 9 * scale, 4 * scale);
+        }
+        break;
+      case 'shallow-pool':
+        graphics.fillStyle(palette.water, alpha * 0.46);
+        graphics.fillEllipse(position.x, position.y, 68 * scale, 37 * scale);
+        graphics.lineStyle(2 * scale, palette.mist, alpha * 0.55);
+        graphics.strokeEllipse(position.x, position.y, 62 * scale, 31 * scale);
+        graphics.lineStyle(1 * scale, palette.wallHighlight, alpha * 0.35);
+        graphics.strokeEllipse(position.x - 9 * scale, position.y - 2 * scale, 25 * scale, 8 * scale);
+        break;
+      case 'wet-rock':
+      case 'rubble':
+        for (let rock = 0; rock < 5; rock += 1) {
+          const angle = decoration.rotation + rock * 1.73;
+          const distance = (rock % 3) * 8 * scale;
+          graphics.fillStyle(rock % 2 ? palette.wallBase : palette.wallHighlight, alpha * 0.86);
+          graphics.fillEllipse(
+            position.x + Math.cos(angle) * distance,
+            position.y + Math.sin(angle) * distance,
+            (13 + rock % 3 * 4) * scale,
+            (7 + rock % 2 * 4) * scale
+          );
+        }
+        break;
+      case 'crystal-shard':
+        for (let shard = -1; shard <= 1; shard += 1) {
+          const base = point(shard * 8, 8);
+          const left = point(shard * 8 - 5, 8);
+          const tip = point(shard * 9, -17 - Math.abs(shard) * 6);
+          const right = point(shard * 8 + 5, 8);
+          graphics.fillStyle(shard === 0 ? palette.primaryAccent : palette.glow, alpha * 0.72);
+          graphics.fillPoints([left, tip, right, base], true);
+          graphics.lineStyle(1.2, palette.mist, alpha * 0.8);
+          graphics.strokePoints([left, tip, right], false);
+        }
+        break;
+      case 'moss-bank':
+        for (let tuft = -3; tuft <= 3; tuft += 1) {
+          const tuftPosition = point(tuft * 7, Math.abs(tuft) * 2);
+          graphics.fillStyle(tuft % 2 ? palette.secondaryAccent : palette.glow, alpha * 0.62);
+          graphics.fillEllipse(tuftPosition.x, tuftPosition.y, 13 * scale, (9 + tuft % 3) * scale);
+        }
+        break;
+      case 'mushroom-cluster':
+        for (let mushroom = -2; mushroom <= 2; mushroom += 1) {
+          const stem = point(mushroom * 9, 7);
+          const cap = point(mushroom * 9, -2 - Math.abs(mushroom) * 2);
+          line(mushroom * 9, 8, mushroom * 9, -2 - Math.abs(mushroom) * 2, 3, palette.mist, alpha * 0.75);
+          graphics.fillStyle(mushroom % 2 ? palette.glow : palette.primaryAccent, alpha * 0.82);
+          graphics.fillEllipse(cap.x, cap.y, (14 - Math.abs(mushroom)) * scale, 7 * scale);
+          graphics.fillStyle(palette.wallShadow, alpha * 0.4);
+          graphics.fillCircle(stem.x, stem.y, 2 * scale);
+        }
+        break;
+      case 'mist-plume':
+        for (let cloud = 0; cloud < 4; cloud += 1) {
+          const cloudPoint = point((cloud - 1.5) * 12, Math.sin(cloud) * 6);
+          graphics.fillStyle(palette.mist, alpha * (0.08 + cloud * 0.025));
+          graphics.fillEllipse(cloudPoint.x, cloudPoint.y, 31 * scale, 15 * scale);
+        }
+        break;
+      case 'timber-beam':
+        line(-31, 0, 31, 0, 12, palette.wallShadow);
+        line(-28, -2, 28, -2, 7, palette.floorAccent);
+        for (let bolt = -2; bolt <= 2; bolt += 1) {
+          const boltPoint = point(bolt * 13, -2);
+          graphics.fillStyle(palette.secondaryAccent, alpha);
+          graphics.fillCircle(boltPoint.x, boltPoint.y, 2.3 * scale);
+        }
+        break;
+      case 'gear-train':
+        for (let gear = 0; gear < 3; gear += 1) {
+          const gearPoint = point((gear - 1) * 15, (gear % 2) * 7);
+          const radius = (9 + gear * 2) * scale;
+          graphics.lineStyle(3 * scale, palette.secondaryAccent, alpha);
+          graphics.strokeCircle(gearPoint.x, gearPoint.y, radius);
+          graphics.strokeCircle(gearPoint.x, gearPoint.y, radius * 0.32);
+          for (let spoke = 0; spoke < 6; spoke += 1) {
+            graphics.lineBetween(
+              gearPoint.x + Math.cos(spoke * Math.PI / 3) * radius * 0.35,
+              gearPoint.y + Math.sin(spoke * Math.PI / 3) * radius * 0.35,
+              gearPoint.x + Math.cos(spoke * Math.PI / 3) * radius * 0.86,
+              gearPoint.y + Math.sin(spoke * Math.PI / 3) * radius * 0.86
+            );
+          }
+        }
+        break;
+      case 'map-table': {
+        const corners = [point(-27, -16), point(27, -16), point(27, 16), point(-27, 16)];
+        graphics.fillStyle(palette.wallShadow, alpha);
+        graphics.fillPoints(corners, true);
+        const paper = [point(-22, -12), point(22, -10), point(19, 12), point(-20, 10)];
+        graphics.fillStyle(palette.floorDetail, alpha * 0.92);
+        graphics.fillPoints(paper, true);
+        line(-16, -4, 12, 5, 1.4, palette.wallBase, alpha * 0.8);
+        line(-12, 5, 8, -5, 1, palette.primaryAccent, alpha * 0.7);
+        break;
+      }
+      case 'lens-stand': {
+        line(0, 20, 0, -10, 5, palette.primaryAccent);
+        line(-18, 20, 18, 20, 5, palette.wallShadow);
+        const lens = point(0, -13);
+        graphics.fillStyle(palette.glow, alpha * 0.28);
+        graphics.fillCircle(lens.x, lens.y, 16 * scale);
+        graphics.lineStyle(4 * scale, palette.secondaryAccent, alpha);
+        graphics.strokeCircle(lens.x, lens.y, 13 * scale);
+        break;
+      }
+      case 'book-stack':
+        for (let book = 0; book < 4; book += 1) {
+          const left = point(-18 + (book % 2) * 3, 12 - book * 7);
+          graphics.fillStyle(book % 2 ? palette.primaryAccent : palette.secondaryAccent, alpha * 0.78);
+          graphics.fillRoundedRect(left.x, left.y, (35 - book * 2) * scale, 6 * scale, 2 * scale);
+        }
+        break;
+      case 'broken-stair':
+        for (let step = 0; step < 5; step += 1) {
+          const stepStart = point(-27 + step * 9, 14 - step * 7);
+          const stepEnd = point(18 + step * 3, 14 - step * 7);
+          graphics.lineStyle((9 - step * 0.7) * scale, palette.floorAccent, alpha * (1 - step * 0.1));
+          graphics.lineBetween(stepStart.x, stepStart.y, stepEnd.x, stepEnd.y);
+        }
+        break;
+      case 'faded-banner': {
+        line(-18, -24, 18, -24, 4, palette.primaryAccent, alpha * 0.7);
+        const cloth = [point(-14, -21), point(14, -21), point(10, 23), point(0, 15), point(-12, 24)];
+        graphics.fillStyle(palette.primaryAccent, alpha * 0.42);
+        graphics.fillPoints(cloth, true);
+        line(0, -15, 0, 10, 2, palette.wallHighlight, alpha * 0.34);
+        break;
+      }
+    }
+  }
+
+  private drawLandmarkInteriorExit(interior: ActiveLandmarkInterior): void {
+    const { layout, origin } = interior;
+    const position = landmarkInteriorWorldTilePosition(origin, layout.exit.tileX, layout.exit.tileY);
+    const graphics = this.landmarkInteriorGraphics;
+    const palette = layout.palette;
+    graphics.fillStyle(palette.wallShadow, 0.94);
+    graphics.fillEllipse(position.x, position.y + 14, 112, 54);
+    graphics.lineStyle(8, palette.wallBase, 1);
+    graphics.strokeEllipse(position.x, position.y - 3, 92, 88);
+    graphics.lineStyle(3, palette.wallHighlight, 0.9);
+    graphics.strokeEllipse(position.x, position.y - 5, 75, 70);
+    for (let step = 0; step < 4; step += 1) {
+      graphics.fillStyle(step % 2 ? palette.floorAccent : palette.floorDetail, 0.78);
+      graphics.fillRoundedRect(position.x - 37 + step * 4, position.y + 7 + step * 9, 74 - step * 8, 7, 2);
+    }
+    if (layout.themeId === 'hidden-grotto') {
+      for (let stream = -3; stream <= 3; stream += 1) {
+        graphics.lineStyle(4 + Math.abs(stream % 2), palette.water, 0.52);
+        graphics.lineBetween(position.x + stream * 10, position.y - 36, position.x + stream * 8, position.y + 34);
+      }
+    } else if (layout.themeId === 'hollow-tree') {
+      graphics.lineStyle(5, palette.secondaryAccent, 0.58);
+      graphics.strokeEllipse(position.x, position.y - 3, 61, 60);
+    } else {
+      graphics.lineStyle(5, palette.primaryAccent, 0.7);
+      graphics.lineBetween(position.x - 34, position.y - 33, position.x - 34, position.y + 25);
+      graphics.lineBetween(position.x + 34, position.y - 33, position.x + 34, position.y + 25);
+    }
+  }
+
+  private drawLandmarkInteriorMaterial(
+    material: LandmarkInteriorMaterialNode,
+    interior: ActiveLandmarkInterior
+  ): void {
+    const graphics = this.landmarkInteriorGraphics;
+    const position = landmarkInteriorWorldTilePosition(interior.origin, material.tileX, material.tileY);
+    const scale = material.scale;
+    const color = RESOURCE_COLORS[material.resource];
+    const palette = interior.layout.palette;
+    const point = (x: number, y: number): CaveRenderPoint => this.rotatedInteriorPoint(
+      position.x, position.y, x * scale, y * scale, material.rotation
+    );
+    graphics.fillStyle(palette.wallShadow, 0.62);
+    graphics.fillEllipse(position.x + 3, position.y + 12, 62 * scale, 27 * scale);
+
+    switch (material.style) {
+      case 'ancient-wood-knot':
+        for (let ring = 3; ring >= 0; ring -= 1) {
+          graphics.fillStyle(ring % 2 ? palette.floorAccent : color, 0.88);
+          graphics.fillEllipse(position.x, position.y - ring * 1.5, (45 - ring * 8) * scale, (34 - ring * 6) * scale);
+        }
+        graphics.lineStyle(2, palette.wallHighlight, 0.72);
+        graphics.strokeEllipse(position.x, position.y, 34 * scale, 22 * scale);
+        break;
+      case 'amber-sap-well':
+        graphics.fillStyle(palette.wallBase, 1);
+        graphics.fillEllipse(position.x, position.y, 56 * scale, 32 * scale);
+        graphics.fillStyle(color, 0.9);
+        graphics.fillEllipse(position.x, position.y - 2, 42 * scale, 22 * scale);
+        graphics.fillStyle(palette.wallHighlight, 0.52);
+        graphics.fillEllipse(position.x - 8 * scale, position.y - 7 * scale, 14 * scale, 5 * scale);
+        break;
+      case 'glow-spore-bloom':
+      case 'luminous-mushroom-ring':
+        for (let bloom = 0; bloom < 7; bloom += 1) {
+          const angle = material.rotation + bloom * Math.PI * 2 / 7;
+          const distance = (bloom % 2 ? 17 : 25) * scale;
+          const x = position.x + Math.cos(angle) * distance;
+          const y = position.y + Math.sin(angle) * distance;
+          graphics.lineStyle(3 * scale, palette.mist, 0.72);
+          graphics.lineBetween(x, y + 7 * scale, x, y);
+          graphics.fillStyle(color, 0.9);
+          graphics.fillEllipse(x, y, (12 + bloom % 3 * 2) * scale, 7 * scale);
+        }
+        break;
+      case 'woven-vine-cluster':
+        for (let vine = -3; vine <= 3; vine += 1) {
+          const from = point(vine * 6, -25);
+          const to = point(vine * 6 + Math.sin(vine) * 8, 25);
+          graphics.lineStyle((3 + Math.abs(vine % 2)) * scale, color, 0.86);
+          graphics.lineBetween(from.x, from.y, to.x, to.y);
+        }
+        break;
+      case 'heartwood-core': {
+        const diamond = [point(0, -31), point(26, 0), point(0, 31), point(-26, 0)];
+        graphics.fillStyle(color, 0.92);
+        graphics.fillPoints(diamond, true);
+        graphics.lineStyle(4, palette.primaryAccent, 0.8);
+        graphics.strokePoints(diamond, true);
+        graphics.lineStyle(2, palette.wallHighlight, 0.74);
+        graphics.strokeCircle(position.x, position.y, 14 * scale);
+        break;
+      }
+      case 'damp-crystal-cluster':
+        for (let shard = -2; shard <= 2; shard += 1) {
+          const baseLeft = point(shard * 9 - 6, 15);
+          const tip = point(shard * 8, -22 - (2 - Math.abs(shard)) * 8);
+          const baseRight = point(shard * 9 + 6, 15);
+          graphics.fillStyle(shard % 2 ? color : palette.glow, 0.82);
+          graphics.fillPoints([baseLeft, tip, baseRight], true);
+          graphics.lineStyle(1.5, palette.mist, 0.84);
+          graphics.strokePoints([baseLeft, tip, baseRight], false);
+        }
+        break;
+      case 'moss-fiber-bank':
+        for (let tuft = -4; tuft <= 4; tuft += 1) {
+          const tuftPoint = point(tuft * 6, Math.abs(tuft) * 1.5);
+          graphics.fillStyle(tuft % 2 ? color : palette.secondaryAccent, 0.88);
+          graphics.fillEllipse(tuftPoint.x, tuftPoint.y, 14 * scale, (12 + tuft % 3 * 3) * scale);
+          graphics.lineStyle(1.4, palette.glow, 0.55);
+          graphics.lineBetween(tuftPoint.x, tuftPoint.y, tuftPoint.x + tuft * scale, tuftPoint.y - 13 * scale);
+        }
+        break;
+      case 'spring-stone-shelf':
+        for (let shelf = 0; shelf < 4; shelf += 1) {
+          const corners = [
+            point(-28 + shelf * 5, 17 - shelf * 9),
+            point(23 - shelf * 2, 15 - shelf * 9),
+            point(18 - shelf * 2, 23 - shelf * 9),
+            point(-24 + shelf * 5, 25 - shelf * 9)
+          ];
+          graphics.fillStyle(shelf % 2 ? color : palette.wallHighlight, 0.9);
+          graphics.fillPoints(corners, true);
+        }
+        break;
+      case 'map-cache': {
+        const chest = [point(-27, -16), point(27, -16), point(24, 20), point(-24, 20)];
+        graphics.fillStyle(palette.wallBase, 0.98);
+        graphics.fillPoints(chest, true);
+        graphics.lineStyle(4, palette.primaryAccent, 0.88);
+        graphics.strokePoints(chest, true);
+        for (let map = -2; map <= 2; map += 1) {
+          const mapPoint = point(map * 9, -20 + Math.abs(map) * 3);
+          graphics.fillStyle(color, 0.92);
+          graphics.fillRoundedRect(mapPoint.x - 5 * scale, mapPoint.y - 11 * scale, 10 * scale, 22 * scale, 3 * scale);
+          graphics.lineStyle(1.2, palette.wallShadow, 0.62);
+          graphics.strokeCircle(mapPoint.x, mapPoint.y, 4 * scale);
+        }
+        break;
+      }
+      case 'mechanical-salvage':
+        for (let gear = 0; gear < 4; gear += 1) {
+          const gearPoint = point((gear % 2) * 20 - 10, Math.floor(gear / 2) * 17 - 8);
+          const radius = (10 + (gear % 3) * 3) * scale;
+          graphics.lineStyle(4 * scale, color, 0.94);
+          graphics.strokeCircle(gearPoint.x, gearPoint.y, radius);
+          graphics.strokeCircle(gearPoint.x, gearPoint.y, radius * 0.3);
+          for (let spoke = 0; spoke < 5; spoke += 1) {
+            graphics.lineBetween(
+              gearPoint.x,
+              gearPoint.y,
+              gearPoint.x + Math.cos(spoke * Math.PI * 0.4) * radius,
+              gearPoint.y + Math.sin(spoke * Math.PI * 0.4) * radius
+            );
+          }
+        }
+        break;
+      case 'lens-case': {
+        graphics.fillStyle(palette.wallBase, 0.98);
+        graphics.fillRoundedRect(position.x - 34 * scale, position.y - 22 * scale, 68 * scale, 44 * scale, 7 * scale);
+        graphics.lineStyle(4 * scale, palette.primaryAccent, 0.86);
+        graphics.strokeRoundedRect(position.x - 34 * scale, position.y - 22 * scale, 68 * scale, 44 * scale, 7 * scale);
+        graphics.fillStyle(color, 0.42);
+        graphics.fillCircle(position.x, position.y, 19 * scale);
+        graphics.lineStyle(5 * scale, color, 0.96);
+        graphics.strokeCircle(position.x, position.y, 17 * scale);
+        graphics.fillStyle(palette.mist, 0.72);
+        graphics.fillEllipse(position.x - 6 * scale, position.y - 7 * scale, 10 * scale, 5 * scale);
+        break;
+      }
+    }
+  }
+
+  private drawHarvestedLandmarkMaterial(
+    material: LandmarkInteriorMaterialNode,
+    interior: ActiveLandmarkInterior
+  ): void {
+    const position = landmarkInteriorWorldTilePosition(interior.origin, material.tileX, material.tileY);
+    const graphics = this.landmarkInteriorGraphics;
+    graphics.fillStyle(interior.layout.palette.wallShadow, 0.52);
+    graphics.fillEllipse(position.x, position.y + 8, 44 * material.scale, 19 * material.scale);
+    graphics.lineStyle(2, interior.layout.palette.floorDetail, 0.32);
+    graphics.strokeEllipse(position.x, position.y + 5, 32 * material.scale, 13 * material.scale);
+    for (let chip = -2; chip <= 2; chip += 1) {
+      graphics.fillStyle(interior.layout.palette.wallHighlight, 0.3);
+      graphics.fillCircle(position.x + chip * 8 * material.scale, position.y + 6 + Math.abs(chip) * 2, 2.3 * material.scale);
+    }
+  }
+
+  private updateLandmarkInteriorAccents(time: number, force = false): void {
+    const interior = this.activeLandmarkInterior;
+    if (!interior || (!force && time - this.lastLandmarkInteriorAccentFrame < 66)) {
+      return;
+    }
+    this.lastLandmarkInteriorAccentFrame = time;
+    const graphics = this.landmarkInteriorAccentGraphics;
+    const palette = interior.layout.palette;
+    const pulse = 0.5 + Math.sin(time * 0.0024) * 0.5;
+    graphics.clear().setVisible(true);
+
+    interior.layout.materialNodes.forEach((material, index) => {
+      if (this.sessionWorldState.isLandmarkMaterialHarvested(material.id) || material.glowStrength < 0.3) {
+        return;
+      }
+      const position = landmarkInteriorWorldTilePosition(interior.origin, material.tileX, material.tileY);
+      const phase = 0.5 + Math.sin(time * 0.002 + index * 1.71) * 0.5;
+      graphics.fillStyle(RESOURCE_COLORS[material.resource], material.glowStrength * (0.035 + phase * 0.045));
+      graphics.fillCircle(position.x, position.y, (34 + phase * 12) * material.scale);
+      graphics.lineStyle(1.5, palette.mist, material.glowStrength * (0.25 + phase * 0.3));
+      graphics.strokeCircle(position.x, position.y, (18 + phase * 5) * material.scale);
+    });
+
+    interior.layout.decorations.forEach((decoration, index) => {
+      if (decoration.kind !== 'firefly-motes' && decoration.kind !== 'mist-plume') {
+        return;
+      }
+      const position = this.landmarkInteriorDecorationPosition(decoration, interior);
+      if (decoration.kind === 'firefly-motes') {
+        for (let mote = 0; mote < 4; mote += 1) {
+          const angle = time * 0.00035 * (mote % 2 ? 1 : -1) + index + mote * 1.57;
+          const distance = (12 + mote * 7) * decoration.scale;
+          graphics.fillStyle(palette.glow, 0.34 + pulse * 0.34);
+          graphics.fillCircle(position.x + Math.cos(angle) * distance, position.y + Math.sin(angle * 1.3) * distance * 0.55, 2.2 + mote % 2);
+        }
+      } else {
+        graphics.fillStyle(palette.mist, 0.035 + pulse * 0.025);
+        graphics.fillEllipse(position.x + Math.sin(time * 0.0007 + index) * 9, position.y, 84 * decoration.scale, 34 * decoration.scale);
+      }
+    });
+
+    const exitPosition = landmarkInteriorWorldTilePosition(interior.origin, interior.layout.exit.tileX, interior.layout.exit.tileY);
+    graphics.fillStyle(palette.ambientLight, palette.ambientLightStrength * (0.045 + pulse * 0.025));
+    graphics.fillCircle(exitPosition.x, exitPosition.y, 76 + pulse * 9);
+  }
+
+  private updateLandmarkInterior(time: number, delta: number): void {
+    if (this.worldMapOpen || this.inventoryOpen || this.craftingOpen || this.pauseMenuOpen) {
+      this.updateLandmarkInteriorFootsteps(delta, false);
+      this.cancelTonicDrinking();
+      this.updatePlayerAvatar(delta, false);
+      return;
+    }
+
+    const horizontal = Number(this.isDown('right')) - Number(this.isDown('left'));
+    const vertical = Number(this.isDown('down')) - Number(this.isDown('up'));
+    const wantsToMove = horizontal !== 0 || vertical !== 0;
+    let isMoving = false;
+    this.sampleMovementPerformance(time, delta, wantsToMove);
+    this.updateFacing(horizontal, vertical);
+    if (wantsToMove) {
+      const length = Math.hypot(horizontal, vertical);
+      const distance = PLAYER_SPEED * this.potionSpeedMultiplier() * delta / 1000;
+      isMoving = this.moveLandmarkInteriorPlayer(horizontal / length * distance, vertical / length * distance);
+      if (isMoving) {
+        this.markSaveDirty();
+      }
+    }
+    this.isSwimming = false;
+    this.isSwimmingInSwampWater = false;
+    this.footprintTrail.recordMovement(time, this.player.x, this.player.y, isMoving);
+    this.updateLandmarkInteriorFootsteps(delta, isMoving);
+    this.updateLandmarkInteriorAccents(time);
+    this.updateLandmarkInteriorInteraction();
+    this.updateDropInteraction(time);
+    this.updateTonicDrinking(delta);
+    this.updateLandmarkMaterialHarvesting(delta, true);
+    this.updatePlayerAvatar(delta, isMoving);
+  }
+
+  private moveLandmarkInteriorPlayer(deltaX: number, deltaY: number): boolean {
+    const interior = this.activeLandmarkInterior;
+    if (!interior) {
+      return false;
+    }
+    const canEnter = (worldX: number, worldY: number): boolean => landmarkInteriorContainsPoint(
+      interior.layout,
+      (worldX - interior.origin.x) / WORLD_TILE_SIZE,
+      (worldY - interior.origin.y) / WORLD_TILE_SIZE,
+      -PLAYER_SIZE * 0.28 / WORLD_TILE_SIZE
+    );
+    let moved = false;
+    if (canEnter(this.player.x + deltaX, this.player.y)) {
+      this.player.x += deltaX;
+      moved = moved || deltaX !== 0;
+    }
+    if (canEnter(this.player.x, this.player.y + deltaY)) {
+      this.player.y += deltaY;
+      moved = moved || deltaY !== 0;
+    }
+    return moved;
+  }
+
+  private updateLandmarkInteriorFootsteps(delta: number, isMoving: boolean): void {
+    if (!isMoving) {
+      this.footstepElapsedMs = 0;
+      return;
+    }
+    this.footstepElapsedMs += Math.max(0, delta);
+    if (this.footstepElapsedMs < FOOTSTEP_SOUND_INTERVAL_MS) {
+      return;
+    }
+    this.footstepElapsedMs %= FOOTSTEP_SOUND_INTERVAL_MS;
+    const interior = this.activeLandmarkInterior;
+    if (!interior) {
+      return;
+    }
+    this.ambientAudio?.playCaveFootstep(
+      Math.floor((this.player.x - interior.origin.x) / WORLD_TILE_SIZE),
+      Math.floor((this.player.y - interior.origin.y) / WORLD_TILE_SIZE)
+    );
+  }
+
+  private updateLandmarkInteriorInteraction(force = false): void {
+    const interior = this.activeLandmarkInterior;
+    if (!interior) {
+      return;
+    }
+    const exitPosition = landmarkInteriorWorldTilePosition(
+      interior.origin,
+      interior.layout.exit.tileX,
+      interior.layout.exit.tileY
+    );
+    const exitRadius = interior.layout.exit.interactionRadiusTiles * WORLD_TILE_SIZE;
+    this.landmarkInteriorExitNearby = Phaser.Math.Distance.Squared(
+      this.player.x,
+      this.player.y,
+      exitPosition.x,
+      exitPosition.y
+    ) <= exitRadius * exitRadius;
+
+    let nearest: LandmarkInteriorMaterialNode | null = null;
+    let nearestDistanceSquared = 88 * 88;
+    const localTileX = Math.floor((this.player.x - interior.origin.x) / WORLD_TILE_SIZE);
+    const localTileY = Math.floor((this.player.y - interior.origin.y) / WORLD_TILE_SIZE);
+    const bucketX = Math.floor(localTileX / CAVE_INTERACTION_BUCKET_SIZE_TILES);
+    const bucketY = Math.floor(localTileY / CAVE_INTERACTION_BUCKET_SIZE_TILES);
+    for (let candidateBucketY = bucketY - 1; candidateBucketY <= bucketY + 1; candidateBucketY += 1) {
+      for (let candidateBucketX = bucketX - 1; candidateBucketX <= bucketX + 1; candidateBucketX += 1) {
+        interior.materialBuckets.get(landmarkMaterialBucketKey(candidateBucketX, candidateBucketY))?.forEach((material) => {
+          if (this.sessionWorldState.isLandmarkMaterialHarvested(material.id)) {
+            return;
+          }
+          const position = landmarkInteriorWorldTilePosition(interior.origin, material.tileX, material.tileY);
+          const distanceSquared = Phaser.Math.Distance.Squared(this.player.x, this.player.y, position.x, position.y);
+          if (distanceSquared < nearestDistanceSquared) {
+            nearest = material;
+            nearestDistanceSquared = distanceSquared;
+          }
+        });
+      }
+    }
+    this.interiorLandmarkMaterialTarget = nearest;
+
+    if (this.landmarkInteriorExitNearby) {
+      this.interiorLandmarkMaterialTarget = null;
+      this.interactionHighlight.setRadius(43).setPosition(exitPosition.x, exitPosition.y).setVisible(true);
+      this.drawLandmarkHint('Press E to exit', exitPosition.x, exitPosition.y - 61, interior.layout.palette.wallHighlight);
+    } else if (nearest) {
+      const material = nearest as LandmarkInteriorMaterialNode;
+      const position = landmarkInteriorWorldTilePosition(interior.origin, material.tileX, material.tileY);
+      this.interactionHighlight.setRadius(34).setPosition(position.x, position.y).setVisible(true);
+      this.hideLandmarkHint();
+    } else {
+      this.interactionHighlight.setVisible(false);
+      this.hideLandmarkHint();
+    }
+  }
+
+  private landmarkMaterialHarvestDuration(resource: ResourceType): number {
+    switch (resource) {
+      case ResourceType.Heartwood:
+      case ResourceType.DampCrystal:
+      case ResourceType.SpringStone:
+      case ResourceType.MechanicalParts:
+      case ResourceType.LensGlass:
+      case ResourceType.Starstone:
+      case ResourceType.MeteorIron:
+      case ResourceType.RuneStone:
+      case ResourceType.AncientFragments:
+      case ResourceType.RelicMaterials:
+      case ResourceType.BoneFragments:
+      case ResourceType.AncientRemains:
+        return 1450;
+      case ResourceType.AmberSap:
+      case ResourceType.GlowSpores:
+      case ResourceType.VineFiber:
+      case ResourceType.MossFiber:
+      case ResourceType.LuminousMushrooms:
+      case ResourceType.MapFragments:
+      case ResourceType.GlowingFragments:
+      case ResourceType.FossilResin:
+        return 1050;
+      default:
+        return 1250;
+    }
+  }
+
+  private updateLandmarkMaterialHarvesting(delta: number, insideInterior: boolean): void {
+    const target = insideInterior
+      ? this.interiorLandmarkMaterialTarget
+      : this.surfaceLandmarkMaterialTarget;
+    if (this.drinkingPotion) {
+      this.cancelHarvesting(false);
+      return;
+    }
+    if (this.harvestRequiresControlRelease) {
+      if (!this.isControlDown('harvestAttack')) {
+        this.harvestRequiresControlRelease = false;
+      }
+      return;
+    }
+    if (this.inventoryOpen || this.craftingOpen || this.placedObjectOverlay.isOpen
+      || !this.isControlDown('harvestAttack') || !target) {
+      if (insideInterior ? this.interiorLandmarkHarvestMaterial : this.surfaceLandmarkHarvestMaterial) {
+        this.cancelHarvesting();
+      }
+      return;
+    }
+
+    const current = insideInterior
+      ? this.interiorLandmarkHarvestMaterial
+      : this.surfaceLandmarkHarvestMaterial;
+    if (!current || current.id !== target.id) {
+      this.cancelHarvesting();
+      if (insideInterior) {
+        this.interiorLandmarkHarvestMaterial = target as LandmarkInteriorMaterialNode;
+      } else {
+        this.surfaceLandmarkHarvestMaterial = target as LandmarkMaterialNode;
+      }
+    }
+
+    const durationMs = this.landmarkMaterialHarvestDuration(target.resource) / this.hasteMultiplier();
+    this.harvestElapsedMs = Math.min(durationMs, this.harvestElapsedMs + Math.max(0, delta));
+    const progress = this.harvestElapsedMs / durationMs;
+    const position = insideInterior
+      ? landmarkInteriorWorldTilePosition(
+        this.activeLandmarkInterior!.origin,
+        (target as LandmarkInteriorMaterialNode).tileX,
+        (target as LandmarkInteriorMaterialNode).tileY
+      )
+      : { x: (target as LandmarkMaterialNode).worldX, y: (target as LandmarkMaterialNode).worldY };
+    this.drawHarvestProgressAt(position.x, position.y - 35, progress);
+    if (progress < 1) {
+      return;
+    }
+
+    this.cancelHarvesting();
+    this.harvestRequiresControlRelease = true;
+    const amount = Math.max(1, target.yieldAmount);
+    if (!this.inventory.canAdd(target.resource, amount)) {
+      this.showWorldFeedback(this.player.x, this.player.y - 28, 'Inventory full');
+      return;
+    }
+    if (!this.sessionWorldState.harvestLandmarkMaterial(target.id)) {
+      return;
+    }
+    this.inventory.add(target.resource, amount);
+    this.showWorldFeedback(
+      this.player.x,
+      this.player.y - 28,
+      `+ ${amount} ${resourceLabel(target.resource)}`
+    );
+    this.handleInventoryChanged();
+
+    if (insideInterior) {
+      this.drawActiveLandmarkInterior();
+      this.updateLandmarkInteriorAccents(this.time.now, true);
+      this.updateLandmarkInteriorInteraction(true);
+    } else {
+      this.chunkManager.refreshLandmarkMaterial(target.id);
+      this.updateLandmarkEntranceInteraction(true);
+    }
+  }
+
   private async enterCave(
     entrance: CaveEntrance,
     returnWorldX: number,
@@ -2632,12 +4113,15 @@ export class AdventureScene extends Phaser.Scene {
     this.showTerrainLoading(continueExistingLoading);
     this.cancelHarvesting();
     this.nearbyCaveEntrance = null;
+    this.nearbyLandmarkEntrance = null;
+    this.surfaceLandmarkMaterialTarget = null;
     this.caveExitTarget = null;
     this.lastCaveLavaFrame = Number.NEGATIVE_INFINITY;
     this.dropHighlight.setVisible(false);
     this.dropHintPanel.clear().setVisible(false);
     this.dropHint.setVisible(false);
     this.interactionHighlight.setVisible(false);
+    this.hideLandmarkHint();
 
     try {
       await this.waitForTerrainLoadingPaint();
@@ -2734,6 +4218,7 @@ export class AdventureScene extends Phaser.Scene {
       this.chunkManager.update(this.player.x, this.player.y);
       this.updateInteractionTarget(true);
       this.updateCaveEntranceInteraction(true);
+      this.updateLandmarkEntranceInteraction(true);
       this.updateDropInteraction(0, true);
       this.minimapOverlay.setVisible(true);
       this.lastMinimapUpdateMs = Number.NEGATIVE_INFINITY;
@@ -3548,6 +5033,7 @@ export class AdventureScene extends Phaser.Scene {
       }
     }
     this.updateSwimmingState();
+    this.footprintTrail.recordMovement(time, this.player.x, this.player.y, isMoving && !this.isSwimming);
     this.updateCaveFootsteps(delta, isMoving);
     if (this.gameSettings.video.quality.animateLava) {
       this.updateCaveLava(time);
@@ -3859,6 +5345,14 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private updateHarvesting(delta: number): void {
+    if (this.nearbyLandmarkEntrance) {
+      this.cancelHarvesting();
+      return;
+    }
+    if (this.surfaceLandmarkMaterialTarget) {
+      this.updateLandmarkMaterialHarvesting(delta, false);
+      return;
+    }
     if (this.drinkingPotion) {
       this.cancelHarvesting(false);
       return;
@@ -3972,6 +5466,8 @@ export class AdventureScene extends Phaser.Scene {
 
     this.harvestTarget = null;
     this.caveHarvestOre = null;
+    this.surfaceLandmarkHarvestMaterial = null;
+    this.interiorLandmarkHarvestMaterial = null;
     this.harvestElapsedMs = 0;
     this.harvestContactSoundCount = 0;
     if (clearProgress) {
@@ -4215,6 +5711,9 @@ export class AdventureScene extends Phaser.Scene {
       if (item === PlaceableId.TrailLantern) {
         return 0xffc861;
       }
+      if (item === PlaceableId.TravelStone) {
+        return 0x62e6dc;
+      }
       return PLACEABLE_DEFINITIONS[item].interaction === 'storage' ? 0xa76a3b : 0x9aa5a3;
     }
     if (isPotionId(item)) {
@@ -4316,6 +5815,14 @@ export class AdventureScene extends Phaser.Scene {
         entranceTileY: this.activeCave.entrance.tileY,
         returnWorldX: this.activeCave.returnWorldX,
         returnWorldY: this.activeCave.returnWorldY
+      } : undefined,
+      activeLandmarkInterior: this.activeLandmarkInterior ? {
+        landmarkId: this.activeLandmarkInterior.landmark.id,
+        landmarkType: this.activeLandmarkInterior.landmark.type,
+        centerTileX: this.activeLandmarkInterior.landmark.centerTileX,
+        centerTileY: this.activeLandmarkInterior.landmark.centerTileY,
+        returnWorldX: this.activeLandmarkInterior.returnWorldX,
+        returnWorldY: this.activeLandmarkInterior.returnWorldY
       } : undefined
     };
 
@@ -4337,6 +5844,32 @@ export class AdventureScene extends Phaser.Scene {
 
   private updateDebugText(): void {
     if (!this.worldReady) {
+      return;
+    }
+
+    if (this.activeLandmarkInterior) {
+      const interior = this.activeLandmarkInterior;
+      const localTileX = Math.floor((this.player.x - interior.origin.x) / WORLD_TILE_SIZE);
+      const localTileY = Math.floor((this.player.y - interior.origin.y) / WORLD_TILE_SIZE);
+      const remainingMaterials = interior.layout.materialNodes.filter(
+        (material) => !this.sessionWorldState.isLandmarkMaterialHarvested(material.id)
+      ).length;
+      this.debugElement.textContent = [
+        'WILDBOUND // LANDMARK INTERIOR',
+        `Landmark    ${interior.landmark.label}`,
+        `Location    ${interior.layout.themeLabel}`,
+        `Interior    ${interior.layout.width} x ${interior.layout.height} tiles`,
+        `Tile        ${localTileX}, ${localTileY}`,
+        `Floor       ${interior.layout.floorLabel}`,
+        `Target      ${this.interiorLandmarkMaterialTarget
+          ? resourceLabel(this.interiorLandmarkMaterialTarget.resource)
+          : this.landmarkInteriorExitNearby ? 'exit' : 'none'}`,
+        `Materials   ${remainingMaterials} remaining / ${interior.layout.materialNodes.length} generated`,
+        `Harvested   ${this.sessionWorldState.harvestedLandmarkMaterialCount} landmark materials`,
+        `Renderer    ${this.renderBackend}`,
+        `Moving FPS  ${this.movingFps > 0 ? this.movingFps.toFixed(0) : '--'} (${this.movingWorstFrameMs.toFixed(1)}ms worst)`,
+        `FPS         ${this.renderedFps.toFixed(0)} (${this.frameRateLimitLabel()})`
+      ].join('\n');
       return;
     }
 
@@ -4373,8 +5906,19 @@ export class AdventureScene extends Phaser.Scene {
       ? null
       : featureAtTile(this.worldSeed, tileX, tileY);
     const feature = this.sessionWorldState.isFeatureHarvested(tileX, tileY) ? 'harvested' : (generatedFeature ?? 'none');
-    const target = this.interactionTarget ? this.interactionTarget.feature : 'none';
+    const target = this.surfaceLandmarkMaterialTarget
+      ? resourceLabel(this.surfaceLandmarkMaterialTarget.resource)
+      : this.nearbyLandmarkEntrance
+        ? `${this.nearbyLandmarkEntrance.landmark.label} entrance`
+        : this.interactionTarget?.feature ?? 'none';
     const landmark = landmarkAtTile(this.worldSeed, tileX, tileY)?.label ?? 'none';
+    const nearestLandmark = nearestLandmarkToTile(this.worldSeed, tileX, tileY);
+    const nearestLandmarkDirection = nearestLandmark
+      ? this.cardinalDirection(nearestLandmark.deltaTileX, nearestLandmark.deltaTileY)
+      : '';
+    const nearestLandmarkText = nearestLandmark
+      ? `${nearestLandmark.landmark.label} · ${Math.round(nearestLandmark.edgeDistanceTiles)} tiles ${nearestLandmarkDirection}`
+      : 'none found';
     const usedInventorySlots = this.inventory.getSlots().filter((slot) => slot !== null).length;
 
     this.debugElement.textContent = [
@@ -4387,6 +5931,7 @@ export class AdventureScene extends Phaser.Scene {
       `Temperature ${climate.temperature.toFixed(2)}`,
       `Time        ${sampleDayNight(this.worldTimeMs).label}`,
       `Landmark    ${landmark}`,
+      `Nearest LM  ${nearestLandmarkText}`,
       `Feature     ${feature}`,
       `Target      ${target}`,
       `Facing      ${this.facing}`,
@@ -4403,9 +5948,20 @@ export class AdventureScene extends Phaser.Scene {
       `Loaded      ${this.chunkManager.loadedChunkCount} chunks`,
       `Streaming   ${this.chunkManager.pendingChunkCount} terrain / ${this.chunkManager.pendingGroundGrassChunkCount} grass pending`,
       `Landmarks   ${this.chunkManager.loadedLandmarkCount} nearby`,
+      `Rare finds  ${this.sessionWorldState.harvestedLandmarkMaterialCount} harvested`,
       `Moving FPS  ${this.movingFps > 0 ? this.movingFps.toFixed(0) : '--'} (${this.movingWorstFrameMs.toFixed(1)}ms worst)`,
       `FPS         ${this.renderedFps.toFixed(0)} (${this.frameRateLimitLabel()})`
     ].join('\n');
+  }
+
+  private cardinalDirection(deltaX: number, deltaY: number): string {
+    if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) {
+      return 'HERE';
+    }
+
+    const vertical = deltaY < -0.5 ? 'N' : deltaY > 0.5 ? 'S' : '';
+    const horizontal = deltaX < -0.5 ? 'W' : deltaX > 0.5 ? 'E' : '';
+    return `${vertical}${horizontal}`;
   }
 
   // Phaser's TimeStep `actualFps` reports every browser animation callback. When the game is

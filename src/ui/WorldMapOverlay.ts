@@ -38,6 +38,18 @@ export interface WorldMapWaypointMarker {
   label: string;
 }
 
+export interface WorldMapTravelStoneMarker {
+  id: string;
+  tileX: number;
+  tileY: number;
+  label: string;
+}
+
+export interface WorldMapOverlayOptions {
+  readonly onTravelStoneSelected?: (id: string) => void;
+  readonly onCloseRequested?: () => void;
+}
+
 export interface WorldMapDrawRequest {
   seed: string;
   playerTileX: number;
@@ -46,6 +58,7 @@ export interface WorldMapDrawRequest {
   reveals: readonly WorldMapRevealStamp[];
   landmarks: readonly WorldMapLandmarkMarker[];
   waypoints: readonly WorldMapWaypointMarker[];
+  travelStones?: readonly WorldMapTravelStoneMarker[];
 }
 
 interface CanvasDimensions {
@@ -100,6 +113,7 @@ interface NormalizedRequest {
   reveals: WorldMapRevealStamp[];
   landmarks: WorldMapLandmarkMarker[];
   waypoints: WorldMapWaypointMarker[];
+  travelStones: WorldMapTravelStoneMarker[];
   contentSignature: string;
   regionsTruncated: boolean;
   landmarksTruncated: boolean;
@@ -145,6 +159,7 @@ const MAP_INNER_PADDING = 14;
 const MAX_REGION_INPUT = 60_000;
 const MAX_LANDMARK_INPUT = 1_500;
 const MAX_WAYPOINT_INPUT = 500;
+const MAX_TRAVEL_STONE_INPUT = 500;
 const MAX_ABSOLUTE_TILE_COORDINATE = 10_000_000;
 const MAX_REGION_SIZE_TILES = 4_096;
 const RENDER_TIME_BUDGET_MS = 4;
@@ -207,6 +222,9 @@ export class WorldMapOverlay {
   private readonly annotationContext: CanvasRenderingContext2D;
   private readonly emptyState: HTMLDivElement;
   private readonly status: HTMLSpanElement;
+  private readonly heading: HTMLHeadingElement;
+  private readonly controls: HTMLParagraphElement;
+  private readonly closeButton: HTMLButtonElement;
   private readonly legendList: HTMLUListElement;
   private readonly resizeObserver: ResizeObserver | null;
   private renderContext!: CanvasRenderingContext2D;
@@ -228,8 +246,9 @@ export class WorldMapOverlay {
   private mapCenterTileY: number | null = null;
   private tilesPerCssPixel = DEFAULT_TILES_PER_CSS_PIXEL;
   private dragStart: { clientX: number; clientY: number; centerTileX: number; centerTileY: number } | null = null;
+  private travelSourceId: string | null = null;
 
-  constructor(parent: HTMLElement) {
+  constructor(parent: HTMLElement, private readonly options: WorldMapOverlayOptions = {}) {
     this.element = document.createElement('div');
     this.element.className = 'world-map-overlay';
     this.element.setAttribute('aria-hidden', 'true');
@@ -242,17 +261,26 @@ export class WorldMapOverlay {
 
     const header = document.createElement('header');
     header.className = 'world-map-header';
-    const heading = document.createElement('h2');
-    heading.className = 'world-map-title';
-    heading.textContent = 'World Map';
+    this.heading = document.createElement('h2');
+    this.heading.className = 'world-map-title';
+    this.heading.textContent = 'World Map';
     this.status = document.createElement('span');
     this.status.className = 'world-map-status';
     this.status.textContent = 'No regions charted';
-    header.append(heading, this.status);
+    const headerActions = document.createElement('div');
+    headerActions.className = 'world-map-header__actions';
+    this.closeButton = document.createElement('button');
+    this.closeButton.type = 'button';
+    this.closeButton.className = 'world-map-close';
+    this.closeButton.textContent = 'Close';
+    this.closeButton.hidden = true;
+    this.closeButton.addEventListener('click', () => this.options.onCloseRequested?.());
+    headerActions.append(this.status, this.closeButton);
+    header.append(this.heading, headerActions);
 
-    const controls = document.createElement('p');
-    controls.className = 'world-map-controls';
-    controls.textContent = 'Drag to pan | Scroll to zoom | F to close | Cyan ring: you | Diamond: landmark | Blue pin: waypoint';
+    this.controls = document.createElement('p');
+    this.controls.className = 'world-map-controls';
+    this.controls.textContent = 'Drag to pan | Scroll to zoom | F to close | Cyan ring: you | Diamond: landmark | Blue pin: waypoint';
 
     this.viewport = document.createElement('div');
     this.viewport.className = 'world-map-viewport';
@@ -287,7 +315,7 @@ export class WorldMapOverlay {
     this.legendList.className = 'world-map-legend-list';
     legend.append(legendHeading, this.legendList);
 
-    panel.append(header, controls, this.viewport, legend);
+    panel.append(header, this.controls, this.viewport, legend);
     this.element.append(panel);
     parent.append(this.element);
 
@@ -337,6 +365,34 @@ export class WorldMapOverlay {
     }
 
     this.scheduleLayoutRefresh();
+  }
+
+  setTravelSource(sourceId: string | null): void {
+    this.travelSourceId = sourceId;
+    const travelMode = sourceId !== null;
+    this.element.classList.toggle('is-travel-mode', travelMode);
+    this.heading.textContent = travelMode ? 'Travel Stone Network' : 'World Map';
+    this.controls.textContent = travelMode
+      ? 'Click another glowing stone to travel | Drag to pan | Scroll to zoom'
+      : 'Drag to pan | Scroll to zoom | F to close | Cyan ring: you | Diamond: landmark | Blue pin: waypoint';
+    this.closeButton.hidden = !travelMode;
+    if (this.latestRequest) {
+      this.updateStatus(this.latestRequest);
+    }
+    if (this.open && this.renderedGeometry && this.latestRequest) {
+      this.drawAnnotations(this.renderedGeometry, this.latestRequest);
+    }
+  }
+
+  centerOn(tileX: number, tileY: number): void {
+    if (!isFiniteNumber(tileX) || !isFiniteNumber(tileY)) {
+      return;
+    }
+    this.mapCenterTileX = tileX;
+    this.mapCenterTileY = tileY;
+    if (this.open) {
+      this.refreshInteractiveView();
+    }
   }
 
   draw(request: WorldMapDrawRequest): void {
@@ -423,6 +479,7 @@ export class WorldMapOverlay {
     const normalizedReveals = this.normalizeReveals(request.reveals);
     const normalizedLandmarks = this.normalizeLandmarks(request.landmarks);
     const normalizedWaypoints = this.normalizeWaypoints(request.waypoints);
+    const normalizedTravelStones = this.normalizeTravelStones(request.travelStones ?? []);
     const seed = typeof request.seed === 'string' ? request.seed : '';
 
     return {
@@ -433,6 +490,7 @@ export class WorldMapOverlay {
       reveals: normalizedReveals.reveals,
       landmarks: normalizedLandmarks.landmarks,
       waypoints: normalizedWaypoints.waypoints,
+      travelStones: normalizedTravelStones,
       contentSignature: `${seed}\u0000${normalizedRegions.signature}\u0000${normalizedReveals.signature}`,
       regionsTruncated: normalizedRegions.truncated || normalizedReveals.truncated,
       landmarksTruncated: normalizedLandmarks.truncated,
@@ -589,6 +647,30 @@ export class WorldMapOverlay {
     }
 
     return { waypoints, truncated: inputLength > limit };
+  }
+
+  private normalizeTravelStones(input: readonly WorldMapTravelStoneMarker[]): WorldMapTravelStoneMarker[] {
+    const travelStones: WorldMapTravelStoneMarker[] = [];
+    const uniqueIds = new Set<string>();
+    const limit = Math.min(Array.isArray(input) ? input.length : 0, MAX_TRAVEL_STONE_INPUT);
+    for (let index = 0; index < limit; index += 1) {
+      const marker = input[index];
+      if (!marker || typeof marker.id !== 'string' || typeof marker.label !== 'string'
+        || !isFiniteNumber(marker.tileX) || !isFiniteNumber(marker.tileY)
+        || Math.abs(marker.tileX) > MAX_ABSOLUTE_TILE_COORDINATE
+        || Math.abs(marker.tileY) > MAX_ABSOLUTE_TILE_COORDINATE
+        || uniqueIds.has(marker.id)) {
+        continue;
+      }
+      uniqueIds.add(marker.id);
+      travelStones.push({
+        id: marker.id,
+        tileX: marker.tileX,
+        tileY: marker.tileY,
+        label: marker.label.trim().slice(0, MAX_LANDMARK_LABEL_LENGTH)
+      });
+    }
+    return travelStones;
   }
 
   private startRenderJob(): void {
@@ -1001,32 +1083,49 @@ export class WorldMapOverlay {
     context.clip();
 
     const occupiedLabels: LabelBounds[] = [];
-    let waypointLabelsDrawn = 0;
-    request.waypoints.forEach((marker) => {
-      const point = this.projectTile(geometry, marker.tileX, marker.tileY);
-      if (!this.isInsideGeometry(geometry, point.x, point.y)) {
-        return;
-      }
-      const showLabel = waypointLabelsDrawn < MAX_WAYPOINT_LABELS
-        && this.drawWaypointMarker(context, geometry, marker, point.x, point.y, occupiedLabels);
-      if (showLabel) {
-        waypointLabelsDrawn += 1;
-      }
-    });
+    if (this.travelSourceId !== null) {
+      request.travelStones.forEach((marker) => {
+        const point = this.projectTile(geometry, marker.tileX, marker.tileY);
+        if (this.isInsideGeometry(geometry, point.x, point.y)) {
+          this.drawTravelStoneMarker(
+            context,
+            geometry,
+            marker,
+            point.x,
+            point.y,
+            marker.id === this.travelSourceId,
+            occupiedLabels
+          );
+        }
+      });
+    } else {
+      let waypointLabelsDrawn = 0;
+      request.waypoints.forEach((marker) => {
+        const point = this.projectTile(geometry, marker.tileX, marker.tileY);
+        if (!this.isInsideGeometry(geometry, point.x, point.y)) {
+          return;
+        }
+        const showLabel = waypointLabelsDrawn < MAX_WAYPOINT_LABELS
+          && this.drawWaypointMarker(context, geometry, marker, point.x, point.y, occupiedLabels);
+        if (showLabel) {
+          waypointLabelsDrawn += 1;
+        }
+      });
 
-    let landmarkLabelsDrawn = 0;
-    request.landmarks.forEach((marker) => {
-      const point = this.projectTile(geometry, marker.centerTileX, marker.centerTileY);
-      if (!this.isInsideGeometry(geometry, point.x, point.y)) {
-        return;
-      }
+      let landmarkLabelsDrawn = 0;
+      request.landmarks.forEach((marker) => {
+        const point = this.projectTile(geometry, marker.centerTileX, marker.centerTileY);
+        if (!this.isInsideGeometry(geometry, point.x, point.y)) {
+          return;
+        }
 
-      const showLabel = landmarkLabelsDrawn < MAX_LANDMARK_LABELS
-        && this.drawLandmarkMarker(context, geometry, marker, point.x, point.y, occupiedLabels);
-      if (showLabel) {
-        landmarkLabelsDrawn += 1;
-      }
-    });
+        const showLabel = landmarkLabelsDrawn < MAX_LANDMARK_LABELS
+          && this.drawLandmarkMarker(context, geometry, marker, point.x, point.y, occupiedLabels);
+        if (showLabel) {
+          landmarkLabelsDrawn += 1;
+        }
+      });
+    }
 
     const player = this.projectTile(geometry, request.playerTileX, request.playerTileY);
     if (this.isInsideGeometry(geometry, player.x, player.y)) {
@@ -1165,6 +1264,63 @@ export class WorldMapOverlay {
     return true;
   }
 
+  private drawTravelStoneMarker(
+    context: CanvasRenderingContext2D,
+    geometry: MapGeometry,
+    marker: WorldMapTravelStoneMarker,
+    x: number,
+    y: number,
+    current: boolean,
+    occupiedLabels: LabelBounds[]
+  ): void {
+    const color = current ? '#9ba9a8' : '#62f2e8';
+    context.save();
+    context.shadowColor = current ? 'rgba(183, 201, 200, 0.35)' : 'rgba(76, 255, 235, 0.88)';
+    context.shadowBlur = current ? 7 : 13;
+    context.fillStyle = current ? '#52605f' : '#1a8e91';
+    context.beginPath();
+    context.moveTo(x, y - 9);
+    context.lineTo(x + 7, y - 3);
+    context.lineTo(x + 6, y + 8);
+    context.lineTo(x - 6, y + 8);
+    context.lineTo(x - 7, y - 3);
+    context.closePath();
+    context.fill();
+    context.shadowColor = 'transparent';
+    context.lineWidth = current ? 1.2 : 1.8;
+    context.strokeStyle = color;
+    context.stroke();
+    context.beginPath();
+    context.arc(x, y, 3.2, 0, Math.PI * 2);
+    context.stroke();
+    context.fillStyle = current ? '#d7e0df' : '#d7fffb';
+    context.beginPath();
+    context.arc(x, y, 1.25, 0, Math.PI * 2);
+    context.fill();
+    context.restore();
+
+    const label = current ? 'Current stone' : marker.label;
+    context.save();
+    context.font = '700 12px system-ui, sans-serif';
+    const labelWidth = Math.ceil(context.measureText(label).width) + 14;
+    const labelHeight = 22;
+    const labelLeft = clamp(x + 11, geometry.left + 2, geometry.left + geometry.width - labelWidth - 2);
+    const labelTop = clamp(y - labelHeight - 8, geometry.top + 2, geometry.top + geometry.height - labelHeight - 2);
+    const bounds = { left: labelLeft, top: labelTop, right: labelLeft + labelWidth, bottom: labelTop + labelHeight };
+    if (!occupiedLabels.some((occupied) => this.boundsOverlap(occupied, bounds))) {
+      occupiedLabels.push(bounds);
+      context.fillStyle = current ? 'rgba(30, 42, 42, 0.94)' : 'rgba(3, 28, 29, 0.95)';
+      context.fillRect(labelLeft, labelTop, labelWidth, labelHeight);
+      context.lineWidth = 1;
+      context.strokeStyle = color;
+      context.strokeRect(labelLeft + 0.5, labelTop + 0.5, labelWidth - 1, labelHeight - 1);
+      context.fillStyle = '#f0fffb';
+      context.textBaseline = 'middle';
+      context.fillText(label, labelLeft + 7, labelTop + labelHeight / 2 + 0.5);
+    }
+    context.restore();
+  }
+
   private drawPlayerMarker(context: CanvasRenderingContext2D, x: number, y: number): void {
     context.save();
     context.shadowColor = 'rgba(0, 0, 0, 0.76)';
@@ -1211,6 +1367,13 @@ export class WorldMapOverlay {
   }
 
   private updateStatus(request: NormalizedRequest): void {
+    if (this.travelSourceId !== null) {
+      const destinations = request.travelStones.filter((stone) => stone.id !== this.travelSourceId).length;
+      this.status.textContent = destinations > 0
+        ? pluralize(destinations, 'available destination')
+        : 'Place another travel stone to create a route';
+      return;
+    }
     if (request.regions.length === 0) {
       this.status.textContent = 'No regions charted';
       return;
@@ -1327,11 +1490,46 @@ export class WorldMapOverlay {
   };
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
+    const dragStart = this.dragStart;
     this.dragStart = null;
     this.viewport.releasePointerCapture?.(event.pointerId);
     this.viewport.classList.remove('is-dragging');
+    if (dragStart && Math.hypot(event.clientX - dragStart.clientX, event.clientY - dragStart.clientY) <= 5) {
+      const destination = this.travelStoneAtPointer(event.clientX, event.clientY);
+      if (destination) {
+        this.options.onTravelStoneSelected?.(destination.id);
+        return;
+      }
+    }
     this.scheduleInteractionRender();
   };
+
+  private travelStoneAtPointer(clientX: number, clientY: number): WorldMapTravelStoneMarker | null {
+    if (this.travelSourceId === null || !this.latestRequest || !this.canvasDimensions) {
+      return null;
+    }
+    const geometry = this.createGeometry(this.latestRequest, this.canvasDimensions);
+    if (!geometry) {
+      return null;
+    }
+    const rect = this.viewport.getBoundingClientRect();
+    const pointerX = clientX - rect.left;
+    const pointerY = clientY - rect.top;
+    let nearest: WorldMapTravelStoneMarker | null = null;
+    let nearestDistance = 15 ** 2;
+    this.latestRequest.travelStones.forEach((marker) => {
+      if (marker.id === this.travelSourceId) {
+        return;
+      }
+      const point = this.projectTile(geometry, marker.tileX, marker.tileY);
+      const distance = (point.x - pointerX) ** 2 + (point.y - pointerY) ** 2;
+      if (distance <= nearestDistance) {
+        nearest = marker;
+        nearestDistance = distance;
+      }
+    });
+    return nearest;
+  }
 
   private refreshInteractiveView(): void {
     if (this.drawCurrentViewFromAtlas()) {

@@ -159,16 +159,21 @@ const ensureGrassTextures = (scene: Phaser.Scene): void => {
   }
 };
 
-export const createGroundGrassBlitters = (
+export const ensureGroundGrassTextures = (scene: Phaser.Scene): void => {
+  ensureGrassTextures(scene);
+};
+
+export const createGroundGrassBlitter = (
   scene: Phaser.Scene,
   worldX: number,
-  worldY: number
-): Phaser.GameObjects.Blitter[] => {
+  worldY: number,
+  pattern: number
+): Phaser.GameObjects.Blitter => {
   ensureGrassTextures(scene);
-  return Array.from({ length: GROUND_GRASS_PATTERN_VARIANTS }, (_, pattern) => scene.add
+  return scene.add
     .blitter(worldX, worldY, textureKeyFor(pattern))
     .setDepth(0.9)
-    .setVisible(false));
+    .setVisible(false);
 };
 
 export const createAnimatedGroundGrassPatch = (

@@ -21,7 +21,8 @@ const MAX_SAVE_BYTES = 2 * 1024 * 1024;
 const MAX_SETTINGS_BYTES = 32 * 1024;
 const MAX_WORLD_COUNT = 100;
 const MAX_MAIN_MENU_MUSIC_TRACKS = 200;
-const MAIN_MENU_MUSIC_PROTOCOL = 'wildbound-music';
+const MAX_GAME_MUSIC_TRACKS = 200;
+const MUSIC_PROTOCOL = 'wildbound-music';
 const launchedByInstaller = process.argv.includes('--squirrel-firstrun');
 
 app.setName('Wildbound');
@@ -39,7 +40,7 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 // elements loaded from the renderer's http(s) origin.
 protocol.registerSchemesAsPrivileged([
   {
-    scheme: MAIN_MENU_MUSIC_PROTOCOL,
+    scheme: MUSIC_PROTOCOL,
     privileges: {
       standard: true,
       secure: true,
@@ -70,10 +71,22 @@ const getMainMenuMusicDirectory = (): string => app.isPackaged
   // directory remains the project root, which is where creators add their editable MP3 library.
   : path.join(process.cwd(), 'music', 'main menu');
 
-const getMainMenuMusicTrackPath = (requestUrl: string): string | null => {
+const getGameMusicDirectory = (): string => app.isPackaged
+  ? path.join(process.resourcesPath, 'music', 'game')
+  : path.join(process.cwd(), 'music', 'game');
+
+const getMusicTrackPath = (requestUrl: string): string | null => {
   try {
     const url = new URL(requestUrl);
-    if (url.protocol !== `${MAIN_MENU_MUSIC_PROTOCOL}:` || url.hostname !== 'main-menu') {
+    if (url.protocol !== `${MUSIC_PROTOCOL}:`) {
+      return null;
+    }
+    const directory = url.hostname === 'main-menu'
+      ? getMainMenuMusicDirectory()
+      : url.hostname === 'game'
+        ? getGameMusicDirectory()
+        : null;
+    if (!directory) {
       return null;
     }
     const fileName = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
@@ -85,46 +98,62 @@ const getMainMenuMusicTrackPath = (requestUrl: string): string | null => {
     ) {
       return null;
     }
-    return path.join(getMainMenuMusicDirectory(), fileName);
+    return path.join(directory, fileName);
   } catch {
     return null;
   }
 };
 
-const registerMainMenuMusicProtocol = (): void => {
-  protocol.handle(MAIN_MENU_MUSIC_PROTOCOL, async (request) => {
-    const trackPath = getMainMenuMusicTrackPath(request.url);
+const registerMusicProtocol = (): void => {
+  protocol.handle(MUSIC_PROTOCOL, async (request) => {
+    const trackPath = getMusicTrackPath(request.url);
     if (!trackPath) {
       return new Response('Not found', { status: 404 });
     }
     try {
       return await net.fetch(pathToFileURL(trackPath).toString(), { bypassCustomProtocolHandlers: true });
     } catch (error) {
-      console.warn('Wildbound could not stream a main-menu music track.', error);
+      console.warn('Wildbound could not stream a music track.', error);
       return new Response('Not found', { status: 404 });
     }
   });
 };
 
-const listMainMenuMusicTracks = async (): Promise<string[]> => {
+const listMusicTracks = async (
+  directory: string,
+  hostname: 'main-menu' | 'game',
+  maximumTracks: number
+): Promise<string[]> => {
   try {
-    const entries = await readdir(getMainMenuMusicDirectory(), { withFileTypes: true });
+    const entries = await readdir(directory, { withFileTypes: true });
     return entries
       .filter((entry) => entry.isFile() && path.extname(entry.name).toLowerCase() === '.mp3')
       .map((entry) => entry.name)
       .sort((first, second) => first.localeCompare(second, undefined, { numeric: true, sensitivity: 'base' }))
-      .slice(0, MAX_MAIN_MENU_MUSIC_TRACKS)
+      .slice(0, maximumTracks)
       // Only this trusted, fixed directory is exposed to the renderer. The custom URL keeps
       // the renderer sandboxed while allowing Chromium's media pipeline to stream the MP3.
-      .map((fileName) => `${MAIN_MENU_MUSIC_PROTOCOL}://main-menu/${encodeURIComponent(fileName)}`);
+      .map((fileName) => `${MUSIC_PROTOCOL}://${hostname}/${encodeURIComponent(fileName)}`);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return [];
     }
-    console.warn('Wildbound could not read its main-menu music folder.', error);
+    console.warn(`Wildbound could not read its ${hostname} music folder.`, error);
     return [];
   }
 };
+
+const listMainMenuMusicTracks = (): Promise<string[]> => listMusicTracks(
+  getMainMenuMusicDirectory(),
+  'main-menu',
+  MAX_MAIN_MENU_MUSIC_TRACKS
+);
+
+const listGameMusicTracks = (): Promise<string[]> => listMusicTracks(
+  getGameMusicDirectory(),
+  'game',
+  MAX_GAME_MUSIC_TRACKS
+);
 
 interface StoredWorldSummary {
   id: string;
@@ -295,6 +324,7 @@ const ensureWorldIndex = async (): Promise<StoredWorldIndex> => {
 
 const registerWorldHandlers = (): void => {
   ipcMain.handle('wildbound:list-main-menu-music', listMainMenuMusicTracks);
+  ipcMain.handle('wildbound:list-game-music', listGameMusicTracks);
 
   ipcMain.handle('wildbound:list-worlds', async (): Promise<StoredWorldSummary[]> => {
     const index = await ensureWorldIndex();
@@ -504,7 +534,7 @@ const createWindow = (): void => {
 
 if (!shouldExitForSquirrel) {
   app.whenReady().then(() => {
-    registerMainMenuMusicProtocol();
+    registerMusicProtocol();
     registerWorldHandlers();
     createWindow();
 

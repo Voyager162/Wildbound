@@ -1,8 +1,14 @@
 import { biomeForClimate, climateAtTile, Biome } from './biomeGenerator';
 import { randomAtTile } from './noise';
-import { isLandmarkReservedTile } from './landmarkGenerator';
+import { landmarksIntersectingTiles } from './landmarkGenerator';
 import { surfaceAtTile } from './terrainGenerator';
 import { CHUNK_SIZE_TILES } from '../worldConfig';
+import type { ProceduralLandmark } from '../landmarkConfig';
+import {
+  createLandmarkSurfacePlan,
+  landmarkPlanBlocksFeatureTile,
+  type LandmarkSurfacePlan
+} from '../landmarks/landmarkSurfaceGenerator';
 import {
   SWAMP_REED_SHORE_DENSITY,
   SWAMP_REED_SHORE_SEARCH_RADIUS_TILES,
@@ -36,6 +42,38 @@ export const FEATURE_DENSITIES = {
   snowyRock: 0.002,
   plainsGrass: 0.02
 } as const;
+
+// A landmark's macro reservation is intentionally broad enough for cave separation and streamed
+// art. Natural features only respect its actual structures and material clearances, allowing
+// grass, rocks, and trees to continue through open courtyards and the center of a stone circle.
+const landmarkPlanCache = new Map<string, LandmarkSurfacePlan>();
+const LANDMARK_FEATURE_PLAN_CACHE_LIMIT = 256;
+
+const surfacePlanFor = (seed: string, landmark: ProceduralLandmark): LandmarkSurfacePlan => {
+  const key = `${seed.length}:${seed}:${landmark.id}`;
+  const cached = landmarkPlanCache.get(key);
+  if (cached) {
+    landmarkPlanCache.delete(key);
+    landmarkPlanCache.set(key, cached);
+    return cached;
+  }
+  const plan = createLandmarkSurfacePlan(seed, landmark);
+  landmarkPlanCache.set(key, plan);
+  while (landmarkPlanCache.size > LANDMARK_FEATURE_PLAN_CACHE_LIMIT) {
+    const oldest = landmarkPlanCache.keys().next().value as string | undefined;
+    if (!oldest) {
+      break;
+    }
+    landmarkPlanCache.delete(oldest);
+  }
+  return plan;
+};
+
+const landmarkBlocksFeatureAtTile = (seed: string, tileX: number, tileY: number): boolean => (
+  landmarksIntersectingTiles(seed, tileX, tileY, tileX, tileY).some((landmark) => (
+    landmarkPlanBlocksFeatureTile(surfacePlanFor(seed, landmark), tileX, tileY)
+  ))
+);
 
 const shouldPlace = (seed: string, tileX: number, tileY: number, salt: number, chance: number): boolean =>
   randomAtTile(seed, tileX, tileY, salt) < chance;
@@ -135,9 +173,7 @@ const hasSafeSwampReedFootprint = (seed: string, tileX: number, tileY: number, s
 };
 
 export const featureAtTile = (seed: string, tileX: number, tileY: number): TerrainFeatureType | null => {
-  // Landmark reservations are a separate macro layer. Skipping normal resources here keeps the
-  // visible chunk art, harvesting lookup, and F3 feature readout in agreement.
-  if (isLandmarkReservedTile(seed, tileX, tileY)) {
+  if (landmarkBlocksFeatureAtTile(seed, tileX, tileY)) {
     return null;
   }
 

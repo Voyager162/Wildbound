@@ -1,11 +1,13 @@
 import type { CaveEntrance } from './caves/caveGenerator';
 import type { TerrainFeature } from './generation/featureGenerator';
+import type { GroundGrassCandidate } from './generation/groundGrassGenerator';
 
 interface WorkerCompleteMessage {
   readonly type: 'complete';
   readonly id: number;
   readonly features: TerrainFeature[];
   readonly caveEntrances: CaveEntrance[];
+  readonly groundGrassCandidates: GroundGrassCandidate[];
 }
 
 interface WorkerFailureMessage {
@@ -33,6 +35,7 @@ export interface ProceduralChunkData {
   readonly chunkY: number;
   readonly features: readonly TerrainFeature[];
   readonly caveEntrances: readonly CaveEntrance[];
+  readonly groundGrassCandidates: readonly GroundGrassCandidate[];
 }
 
 class ProceduralChunkDataService {
@@ -105,7 +108,8 @@ class ProceduralChunkDataService {
       chunkX,
       chunkY,
       features: message.features,
-      caveEntrances: message.caveEntrances
+      caveEntrances: message.caveEntrances,
+      groundGrassCandidates: message.groundGrassCandidates
     };
     this.completed.set(pending.cacheKey, data);
     while (this.completed.size > ProceduralChunkDataService.MAX_CACHED_CHUNKS) {

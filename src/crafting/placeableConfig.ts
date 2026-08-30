@@ -5,6 +5,7 @@ import { ToolId } from './toolConfig';
 export enum PlaceableId {
   TrailLantern = 'trail lantern',
   Waypoint = 'waypoint',
+  TravelStone = 'travel stone',
   Workbench = 'workbench',
   Furnace = 'furnace',
   UpgradeTable = 'upgrade table',
@@ -78,7 +79,7 @@ export interface PlaceableDefinition {
   readonly description: string;
   readonly footprint: readonly [width: number, height: number];
   readonly storageSlots?: number;
-  readonly interaction: 'storage' | 'rest' | 'station' | 'light' | 'waypoint';
+  readonly interaction: 'storage' | 'rest' | 'station' | 'light' | 'waypoint' | 'travel';
   // World-space lighting remains data-driven so additional placeables can be balanced without
   // coupling their crafting entry to rendering code. `radiusChunks` is deliberately measured in
   // streamed-world chunks rather than display pixels.
@@ -118,6 +119,14 @@ export const PLACEABLE_DEFINITIONS: Readonly<Record<PlaceableId, PlaceableDefini
     description: 'Mark a place in the wilderness and give it a name on your map.',
     footprint: [1, 1],
     interaction: 'waypoint'
+  },
+  [PlaceableId.TravelStone]: {
+    id: PlaceableId.TravelStone,
+    label: 'Travel Stone',
+    category: 'items',
+    description: 'Open the discovered world map and travel instantly between placed stones.',
+    footprint: [1, 1],
+    interaction: 'travel'
   },
   [PlaceableId.Workbench]: {
     id: PlaceableId.Workbench,

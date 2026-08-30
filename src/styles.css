@@ -353,6 +353,33 @@ body.is-item-dragging .wildbound-game-cursor {
   text-align: right;
 }
 
+.world-map-header__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.world-map-close {
+  padding: 6px 11px;
+  border: 1px solid rgba(119, 240, 222, 0.62);
+  border-radius: 7px;
+  color: #e9fffa;
+  background: rgba(16, 68, 67, 0.78);
+  font: 700 12px/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.world-map-close:hover {
+  border-color: #bafff4;
+  background: rgba(24, 100, 96, 0.9);
+}
+
+.world-map-overlay.is-travel-mode .world-map-panel {
+  border-color: #72d8ca;
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.64), inset 0 0 28px rgba(67, 226, 208, 0.08);
+}
+
 .world-map-controls {
   margin: 0;
   padding: 8px 17px;
@@ -1703,6 +1730,31 @@ body.is-item-dragging .wildbound-game-cursor {
   clip-path: polygon(0 0, 100% 12%, 70% 50%, 100% 88%, 0 100%);
 }
 
+.placeable-icon--travel-stone {
+  border-radius: 42% 42% 30% 30%;
+  background: linear-gradient(145deg, #728487 8%, #2d4043 64%, #17272a);
+  box-shadow: inset 0 0 0 2px rgba(195, 225, 224, 0.22), 0 3px 7px rgba(0, 0, 0, 0.42);
+  clip-path: polygon(28% 8%, 68% 3%, 88% 27%, 91% 88%, 9% 88%, 14% 27%);
+}
+
+.placeable-icon--travel-stone::before {
+  inset: 24% 27% 30%;
+  border: 2px solid #66eee4;
+  border-radius: 50%;
+  background: radial-gradient(circle, #d8fffb 0 16%, #258f91 18% 38%, transparent 42%);
+  box-shadow: 0 0 8px rgba(82, 243, 230, 0.84);
+}
+
+.placeable-icon--travel-stone::after {
+  left: 21%;
+  right: 21%;
+  bottom: 12%;
+  height: 3px;
+  border-radius: 50%;
+  background: #142124;
+  box-shadow: 0 -10px 0 -1px rgba(89, 230, 220, 0.55);
+}
+
 .placeable-icon--workbench,
 .placeable-icon--upgrade-table,
 .placeable-icon--brewing-station {
@@ -2250,6 +2302,361 @@ body.is-item-dragging .wildbound-game-cursor {
   height: 17px;
   background: rgba(255, 255, 255, 0.72);
   transform: rotate(-23deg);
+}
+
+/* Landmark materials ------------------------------------------------------ */
+
+.resource-icon--ancient-wood,
+.resource-icon--heartwood {
+  width: 37px;
+  height: 18px;
+  border: 3px solid #39261a;
+  border-radius: 50% 38% 42% 52%;
+  background: repeating-linear-gradient(92deg, #4a2d1d 0 3px, #8b5d34 4px 7px, #5f3b24 8px 10px);
+  box-shadow: inset 0 2px 0 rgba(238, 181, 105, 0.24), 0 2px 5px rgba(0, 0, 0, 0.35);
+}
+
+.resource-icon--heartwood {
+  border-color: #572c22;
+  background: repeating-linear-gradient(92deg, #652e25 0 3px, #c06a49 4px 7px, #7c382b 8px 10px);
+}
+
+.resource-icon--ancient-wood::before,
+.resource-icon--heartwood::before {
+  position: absolute;
+  right: -1px;
+  top: 1px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #d5a269;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px #704425, inset 0 0 0 4px #bb7d43;
+  content: "";
+}
+
+.resource-icon--heartwood::before {
+  border-color: #ffad76;
+  box-shadow: inset 0 0 0 2px #713426, inset 0 0 0 4px #d87852;
+}
+
+.resource-icon--ancient-wood .resource-icon__detail,
+.resource-icon--heartwood .resource-icon__detail {
+  left: 7px;
+  top: 4px;
+  width: 16px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(246, 197, 124, 0.5);
+  box-shadow: 2px 6px 0 rgba(34, 20, 13, 0.42);
+}
+
+.resource-icon--amber-sap,
+.resource-icon--fossil-resin {
+  width: 28px;
+  height: 34px;
+  border: 2px solid #8d501d;
+  border-radius: 48% 52% 54% 46%;
+  background: radial-gradient(circle at 36% 27%, #fff3ad 0 7%, transparent 8%), linear-gradient(145deg, #ffd35f, #e99227 55%, #9a4b1e);
+  box-shadow: inset -5px -6px 8px rgba(103, 42, 14, 0.26), 0 0 8px rgba(255, 172, 50, 0.28);
+  clip-path: polygon(50% 0, 88% 46%, 93% 70%, 77% 94%, 50% 100%, 22% 93%, 7% 69%, 14% 43%);
+}
+
+.resource-icon--fossil-resin {
+  border-color: #70451f;
+  background: radial-gradient(circle at 35% 24%, #ffe4a4 0 6%, transparent 7%), linear-gradient(145deg, #e2a044, #b96a25 58%, #70401d);
+  box-shadow: inset -5px -6px 8px rgba(71, 35, 13, 0.3), 0 0 6px rgba(222, 143, 50, 0.2);
+}
+
+.resource-icon--amber-sap .resource-icon__detail,
+.resource-icon--fossil-resin .resource-icon__detail {
+  left: 8px;
+  top: 11px;
+  width: 5px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(255, 249, 192, 0.57);
+  transform: rotate(24deg);
+}
+
+.resource-icon--glow-spores {
+  width: 36px;
+  height: 34px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 25% 60%, #ecffd0 0 7%, #9ee76a 8% 14%, transparent 15%),
+    radial-gradient(circle at 52% 26%, #f3ffd9 0 8%, #b9f58b 9% 17%, transparent 18%),
+    radial-gradient(circle at 77% 58%, #f5ffdc 0 6%, #91d965 7% 14%, transparent 15%),
+    radial-gradient(circle, rgba(143, 234, 102, 0.28), transparent 66%);
+  filter: drop-shadow(0 0 5px rgba(177, 255, 128, 0.7));
+}
+
+.resource-icon--glow-spores::before,
+.resource-icon--glow-spores::after {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #dfffbb;
+  box-shadow: 8px -7px 0 -1px #9ce36d, 13px 5px 0 -1px #c8ff9f;
+  content: "";
+}
+
+.resource-icon--glow-spores::before { left: 5px; top: 6px; }
+.resource-icon--glow-spores::after { right: 8px; bottom: 5px; transform: rotate(80deg); }
+
+.resource-icon--vine-fiber,
+.resource-icon--moss-fiber {
+  width: 35px;
+  height: 34px;
+  border: 2px solid #28523a;
+  border-radius: 45% 55% 48% 52%;
+  background: repeating-linear-gradient(72deg, transparent 0 3px, #61ab70 4px 7px, #2d6c45 8px 10px), #1e3d2a;
+  clip-path: polygon(12% 5%, 32% 12%, 48% 0, 66% 12%, 88% 4%, 78% 96%, 55% 84%, 35% 100%, 18% 85%);
+}
+
+.resource-icon--moss-fiber {
+  border-color: #435b2e;
+  background:
+    radial-gradient(circle at 27% 35%, #a5c96d 0 8%, transparent 9%),
+    radial-gradient(circle at 68% 58%, #89ad57 0 10%, transparent 11%),
+    repeating-linear-gradient(72deg, transparent 0 3px, #79984f 4px 7px, #3f6335 8px 10px), #2d482b;
+}
+
+.resource-icon--vine-fiber .resource-icon__detail,
+.resource-icon--moss-fiber .resource-icon__detail {
+  left: 15px;
+  top: 1px;
+  width: 4px;
+  height: 31px;
+  border-radius: 999px;
+  background: rgba(207, 239, 154, 0.42);
+  transform: rotate(11deg);
+}
+
+.resource-icon--damp-crystal,
+.resource-icon--starstone,
+.resource-icon--glowing-fragments {
+  width: 34px;
+  height: 35px;
+  border: 2px solid #337f91;
+  background: linear-gradient(140deg, #e5ffff 4%, #66d5e7 45%, #287e96 76%, #174758);
+  box-shadow: 0 0 8px rgba(88, 220, 239, 0.42);
+  clip-path: polygon(7% 88%, 18% 35%, 36% 55%, 49% 2%, 64% 48%, 81% 22%, 95% 89%, 62% 100%, 38% 94%);
+}
+
+.resource-icon--starstone {
+  border-color: #464996;
+  background: radial-gradient(circle at 43% 31%, #f0eeff 0 5%, transparent 6%), linear-gradient(140deg, #afb6ff, #686ed0 48%, #373b8e 76%, #22264f);
+  box-shadow: 0 0 9px rgba(112, 119, 235, 0.45);
+}
+
+.resource-icon--glowing-fragments {
+  border-color: #a53c3a;
+  background: linear-gradient(140deg, #fff1bc 4%, #ff806b 42%, #d6413e 73%, #641f28);
+  box-shadow: 0 0 10px rgba(255, 99, 77, 0.55);
+}
+
+.resource-icon--damp-crystal::before,
+.resource-icon--starstone::before,
+.resource-icon--glowing-fragments::before {
+  position: absolute;
+  left: 14px;
+  top: 5px;
+  width: 3px;
+  height: 23px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.7);
+  content: "";
+  transform: rotate(14deg);
+}
+
+.resource-icon--spring-stone,
+.resource-icon--rune-stone,
+.resource-icon--meteor-iron {
+  width: 33px;
+  height: 31px;
+  border: 2px solid #3f6766;
+  background: linear-gradient(145deg, #b5d6cf, #70aaa5 54%, #3b6768);
+  clip-path: polygon(12% 18%, 54% 0, 90% 19%, 100% 65%, 74% 95%, 29% 100%, 0 62%);
+}
+
+.resource-icon--rune-stone {
+  border-color: #544a83;
+  background: linear-gradient(145deg, #b9add9, #8174b5 54%, #49416d);
+  box-shadow: 0 0 7px rgba(149, 127, 224, 0.35);
+}
+
+.resource-icon--meteor-iron {
+  border-color: #55352f;
+  background: radial-gradient(circle at 30% 27%, #da8c70 0 6%, transparent 7%), linear-gradient(145deg, #b47765, #875247 52%, #423337);
+}
+
+.resource-icon--spring-stone::before,
+.resource-icon--rune-stone::before,
+.resource-icon--meteor-iron::before {
+  position: absolute;
+  left: 9px;
+  top: 7px;
+  width: 14px;
+  height: 16px;
+  border-left: 2px solid rgba(224, 255, 246, 0.72);
+  border-bottom: 2px solid rgba(224, 255, 246, 0.72);
+  content: "";
+  transform: skew(-18deg) rotate(-22deg);
+}
+
+.resource-icon--rune-stone::before { border-color: rgba(238, 222, 255, 0.9); transform: skew(-28deg) rotate(-45deg); }
+.resource-icon--meteor-iron::before { border-color: rgba(255, 171, 130, 0.62); transform: skew(22deg) rotate(28deg); }
+
+.resource-icon--luminous-mushrooms {
+  width: 38px;
+  height: 34px;
+  background:
+    linear-gradient(90deg, transparent 0 21%, #d5c6dc 22% 29%, transparent 30% 62%, #e3d5e9 63% 71%, transparent 72%),
+    radial-gradient(ellipse at 24% 49%, #f4dcff 0 12%, #b479e2 13% 25%, transparent 26%),
+    radial-gradient(ellipse at 67% 36%, #f6e3ff 0 15%, #a86fd9 16% 31%, transparent 32%);
+  filter: drop-shadow(0 0 5px rgba(191, 120, 239, 0.65));
+}
+
+.resource-icon--luminous-mushrooms::after {
+  position: absolute;
+  left: 4px;
+  bottom: 2px;
+  width: 30px;
+  height: 5px;
+  border-radius: 50%;
+  background: #3b493c;
+  content: "";
+}
+
+.resource-icon--map-fragments {
+  width: 35px;
+  height: 29px;
+  border: 2px solid #6e5836;
+  background: linear-gradient(105deg, #e9d9a8 0 31%, #bca371 32% 35%, #dec993 36% 68%, #aa8d5c 69% 72%, #d3bd87 73%);
+  box-shadow: inset 0 0 8px rgba(91, 63, 32, 0.34);
+  clip-path: polygon(3% 8%, 31% 14%, 49% 4%, 70% 12%, 97% 3%, 92% 91%, 69% 84%, 49% 96%, 27% 86%, 5% 94%);
+}
+
+.resource-icon--map-fragments::before {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  width: 18px;
+  height: 12px;
+  border: 1px dashed #78643e;
+  border-radius: 45%;
+  content: "";
+  transform: rotate(-8deg);
+}
+
+.resource-icon--map-fragments .resource-icon__detail {
+  left: 18px;
+  top: 12px;
+  width: 5px;
+  height: 5px;
+  border: 2px solid #8e4e36;
+  border-radius: 50%;
+}
+
+.resource-icon--mechanical-parts {
+  width: 34px;
+  height: 34px;
+  border: 4px dotted #aeb9b8;
+  border-radius: 50%;
+  background: conic-gradient(#58686b 0 12%, #9ba9a9 13% 25%, #526064 26% 42%, #a8b3b1 43% 59%, #526064 60% 78%, #a8b3b1 79%);
+  box-shadow: inset 0 0 0 6px #344044, inset 0 0 0 9px #7d8b8d;
+}
+
+.resource-icon--mechanical-parts::before {
+  position: absolute;
+  left: 9px;
+  top: 9px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #263136;
+  border-radius: 50%;
+  background: #c1cbc8;
+  content: "";
+}
+
+.resource-icon--lens-glass {
+  width: 31px;
+  height: 31px;
+  margin: -4px 5px 5px -3px;
+  border: 3px solid #a98b59;
+  border-radius: 50%;
+  background: radial-gradient(circle at 34% 28%, #f4ffff 0 7%, transparent 8%), linear-gradient(145deg, rgba(190, 255, 255, 0.92), rgba(77, 176, 185, 0.74));
+  box-shadow: inset 0 0 8px rgba(255, 255, 255, 0.52), 0 0 7px rgba(111, 232, 235, 0.45);
+}
+
+.resource-icon--lens-glass::after {
+  position: absolute;
+  right: -10px;
+  bottom: -10px;
+  width: 5px;
+  height: 17px;
+  border: 1px solid #61482e;
+  border-radius: 3px;
+  background: #b78f55;
+  content: "";
+  transform: rotate(-43deg);
+}
+
+.resource-icon--ancient-fragments,
+.resource-icon--relic-materials {
+  width: 36px;
+  height: 34px;
+  border: 2px solid #58493c;
+  background: linear-gradient(132deg, #d2b695, #aa8768 55%, #705541);
+  clip-path: polygon(4% 88%, 15% 23%, 40% 3%, 48% 55%, 68% 14%, 94% 27%, 83% 93%, 53% 78%, 31% 100%);
+}
+
+.resource-icon--relic-materials {
+  border-color: #80611f;
+  background: linear-gradient(132deg, #ffe69a, #d1a746 52%, #8a6223);
+  filter: drop-shadow(0 0 4px rgba(240, 192, 73, 0.38));
+}
+
+.resource-icon--ancient-fragments::before,
+.resource-icon--relic-materials::before {
+  position: absolute;
+  left: 12px;
+  top: 9px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(255, 239, 185, 0.75);
+  border-radius: 50%;
+  content: "";
+}
+
+.resource-icon--bone-fragments,
+.resource-icon--ancient-remains {
+  width: 37px;
+  height: 33px;
+  background:
+    radial-gradient(circle at 14% 79%, #f0e8cb 0 9%, #8c8069 10% 13%, transparent 14%),
+    radial-gradient(circle at 83% 18%, #f0e8cb 0 9%, #8c8069 10% 13%, transparent 14%),
+    linear-gradient(142deg, transparent 0 40%, #887d68 41% 45%, #e5dcc0 46% 56%, #887d68 57% 61%, transparent 62%);
+}
+
+.resource-icon--ancient-remains {
+  background:
+    radial-gradient(circle at 25% 25%, #5e5446 0 5%, transparent 6%),
+    radial-gradient(circle at 65% 35%, #5e5446 0 5%, transparent 6%),
+    radial-gradient(ellipse at 51% 49%, #e0d5b7 0 25%, #8d816d 26% 31%, transparent 32%),
+    linear-gradient(142deg, transparent 0 40%, #887d68 41% 45%, #d9cfb3 46% 56%, #887d68 57% 61%, transparent 62%);
+}
+
+.resource-icon--bone-fragments .resource-icon__detail,
+.resource-icon--ancient-remains .resource-icon__detail {
+  left: 8px;
+  top: 7px;
+  width: 19px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 251, 223, 0.62);
+  transform: rotate(-38deg);
 }
 
 .crafting-overlay {
@@ -3080,9 +3487,11 @@ body.is-item-dragging .wildbound-game-cursor {
 .wildbound-brand__title-motion {
   display: flex;
   align-items: baseline;
-  transform-origin: 8% 68%;
+  transform: translateZ(0) rotateZ(-1.2deg);
+  transform-origin: 50% 50%;
+  backface-visibility: hidden;
   will-change: transform;
-  animation: wildbound-title-pivot 5.8s cubic-bezier(0.42, 0, 0.22, 1) infinite;
+  animation: wildbound-title-pivot 4.8s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
 }
 
 .wildbound-brand__title span {
@@ -3671,27 +4080,8 @@ body.is-item-dragging .wildbound-game-cursor {
 }
 
 @keyframes wildbound-title-pivot {
-  /* The word comes to rest before the hinge changes sides, so the origin swap is invisible. */
-  0%, 36% {
-    transform-origin: 8% 68%;
-    transform: translateY(0) rotateZ(0deg);
-  }
-  18% {
-    transform-origin: 8% 68%;
-    transform: translateY(-4px) rotateZ(1.15deg);
-  }
-  36.01%, 54% {
-    transform-origin: 92% 68%;
-    transform: translateY(0) rotateZ(0deg);
-  }
-  45% {
-    transform-origin: 92% 68%;
-    transform: translateY(-4px) rotateZ(-1.15deg);
-  }
-  54.01%, 100% {
-    transform-origin: 8% 68%;
-    transform: translateY(0) rotateZ(0deg);
-  }
+  from { transform: translateZ(0) rotateZ(-1.2deg); }
+  to { transform: translateZ(0) rotateZ(1.2deg); }
 }
 
 @keyframes menu-stage-arrive {

@@ -61,6 +61,11 @@ export const CRAFTING_RECIPES: readonly CraftingRecipe[] = [
     { resource: ResourceType.Stone, amount: 8 },
     { resource: ResourceType.GoldIngot, amount: 1 }
   ]),
+  recipe(PlaceableId.TravelStone, 'items', [
+    { resource: ResourceType.Stone, amount: 24 },
+    { resource: ResourceType.GoldIngot, amount: 4 },
+    { resource: ResourceType.Diamond, amount: 1 }
+  ]),
   recipe(PlaceableId.Workbench, 'workstations', [
     { resource: ResourceType.Wood, amount: 12 },
     { resource: ResourceType.Fiber, amount: 6 }

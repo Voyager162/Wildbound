@@ -19,8 +19,10 @@ import {
   CHUNK_STREAM_VISIBLE_RADIUS_X,
   CHUNK_STREAM_VISIBLE_RADIUS_Y,
   GROUND_GRASS_BUILD_INTERVAL_MS,
-  GROUND_GRASS_BUILD_TILES_PER_TICK,
-  GROUND_GRASS_INITIAL_BUILD_TILES_PER_TICK
+  GROUND_GRASS_BUILD_PATCHES_PER_TICK,
+  GROUND_GRASS_BUILD_TIME_BUDGET_MS,
+  GROUND_GRASS_INITIAL_BUILD_PATCHES_PER_TICK,
+  GROUND_GRASS_INITIAL_CHUNKS_PER_TICK
 } from './chunkStreamingConfig';
 import {
   CHUNK_RENDER_RADIUS_X,
@@ -33,6 +35,10 @@ import {
   GROUND_GRASS_RENDER_RADIUS_Y
 } from './groundGrassConfig';
 import { LandmarkManager } from './LandmarkManager';
+import type {
+  LandmarkEntrance,
+  LandmarkMaterialNode
+} from './landmarks/landmarkSurfaceGenerator';
 import { SwampWaterDecorationManager } from './SwampWaterDecorationManager';
 import { caveMouthCenter, type CaveEntrance } from './caves/caveGenerator';
 import { type TerrainFeature, type TerrainFeatureType } from './generation/featureGenerator';
@@ -118,7 +124,7 @@ export class ChunkManager {
     private readonly sessionState: SessionWorldState
   ) {
     this.ambientParticleManager = new AmbientParticleManager(scene, seed);
-    this.landmarkManager = new LandmarkManager(scene, seed);
+    this.landmarkManager = new LandmarkManager(scene, seed, sessionState);
     this.swampWaterDecorationManager = new SwampWaterDecorationManager(scene, seed);
   }
 
@@ -139,7 +145,13 @@ export class ChunkManager {
   }
 
   get pendingGroundGrassChunkCount(): number {
-    return Array.from(this.chunks.values()).filter((chunk) => chunk.hasPendingGroundGrassBuild).length;
+    let pending = 0;
+    this.chunks.forEach((chunk) => {
+      if (chunk.hasPendingGroundGrassBuild) {
+        pending += 1;
+      }
+    });
+    return pending;
   }
 
   get loadedLandmarkCount(): number {
@@ -271,7 +283,7 @@ export class ChunkManager {
     // Keep the loading overlay up until the complete camera-sized grass presentation window is
     // assembled. That removes the first visible grass grow-in after controls are enabled.
     while (this.groundGrassEnabled && !this.isPresentationReadyAt(playerWorldX, playerWorldY)) {
-      this.processGroundGrassBuilds(performance.now(), GROUND_GRASS_INITIAL_BUILD_TILES_PER_TICK, true);
+      this.processGroundGrassBuilds(performance.now(), GROUND_GRASS_INITIAL_BUILD_PATCHES_PER_TICK, true);
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
     }
     this.updateChunkRenderVisibility();
@@ -283,6 +295,10 @@ export class ChunkManager {
   }
 
   update(playerWorldX: number, playerWorldY: number, time = performance.now()): void {
+    // Landmark motion is a single bounded accent redraw shared by all loaded locations. Keeping
+    // it on the surface streaming update means interiors can suspend it without another scene
+    // object traversal, while waterfalls and small glows remain alive during ordinary travel.
+    this.landmarkManager.updateAnimation(time);
     if (Number.isFinite(this.lastStreamingFrameTime)) {
       const frameDuration = time - this.lastStreamingFrameTime;
       // A late frame is a direct signal to stop optional object creation briefly. Terrain workers
@@ -301,6 +317,7 @@ export class ChunkManager {
       this.queueGroundGrassPreloadChunks();
       this.queuePrefetchChunks(playerWorldX, playerWorldY);
       this.processPendingChunks(time);
+      this.ensureCameraGroundGrassReady(playerWorldX, playerWorldY, time);
       return;
     }
 
@@ -312,6 +329,7 @@ export class ChunkManager {
     this.unloadDistantChunks();
     this.landmarkManager.update(this.activeChunkX, this.activeChunkY);
     this.processPendingChunks(time);
+    this.ensureCameraGroundGrassReady(playerWorldX, playerWorldY, time);
     this.updateChunkRenderVisibility();
   }
 
@@ -477,6 +495,30 @@ export class ChunkManager {
       }
     }
     return nearest;
+  }
+
+  findNearbyLandmarkEntrance(
+    worldX: number,
+    worldY: number,
+    radiusPixels: number
+  ): LandmarkEntrance | null {
+    return this.landmarkManager.findNearbyEntrance(worldX, worldY, radiusPixels);
+  }
+
+  findNearbyLandmarkMaterial(
+    worldX: number,
+    worldY: number,
+    radiusPixels: number
+  ): LandmarkMaterialNode | null {
+    return this.landmarkManager.findNearbyMaterial(worldX, worldY, radiusPixels);
+  }
+
+  refreshLandmarkMaterial(materialId: string): void {
+    this.landmarkManager.refreshMaterial(materialId);
+  }
+
+  isLandmarkStructureAtWorldPoint(worldX: number, worldY: number): boolean {
+    return this.landmarkManager.isStructureAtWorldPoint(worldX, worldY);
   }
 
   findNearbyFeature(
@@ -845,6 +887,13 @@ export class ChunkManager {
   private configureChunkPresentation(chunk: WorldChunk): void {
     const shouldPreloadGroundGrass = this.groundGrassEnabled && this.isWithinGroundGrassPreloadWindow(chunk.x, chunk.y);
     chunk.setGroundGrassPreloadEnabled(shouldPreloadGroundGrass);
+    if (shouldPreloadGroundGrass
+      && chunk.hasPendingGroundGrassBuild
+      && Number.isFinite(this.lastPlayerWorldX)
+      && Number.isFinite(this.lastPlayerWorldY)
+      && this.isChunkWithinCameraAt(chunk.x, chunk.y, this.lastPlayerWorldX, this.lastPlayerWorldY)) {
+      chunk.buildGroundGrassBatch(performance.now(), Number.MAX_SAFE_INTEGER);
+    }
     chunk.setRenderVisible(this.isWithinRenderWindow(chunk.x, chunk.y));
     chunk.setGroundGrassVisible(
       this.groundGrassEnabled
@@ -858,7 +907,7 @@ export class ChunkManager {
   // next camera window complete well before the player can reach it.
   private processGroundGrassBuilds(
     time: number,
-    tileBudget = GROUND_GRASS_BUILD_TILES_PER_TICK,
+    patchBudget = GROUND_GRASS_BUILD_PATCHES_PER_TICK,
     force = false
   ): boolean {
     if (!this.groundGrassEnabled
@@ -876,31 +925,61 @@ export class ChunkManager {
       && Number.isFinite(centerY)
       && Math.abs(candidate.x - centerX) <= preloadRadiusX
       && Math.abs(candidate.y - centerY) <= preloadRadiusY;
-    let chunk: WorldChunk | undefined;
-    let bestPriority = Number.POSITIVE_INFINITY;
-    this.chunks.forEach((candidate) => {
-      if (!candidate.hasPendingGroundGrassBuild
-        || (!insideWindow(candidate, this.presentationFocusChunkX, this.presentationFocusChunkY)
-          && !insideWindow(candidate, this.activeChunkX, this.activeChunkY)
-          && !insideWindow(candidate, this.streamFocusChunkX, this.streamFocusChunkY))) {
-        return;
-      }
-      const priority = this.groundGrassPriority(candidate);
-      if (priority < bestPriority) {
-        chunk = candidate;
-        bestPriority = priority;
-      }
-    });
-    if (!chunk) {
-      return false;
-    }
-
     this.lastGroundGrassBuildTime = time;
-    chunk.buildGroundGrassBatch(time, tileBudget);
-    if (!chunk.hasPendingGroundGrassBuild) {
-      this.configureChunkPresentation(chunk);
+    const startedAt = performance.now();
+    const maximumChunks = force ? GROUND_GRASS_INITIAL_CHUNKS_PER_TICK : Number.POSITIVE_INFINITY;
+    let processedChunks = 0;
+    while (processedChunks < maximumChunks
+      && (force || performance.now() - startedAt < GROUND_GRASS_BUILD_TIME_BUDGET_MS)) {
+      let chunk: WorldChunk | undefined;
+      let bestPriority = Number.POSITIVE_INFINITY;
+      this.chunks.forEach((candidate) => {
+        if (!candidate.hasPendingGroundGrassBuild
+          || (!insideWindow(candidate, this.presentationFocusChunkX, this.presentationFocusChunkY)
+            && !insideWindow(candidate, this.activeChunkX, this.activeChunkY)
+            && !insideWindow(candidate, this.streamFocusChunkX, this.streamFocusChunkY))) {
+          return;
+        }
+        const priority = this.groundGrassPriority(candidate);
+        if (priority < bestPriority) {
+          chunk = candidate;
+          bestPriority = priority;
+        }
+      });
+      if (!chunk) {
+        break;
+      }
+      chunk.buildGroundGrassBatch(time, patchBudget);
+      processedChunks += 1;
+      if (!chunk.hasPendingGroundGrassBuild) {
+        this.configureChunkPresentation(chunk);
+      } else if (!force) {
+        // Continue this chunk next frame. Re-selecting it in the same frame would defeat the
+        // intended patch budget even when the wall-clock timer has not advanced measurably.
+        break;
+      }
     }
-    return true;
+    return processedChunks > 0;
+  }
+
+  private ensureCameraGroundGrassReady(worldX: number, worldY: number, time: number): void {
+    if (!this.groundGrassEnabled) {
+      return;
+    }
+    const bounds = this.cameraChunkBoundsAt(worldX, worldY);
+    for (let y = bounds.minimumY; y <= bounds.maximumY; y += 1) {
+      for (let x = bounds.minimumX; x <= bounds.maximumX; x += 1) {
+        const chunk = this.chunks.get(`${x},${y}`);
+        if (!chunk || !chunk.hasPendingGroundGrassBuild) {
+          continue;
+        }
+        // Predictive batches normally finish this work off-screen. This bounded fallback handles
+        // teleports, resize, or unusually fast travel: an actual camera chunk is never presented
+        // with a temporarily empty grass layer.
+        chunk.buildGroundGrassBatch(time, Number.MAX_SAFE_INTEGER);
+        this.configureChunkPresentation(chunk);
+      }
+    }
   }
 
   // The fixed world-view target covers the common 16:9 display, but an ultrawide monitor can
@@ -1012,6 +1091,14 @@ export class ChunkManager {
       minimumY: worldToChunk(worldY - halfHeight - edgePadding),
       maximumY: worldToChunk(worldY + halfHeight + edgePadding)
     };
+  }
+
+  private isChunkWithinCameraAt(chunkX: number, chunkY: number, worldX: number, worldY: number): boolean {
+    const bounds = this.cameraChunkBoundsAt(worldX, worldY);
+    return chunkX >= bounds.minimumX
+      && chunkX <= bounds.maximumX
+      && chunkY >= bounds.minimumY
+      && chunkY <= bounds.maximumY;
   }
 
   private isWithinFocusedCameraWindow(chunkX: number, chunkY: number): boolean {

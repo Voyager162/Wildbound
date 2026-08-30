@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import type { WorldSelection } from '../save/WorldLibrary';
 import { mainMenuMusic } from '../audio/MainMenuMusic';
+import { gameMusic } from '../audio/GameMusic';
 import { MainMenuOverlay } from '../ui/MainMenuOverlay';
 
 export class MainMenuScene extends Phaser.Scene {
@@ -12,6 +13,7 @@ export class MainMenuScene extends Phaser.Scene {
 
   create(): void {
     this.cameras.main.setBackgroundColor('#0d1b20');
+    gameMusic.stop();
     void mainMenuMusic.start();
     const gameElement = document.getElementById('game');
     if (!gameElement) {
