@@ -513,6 +513,14 @@ export class ChunkManager {
     return this.landmarkManager.findNearbyMaterial(worldX, worldY, radiusPixels);
   }
 
+  animateAncientTreeDoorOpen(landmarkId: string): Promise<void> {
+    return this.landmarkManager.animateAncientTreeDoorOpen(landmarkId);
+  }
+
+  resetAncientTreeDoor(landmarkId: string): void {
+    this.landmarkManager.resetAncientTreeDoor(landmarkId);
+  }
+
   refreshLandmarkMaterial(materialId: string): void {
     this.landmarkManager.refreshMaterial(materialId);
   }

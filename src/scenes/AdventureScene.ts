@@ -63,7 +63,7 @@ import {
   landmarksIntersectingTiles,
   nearestLandmarkToTile
 } from '../world/generation/landmarkGenerator';
-import type { ProceduralLandmark } from '../world/landmarkConfig';
+import { LandmarkType, type ProceduralLandmark } from '../world/landmarkConfig';
 import type {
   LandmarkEntrance,
   LandmarkMaterialNode
@@ -305,6 +305,7 @@ export class AdventureScene extends Phaser.Scene {
   private returningToMainMenu = false;
   private worldReady = false;
   private caveTransitionInProgress = false;
+  private landmarkEntranceSequenceInProgress = false;
   private worldSeed = WORLD_SEED;
   private worldId: string | null = null;
   private worldMode: WorldMode = 'survival';
@@ -639,6 +640,19 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
     this.updateExploration();
+
+    if (this.landmarkEntranceSequenceInProgress) {
+      this.ambientAudio?.setSwimming(false, false, false);
+      this.cancelTonicDrinking();
+      this.clearPlacementPreview();
+      this.chunkManager.update(this.player.x, this.player.y, time);
+      this.chunkManager.updateFoliage(time);
+      this.chunkManager.updateWaterAnimation(time);
+      this.chunkManager.updateAmbient(time, this.player.x, this.player.y, this.ambientLightAmount);
+      this.updateNightAmbientLighting(time);
+      this.updatePlayerAvatar(delta, true);
+      return;
+    }
 
     if (this.worldMapOpen) {
       this.ambientAudio?.setSwimming(false, false, false);
@@ -1416,6 +1430,9 @@ export class AdventureScene extends Phaser.Scene {
   }
 
   private handleContextualAction(event: KeyboardEvent): void {
+    if (this.landmarkEntranceSequenceInProgress) {
+      return;
+    }
     if (this.placedObjectOverlay.isOpen) {
       if (this.matchesControl('openInventory', event)) {
         this.placedObjectOverlay.close();
@@ -1441,7 +1458,7 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     if (this.activeLandmarkInterior) {
-      if (event.code === 'KeyE' && this.landmarkInteriorExitNearby) {
+      if ((event.code === 'KeyE' || event.key.toLowerCase() === 'e') && this.landmarkInteriorExitNearby) {
         void this.exitLandmarkInterior();
         return;
       }
@@ -1474,12 +1491,8 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
-    if (event.code === 'KeyE' && this.nearbyLandmarkEntrance) {
-      void this.enterLandmarkInterior(
-        this.nearbyLandmarkEntrance.landmark,
-        this.player.x,
-        this.player.y
-      );
+    if ((event.code === 'KeyE' || event.key.toLowerCase() === 'e') && this.nearbyLandmarkEntrance) {
+      void this.beginLandmarkEntranceSequence(this.nearbyLandmarkEntrance);
       return;
     }
     if (this.matchesControl('enterExitCave', event) && this.nearbyCaveEntrance) {
@@ -1524,7 +1537,7 @@ export class AdventureScene extends Phaser.Scene {
   private readonly handleWorldPointerDown = (pointer: Phaser.Input.Pointer): void => {
     this.ambientAudio?.activate();
     if (!this.worldReady || this.inventoryOpen || this.craftingOpen || this.worldMapOpen
-      || this.pauseMenuOpen || this.placedObjectOverlay.isOpen) {
+      || this.pauseMenuOpen || this.placedObjectOverlay.isOpen || this.landmarkEntranceSequenceInProgress) {
       return;
     }
     // Non-harvest controls are normally keyboard actions, but they are fully data-driven and
@@ -1568,11 +1581,7 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
     if (this.matchesPointerControl('enterExitCave', pointer) && this.nearbyLandmarkEntrance) {
-      void this.enterLandmarkInterior(
-        this.nearbyLandmarkEntrance.landmark,
-        this.player.x,
-        this.player.y
-      );
+      void this.beginLandmarkEntranceSequence(this.nearbyLandmarkEntrance);
       return;
     }
     if (this.matchesPointerControl('enterExitCave', pointer) && this.nearbyCaveEntrance) {
@@ -3096,6 +3105,103 @@ export class AdventureScene extends Phaser.Scene {
   private hideLandmarkHint(): void {
     this.landmarkHintPanel.clear().setVisible(false);
     this.landmarkHint.setVisible(false);
+  }
+
+  private tweenPlayerForLandmarkEntrance(
+    worldX: number,
+    worldY: number,
+    duration: number,
+    facingX: number,
+    facingY: number
+  ): Promise<void> {
+    this.updateFacing(facingX, facingY);
+    this.lastAvatarState = '';
+    return new Promise((resolve) => {
+      this.tweens.add({
+        targets: this.player,
+        x: worldX,
+        y: worldY,
+        duration,
+        ease: 'Sine.easeInOut',
+        onUpdate: () => {
+          this.playerAvatar.setPosition(this.player.x, this.player.y);
+        },
+        onComplete: () => {
+          this.player.setPosition(worldX, worldY);
+          this.playerAvatar.setPosition(worldX, worldY);
+          resolve();
+        }
+      });
+    });
+  }
+
+  private async beginLandmarkEntranceSequence(entrance: LandmarkEntrance): Promise<void> {
+    if (this.landmarkEntranceSequenceInProgress || this.caveTransitionInProgress) {
+      return;
+    }
+    const returnWorldX = this.player.x;
+    const returnWorldY = this.player.y;
+    if (entrance.landmark.type !== LandmarkType.GiantAncientTree) {
+      await this.enterLandmarkInterior(entrance.landmark, returnWorldX, returnWorldY);
+      return;
+    }
+
+    this.landmarkEntranceSequenceInProgress = true;
+    this.cancelHarvesting();
+    this.cancelTonicDrinking();
+    this.nearbyLandmarkEntrance = null;
+    this.surfaceLandmarkMaterialTarget = null;
+    this.interactionHighlight.setVisible(false);
+    this.hideLandmarkHint();
+
+    const landmarkCenterX = (entrance.landmark.centerTileX + 0.5) * WORLD_TILE_SIZE;
+    const landmarkCenterY = (entrance.landmark.centerTileY + 0.5) * WORLD_TILE_SIZE;
+    const radialX = entrance.worldX - landmarkCenterX;
+    const radialY = entrance.worldY - landmarkCenterY;
+    const radialLength = Math.max(1, Math.hypot(radialX, radialY));
+    const outwardX = radialX / radialLength;
+    const outwardY = radialY / radialLength;
+    const radius = entrance.landmark.footprintRadiusTiles * WORLD_TILE_SIZE;
+    const grabDistance = Math.max(34, radius * 0.09);
+    const pullDistance = Math.max(16, radius * 0.045);
+
+    try {
+      // Approach the plug, brace backward while pulling it free, then walk through the revealed
+      // hollow. Player input stays locked for this short authored sequence.
+      await this.tweenPlayerForLandmarkEntrance(
+        entrance.worldX + outwardX * grabDistance,
+        entrance.worldY + outwardY * grabDistance,
+        280,
+        -outwardX,
+        -outwardY
+      );
+      await Promise.all([
+        this.chunkManager.animateAncientTreeDoorOpen(entrance.landmark.id),
+        this.tweenPlayerForLandmarkEntrance(
+          entrance.worldX + outwardX * (grabDistance + pullDistance),
+          entrance.worldY + outwardY * (grabDistance + pullDistance),
+          620,
+          -outwardX,
+          -outwardY
+        )
+      ]);
+      await this.tweenPlayerForLandmarkEntrance(
+        entrance.worldX - outwardX * radius * 0.19,
+        entrance.worldY - outwardY * radius * 0.19,
+        430,
+        -outwardX,
+        -outwardY
+      );
+      await this.enterLandmarkInterior(entrance.landmark, returnWorldX, returnWorldY);
+    } catch (error) {
+      console.error('Wildbound could not complete the ancient-tree entrance sequence.', error);
+      this.player.setPosition(returnWorldX, returnWorldY);
+      this.playerAvatar.setPosition(returnWorldX, returnWorldY);
+      this.updateLandmarkEntranceInteraction(true);
+    } finally {
+      this.chunkManager.resetAncientTreeDoor(entrance.landmark.id);
+      this.landmarkEntranceSequenceInProgress = false;
+    }
   }
 
   private async enterLandmarkInterior(

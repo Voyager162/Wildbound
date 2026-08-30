@@ -322,6 +322,28 @@ plans.forEach((plan) => {
 });
 assert.equal(entranceCount, 3, 'Exactly three landmark surface plans must expose entrances');
 
+const ancientTreePlan = plans.find((plan) => plan.landmark.type === LandmarkType.GiantAncientTree)!;
+const ancientTreeEntrance = ancientTreePlan.entrance!;
+const ancientTreeCenterWorldX = (ancientTreePlan.landmark.centerTileX + 0.5) * WORLD_TILE_SIZE;
+const ancientTreeCenterWorldY = (ancientTreePlan.landmark.centerTileY + 0.5) * WORLD_TILE_SIZE;
+assert.ok(
+  Math.abs(ancientTreeEntrance.worldX - ancientTreeCenterWorldX) < 0.001
+    && ancientTreeEntrance.worldY > ancientTreeCenterWorldY,
+  'The ancient-tree door must remain centered on the visible southern trunk face'
+);
+assert.ok(
+  Math.abs(ancientTreeEntrance.facingAngle - Math.PI / 2) < 0.001,
+  'The ancient-tree doorway must face world south regardless of landmark rotation'
+);
+assert.ok(
+  ancientTreeEntrance.interactionRadiusPixels >= 150,
+  'The ancient-tree interaction reach must account for its oversized circular door'
+);
+assert.ok(
+  ancientTreePlan.components.filter((component) => component.role === 'ancient-root').length >= 8,
+  'Ancient trees must retain a substantial deterministic buttress-root network while leaving the door lane open'
+);
+
 const stonePlan = plans.find((plan) => plan.landmark.type === LandmarkType.StoneCircle)!;
 const stoneCenterWorldX = (stonePlan.landmark.centerTileX + 0.5) * WORLD_TILE_SIZE;
 const stoneCenterWorldY = (stonePlan.landmark.centerTileY + 0.5) * WORLD_TILE_SIZE;

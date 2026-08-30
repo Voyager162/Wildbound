@@ -3,7 +3,7 @@ import { LandmarkType, type ProceduralLandmark } from '../landmarkConfig';
 import { randomAtTile } from '../generation/noise';
 import { WORLD_TILE_SIZE } from '../worldConfig';
 
-export const LANDMARK_SURFACE_GENERATION_VERSION = 2;
+export const LANDMARK_SURFACE_GENERATION_VERSION = 3;
 
 export type LandmarkComponentRole =
   | 'ancient-trunk'
@@ -269,7 +269,7 @@ const createEntrance = (
     tileX: Math.floor(worldX / WORLD_TILE_SIZE),
     tileY: Math.floor(worldY / WORLD_TILE_SIZE),
     facingAngle: facingAngle + landmark.rotation,
-    interactionRadiusPixels: 72,
+    interactionRadiusPixels: landmark.type === LandmarkType.GiantAncientTree ? 156 : 72,
     label: 'Press E to enter'
   };
 };
@@ -280,18 +280,30 @@ const treePlan = (seed: string, landmark: ProceduralLandmark): Omit<LandmarkSurf
   const components: LandmarkSurfaceComponent[] = [];
   const shapes: LandmarkSurfaceShape[] = [];
   const details: LandmarkGroundDetail[] = [];
-  // Two massive trunk walls form a genuine hollow while preserving a clear southern approach.
+  // Surface art is screen-oriented for legibility, so counter-rotate the entrance to keep every
+  // ancient tree's carved door on the visible southern face regardless of its seeded rotation.
+  const entranceAngle = Math.PI / 2 - landmark.rotation;
+  const tangentAngle = entranceAngle + Math.PI / 2;
+  const trunkRotation = entranceAngle - Math.PI / 2;
+  // Two buttress walls preserve a walkable channel into the hollow without making the trunk
+  // collision feel split. Their long axes point toward the front door.
   [-1, 1].forEach((side, index) => {
-    const shape = box(side * r * 0.22, -r * 0.08, r * 0.27, r * 0.82, side * 0.035);
+    const shape = box(
+      Math.cos(tangentAngle) * side * r * 0.22 - Math.cos(entranceAngle) * r * 0.08,
+      Math.sin(tangentAngle) * side * r * 0.22 - Math.sin(entranceAngle) * r * 0.08,
+      r * 0.27,
+      r * 0.82,
+      trunkRotation + side * 0.035
+    );
     shapes.push(shape);
-    components.push(component(landmark, 'ancient-trunk', index, shape, r * 1.18, side * 0.035, 0, 1, planRandom(planSeed, 1, index), index));
+    components.push(component(landmark, 'ancient-trunk', index, shape, r * 1.62, side * 0.035, trunkRotation, 1, planRandom(planSeed, 1, index), index));
   });
   const rootCount = 12 + Math.floor(planRandom(planSeed, 2, 0) * 5);
   for (let index = 0; index < rootCount; index += 1) {
     const angle = -Math.PI + (index / rootCount) * Math.PI * 2
       + (planRandom(planSeed, 2, index, 1) - 0.5) * 0.24;
-    // Keep the lower-center entrance lane open.
-    const pointsTowardEntrance = Math.abs(Math.atan2(Math.sin(angle - Math.PI / 2), Math.cos(angle - Math.PI / 2))) < 0.58;
+    // Keep the world-south entrance lane open.
+    const pointsTowardEntrance = Math.abs(Math.atan2(Math.sin(angle - entranceAngle), Math.cos(angle - entranceAngle))) < 0.58;
     const startRadius = r * (0.13 + planRandom(planSeed, 2, index, 2) * 0.08);
     const length = r * (0.55 + planRandom(planSeed, 2, index, 3) * 0.48);
     const startX = Math.cos(angle) * startRadius;
@@ -311,13 +323,34 @@ const treePlan = (seed: string, landmark: ProceduralLandmark): Omit<LandmarkSurf
     const distance = r * (0.22 + planRandom(planSeed, 4, index, 2) * 0.58);
     const shape = circle(
       Math.cos(angle) * distance,
-      -r * 0.7 + Math.sin(angle) * distance * 0.58,
+      -r * 1.18 + Math.sin(angle) * distance * 0.5,
       r * (0.18 + planRandom(planSeed, 4, index, 3) * 0.19)
     );
     components.push(component(landmark, 'canopy-lobe', index, shape, r * 0.2, 0, angle, 1, planRandom(planSeed, 4, index, 4), 100 + index));
   }
-  details.push(groundDetail(landmark, 'approach-path', 0, 0, r * 0.72, r * 0.62, r * 0.17, Math.PI / 2, 0.26, planRandom(planSeed, 5, 0)));
-  return { components, structuralShapes: shapes, groundDetails: details, entrance: createEntrance(landmark, 0, r * 0.33, Math.PI / 2) };
+  details.push(groundDetail(
+    landmark,
+    'approach-path',
+    0,
+    Math.cos(entranceAngle) * r * 0.72,
+    Math.sin(entranceAngle) * r * 0.72,
+    r * 0.62,
+    r * 0.17,
+    entranceAngle,
+    0.26,
+    planRandom(planSeed, 5, 0)
+  ));
+  return {
+    components,
+    structuralShapes: shapes,
+    groundDetails: details,
+    entrance: createEntrance(
+      landmark,
+      Math.cos(entranceAngle) * r * 0.33,
+      Math.sin(entranceAngle) * r * 0.33,
+      entranceAngle
+    )
+  };
 };
 
 const waterfallPlan = (seed: string, landmark: ProceduralLandmark): Omit<LandmarkSurfacePlan, 'id' | 'generationVersion' | 'landmark' | 'materials'> => {
