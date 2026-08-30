@@ -298,7 +298,7 @@ export class ChunkManager {
     // Landmark motion is a single bounded accent redraw shared by all loaded locations. Keeping
     // it on the surface streaming update means interiors can suspend it without another scene
     // object traversal, while waterfalls and small glows remain alive during ordinary travel.
-    this.landmarkManager.updateAnimation(time);
+    this.landmarkManager.updateAnimation(time, playerWorldX, playerWorldY);
     if (Number.isFinite(this.lastStreamingFrameTime)) {
       const frameDuration = time - this.lastStreamingFrameTime;
       // A late frame is a direct signal to stop optional object creation briefly. Terrain workers

@@ -4,6 +4,7 @@ import { randomAtTile } from './generation/noise';
 import { landmarksIntersectingTiles } from './generation/landmarkGenerator';
 import { LandmarkType, type ProceduralLandmark } from './landmarkConfig';
 import {
+  ancientTreeOccludesWorldPoint,
   createLandmarkSurfacePlan,
   landmarkCollisionContainsWorldPoint,
   type LandmarkEntrance,
@@ -26,6 +27,11 @@ const LANDMARK_STRUCTURE_DEPTH = 2.35;
 const LANDMARK_ACCENT_DEPTH = 4.2;
 const LANDMARK_DOOR_DEPTH = 4.35;
 const LANDMARK_FOREGROUND_DEPTH = 11.2;
+const LANDMARK_TREE_FRONT_DEPTH = 4.25;
+const LANDMARK_TREE_ANIMATION_FRONT_DEPTH = 4.3;
+const LANDMARK_TREE_BEHIND_DEPTH = 11.2;
+const LANDMARK_TREE_ANIMATION_BEHIND_DEPTH = 11.3;
+const LANDMARK_TREE_DOOR_BEHIND_DEPTH = 11.4;
 const LANDMARK_ANIMATION_INTERVAL_MS = 100;
 
 interface Point {
@@ -1204,6 +1210,362 @@ const drawAncientTreeTall = (
   });
 };
 
+interface AncientTreeFruitPosition extends Point {
+  readonly stemX: number;
+  readonly stemY: number;
+}
+
+const ancientTreeDoorY = (entrance: LandmarkEntrance, scale: number): number => (
+  entrance.worldY - scale * 0.105
+);
+
+const drawLeafShape = (
+  graphics: Phaser.GameObjects.Graphics,
+  x: number,
+  y: number,
+  length: number,
+  angle: number,
+  color: number,
+  alpha: number,
+  veinColor: number
+): void => {
+  const directionX = Math.cos(angle);
+  const directionY = Math.sin(angle);
+  const normalX = -directionY;
+  const normalY = directionX;
+  const tipAX = x - directionX * length * 0.62;
+  const tipAY = y - directionY * length * 0.62;
+  const tipBX = x + directionX * length * 0.62;
+  const tipBY = y + directionY * length * 0.62;
+  const sideAX = x + normalX * length * 0.25;
+  const sideAY = y + normalY * length * 0.25;
+  const sideBX = x - normalX * length * 0.25;
+  const sideBY = y - normalY * length * 0.25;
+  graphics.fillStyle(color, alpha);
+  graphics.fillTriangle(tipAX, tipAY, sideAX, sideAY, tipBX, tipBY);
+  graphics.fillTriangle(tipAX, tipAY, tipBX, tipBY, sideBX, sideBY);
+  graphics.lineStyle(Math.max(0.7, length * 0.08), veinColor, Math.min(0.48, alpha * 0.62));
+  graphics.lineBetween(
+    x - directionX * length * 0.5,
+    y - directionY * length * 0.5,
+    x + directionX * length * 0.5,
+    y + directionY * length * 0.5
+  );
+};
+
+const seamlessAncientTreeFruitPositions = (
+  seed: string,
+  landmark: ProceduralLandmark,
+  center: Point,
+  radius: number
+): readonly AncientTreeFruitPosition[] => {
+  const scale = radius * 0.78;
+  const crownY = center.y - scale * 1.28;
+  const count = 22 + Math.floor(detailRandom(seed, landmark, 0, 0xe110) * 6);
+  return Array.from({ length: count }, (_, index) => {
+    const angle = index * 2.399963229728653
+      + detailRandom(seed, landmark, index, 0xe111) * 0.42;
+    const distance = Math.sqrt((index + 0.65) / count);
+    const x = center.x + Math.cos(angle) * scale * 0.67 * distance;
+    const y = crownY + Math.sin(angle) * scale * 0.34 * distance;
+    return {
+      x,
+      y,
+      stemX: x + (detailRandom(seed, landmark, index, 0xe113) - 0.5) * scale * 0.035,
+      stemY: y - scale * (0.035 + detailRandom(seed, landmark, index, 0xe114) * 0.045)
+    };
+  });
+};
+
+const drawAncientTreeUnified = (
+  seed: string,
+  visual: LandmarkVisual,
+  palette: LandmarkPalette
+): void => {
+  const { landmark, plan, ground, structure, shadow, foreground } = visual;
+  const center = centerFor(landmark);
+  const r = landmark.footprintRadiusTiles * WORLD_TILE_SIZE;
+  const s = r * 0.78;
+  const crownCenter = { x: center.x - s * 0.018, y: center.y - s * 1.28 };
+  const curvedTaper = (
+    start: Point,
+    control: Point,
+    end: Point,
+    startWidth: number,
+    endWidth: number,
+    segments = 18
+  ): Point[] => {
+    const left: Point[] = [];
+    const right: Point[] = [];
+    for (let index = 0; index <= segments; index += 1) {
+      const t = index / segments;
+      const inverse = 1 - t;
+      const point = {
+        x: inverse * inverse * start.x + 2 * inverse * t * control.x + t * t * end.x,
+        y: inverse * inverse * start.y + 2 * inverse * t * control.y + t * t * end.y
+      };
+      const tangentX = 2 * inverse * (control.x - start.x) + 2 * t * (end.x - control.x);
+      const tangentY = 2 * inverse * (control.y - start.y) + 2 * t * (end.y - control.y);
+      const tangentLength = Math.max(0.001, Math.hypot(tangentX, tangentY));
+      const width = startWidth + (endWidth - startWidth) * t;
+      left.push({
+        x: point.x - tangentY / tangentLength * width,
+        y: point.y + tangentX / tangentLength * width
+      });
+      right.push({
+        x: point.x + tangentY / tangentLength * width,
+        y: point.y - tangentX / tangentLength * width
+      });
+    }
+    return [...left, ...right.reverse()];
+  };
+  const crownPoints = (scaleX: number, scaleY: number, salt: number, offsetY = 0): Point[] => (
+    Array.from({ length: 72 }, (_, index) => {
+      const angle = index / 72 * Math.PI * 2;
+      const broadWave = Math.sin(angle * 7 + landmark.variation * 4.7) * 0.06
+        + Math.cos(angle * 3 - landmark.variation * 2.1) * 0.035;
+      const fineWave = (detailRandom(seed, landmark, index, salt) - 0.5) * 0.08;
+      const amount = 1 + broadWave + fineWave;
+      return {
+        x: crownCenter.x + Math.cos(angle) * s * scaleX * amount,
+        y: crownCenter.y + offsetY + Math.sin(angle) * s * scaleY * amount
+      };
+    })
+  );
+
+  // A continuous raised root bed blends outward through soil and moss. It is visual terrain only;
+  // movement collision is owned by the compact trunk heart in the surface plan.
+  fillPolygon(
+    ground,
+    irregularRing(seed, landmark, center.x, center.y + s * 0.12, s * 0.9, s * 0.58, 44, 0xe120),
+    mixColor(palette.soilDark, palette.moss, 0.24),
+    0.26
+  );
+  fillPolygon(
+    ground,
+    irregularRing(seed, landmark, center.x - s * 0.03, center.y + s * 0.08, s * 0.72, s * 0.43, 42, 0xe121),
+    mixColor(palette.soil, palette.moss, 0.18),
+    0.18
+  );
+  for (let patch = 0; patch < 28; patch += 1) {
+    const angle = detailRandom(seed, landmark, patch, 0xe122) * Math.PI * 2;
+    const distance = s * (0.4 + detailRandom(seed, landmark, patch, 0xe123) * 0.62);
+    const x = center.x + Math.cos(angle) * distance;
+    const y = center.y + Math.sin(angle) * distance * 0.66;
+    ground.fillStyle(patch % 4 === 0 ? palette.soilLight : palette.moss, 0.1 + detailRandom(seed, landmark, patch, 0xe124) * 0.16);
+    ground.fillEllipse(x, y, s * (0.04 + detailRandom(seed, landmark, patch, 0xe125) * 0.1), s * 0.025);
+  }
+
+  // Six broad buttresses share the trunk's fill color and have no enclosing outlines, making the
+  // base read as one organism. Each exposed root sinks into a paired soil ridge at its tip.
+  const rootAngles = [0.06, 0.24, 0.39, 0.61, 0.76, 0.94].map((amount) => amount * Math.PI);
+  rootAngles.forEach((baseAngle, index) => {
+    const angle = baseAngle + (detailRandom(seed, landmark, index, 0xe130) - 0.5) * 0.12;
+    const length = s * (0.46 + detailRandom(seed, landmark, index, 0xe131) * 0.2);
+    const start = {
+      x: center.x + Math.cos(angle) * s * 0.06,
+      y: center.y + s * 0.05 + Math.sin(angle) * s * 0.03
+    };
+    const end = {
+      x: center.x + Math.cos(angle) * length,
+      y: center.y + Math.sin(angle) * length * 0.72
+    };
+    const side = index % 2 === 0 ? 1 : -1;
+    const control = {
+      x: (start.x + end.x) * 0.5 - Math.sin(angle) * s * 0.055 * side,
+      y: (start.y + end.y) * 0.5 + Math.cos(angle) * s * 0.055 * side
+    };
+    const startWidth = s * (0.12 + detailRandom(seed, landmark, index, 0xe132) * 0.035);
+    const endWidth = s * 0.022;
+    const soilRoot = curvedTaper(start, control, end, startWidth * 1.2, endWidth * 1.8);
+    fillPolygon(ground, soilRoot, palette.soilDark, 0.28);
+    const root = curvedTaper(start, control, end, startWidth, endWidth);
+    fillPolygon(structure, root, mixColor(palette.wood, palette.woodDark, 0.08), 1);
+    strokePolyline(structure, [start, control, end], palette.woodLight, Math.max(1.2, s * 0.004), 0.25);
+    ground.fillStyle(palette.moss, 0.32);
+    ground.fillEllipse(end.x, end.y, endWidth * 4.2, endWidth * 1.5);
+  });
+
+  shadow.fillStyle(0x07120c, 0.34);
+  shadow.fillEllipse(center.x + s * 0.09, center.y + s * 0.16, s * 1.42, s * 0.61);
+  shadow.fillStyle(0x06110b, 0.27);
+  shadow.fillEllipse(crownCenter.x + s * 0.1, crownCenter.y + s * 0.2, s * 1.75, s * 0.75);
+
+  // Limbs are laid down first and disappear naturally into the crown. The trunk is painted over
+  // their bases with the same palette, eliminating seams where the forms join.
+  for (let branch = 0; branch < 9; branch += 1) {
+    const side = branch % 2 === 0 ? -1 : 1;
+    const tier = Math.floor(branch / 2);
+    const start = {
+      x: center.x + side * s * (0.025 + tier * 0.008),
+      y: center.y - s * (0.61 + tier * 0.09)
+    };
+    const end = {
+      x: crownCenter.x + side * s * (0.38 + detailRandom(seed, landmark, branch, 0xe140) * 0.33),
+      y: crownCenter.y + s * (-0.13 + tier * 0.075 + (detailRandom(seed, landmark, branch, 0xe141) - 0.5) * 0.12)
+    };
+    const control = {
+      x: start.x + side * s * (0.2 + detailRandom(seed, landmark, branch, 0xe142) * 0.16),
+      y: (start.y + end.y) * 0.5 - s * (0.05 + detailRandom(seed, landmark, branch, 0xe143) * 0.09)
+    };
+    fillPolygon(foreground, curvedTaper(start, control, end, s * 0.046, s * 0.009), palette.woodDark, 1);
+    fillPolygon(foreground, curvedTaper(start, control, end, s * 0.034, s * 0.005), palette.wood, 1);
+    strokePolyline(foreground, [start, control, end], palette.woodLight, Math.max(1, s * 0.0035), 0.24);
+  }
+
+  // One tall trunk silhouette from the root flare to the high crown.
+  const trunkLeft: Point[] = [];
+  const trunkRight: Point[] = [];
+  const trunkSegments = 26;
+  for (let index = 0; index <= trunkSegments; index += 1) {
+    const t = index / trunkSegments;
+    const y = center.y + s * 0.27 - t * s * 1.66;
+    const taper = s * (0.34 * (1 - t) + 0.13 * t);
+    const rootFlare = t < 0.22 ? s * 0.13 * (1 - t / 0.22) : 0;
+    const leftGnarl = s * (
+      0.038 * Math.exp(-Math.pow((t - 0.32) / 0.075, 2))
+      + 0.027 * Math.exp(-Math.pow((t - 0.67) / 0.09, 2))
+    );
+    const rightGnarl = s * (
+      0.031 * Math.exp(-Math.pow((t - 0.46) / 0.085, 2))
+      + 0.024 * Math.exp(-Math.pow((t - 0.78) / 0.07, 2))
+    );
+    const sway = Math.sin(t * Math.PI * 1.28 + landmark.variation * 2.8) * s * 0.028 * t;
+    const leftNoise = (detailRandom(seed, landmark, index, 0xe150) - 0.5) * s * 0.018;
+    const rightNoise = (detailRandom(seed, landmark, index, 0xe151) - 0.5) * s * 0.018;
+    trunkLeft.push({ x: center.x + sway - taper - rootFlare - leftGnarl + leftNoise, y });
+    trunkRight.push({ x: center.x + sway + taper + rootFlare + rightGnarl + rightNoise, y });
+  }
+  const trunk = [
+    ...trunkLeft,
+    ...trunkRight.reverse(),
+    { x: center.x + s * 0.24, y: center.y + s * 0.3 },
+    { x: center.x + s * 0.11, y: center.y + s * 0.27 },
+    { x: center.x, y: center.y + s * 0.35 },
+    { x: center.x - s * 0.12, y: center.y + s * 0.28 },
+    { x: center.x - s * 0.25, y: center.y + s * 0.31 }
+  ];
+  fillPolygon(foreground, trunk.map((point) => ({ x: point.x + s * 0.018, y: point.y + s * 0.018 })), palette.woodDark, 0.9);
+  fillPolygon(foreground, trunk, mixColor(palette.wood, palette.woodDark, 0.1), 1);
+
+  // Broad continuous light and shade bands model the round trunk without outlining separate bark
+  // tiles. Fine grooves then follow the trunk's vertical flow.
+  fillPolygon(foreground, [
+    { x: center.x - s * 0.28, y: center.y + s * 0.2 },
+    { x: center.x - s * 0.2, y: center.y - s * 0.38 },
+    { x: center.x - s * 0.1, y: center.y - s * 1.18 },
+    { x: center.x - s * 0.015, y: center.y - s * 1.2 },
+    { x: center.x - s * 0.075, y: center.y - s * 0.36 },
+    { x: center.x - s * 0.13, y: center.y + s * 0.2 }
+  ], palette.woodLight, 0.16);
+  fillPolygon(foreground, [
+    { x: center.x + s * 0.12, y: center.y + s * 0.2 },
+    { x: center.x + s * 0.08, y: center.y - s * 1.2 },
+    { x: center.x + s * 0.14, y: center.y - s * 1.17 },
+    { x: center.x + s * 0.28, y: center.y + s * 0.2 }
+  ], palette.woodDark, 0.24);
+  for (let groove = 0; groove < 36; groove += 1) {
+    const xAmount = -0.76 + detailRandom(seed, landmark, groove, 0xe160) * 1.52;
+    const startT = detailRandom(seed, landmark, groove, 0xe161) * 0.72;
+    const lengthT = 0.16 + detailRandom(seed, landmark, groove, 0xe162) * 0.27;
+    const points: Point[] = [];
+    for (let step = 0; step < 6; step += 1) {
+      const t = Math.min(0.98, startT + lengthT * step / 5);
+      const halfWidth = s * (0.27 * (1 - t) + 0.095 * t);
+      points.push({
+        x: center.x + xAmount * halfWidth + Math.sin(step * 1.7 + groove) * s * 0.005,
+        y: center.y + s * 0.18 - t * s * 1.53
+      });
+    }
+    strokePolyline(
+      foreground,
+      points,
+      groove % 6 === 0 ? palette.woodLight : palette.woodDark,
+      Math.max(1, s * (groove % 6 === 0 ? 0.0035 : 0.005)),
+      groove % 6 === 0 ? 0.34 : 0.55
+    );
+  }
+  for (let knot = 0; knot < 10; knot += 1) {
+    const t = 0.24 + detailRandom(seed, landmark, knot, 0xe170) * 0.61;
+    const halfWidth = s * (0.32 * (1 - t) + 0.12 * t);
+    const x = center.x + (detailRandom(seed, landmark, knot, 0xe171) - 0.5) * halfWidth * 1.2;
+    const y = center.y + s * 0.15 - t * s * 1.51;
+    const knotWidth = s * (0.048 + detailRandom(seed, landmark, knot, 0xe172) * 0.034);
+    const knotHeight = knotWidth * (0.48 + detailRandom(seed, landmark, knot, 0xe173) * 0.2);
+    foreground.fillStyle(palette.woodDark, 0.54);
+    foreground.fillEllipse(x, y, knotWidth, knotHeight);
+    foreground.fillStyle(shadeColor(palette.woodDark, -0.18), 0.72);
+    foreground.fillEllipse(x, y, knotWidth * 0.46, knotHeight * 0.48);
+    foreground.lineStyle(Math.max(1, s * 0.0025), palette.woodLight, 0.24);
+    foreground.strokeEllipse(x, y, knotWidth * 1.48, knotHeight * 1.62);
+    foreground.lineStyle(Math.max(1, s * 0.003), palette.woodDark, 0.38);
+    foreground.beginPath();
+    foreground.moveTo(x - knotWidth * 0.7, y);
+    foreground.lineTo(x - knotWidth * 1.55, y - knotHeight * 0.42);
+    foreground.moveTo(x + knotWidth * 0.7, y);
+    foreground.lineTo(x + knotWidth * 1.55, y + knotHeight * 0.35);
+    foreground.strokePath();
+  }
+
+  // A single wavy crown mass replaces individually outlined blobs. Tonal regions and hundreds of
+  // tiny leaves provide depth while preserving the uninterrupted silhouette.
+  fillPolygon(foreground, crownPoints(0.82, 0.54, 0xe180, s * 0.035), shadeColor(palette.moss, -0.32), 1);
+  fillPolygon(foreground, crownPoints(0.77, 0.5, 0xe181), mixColor(palette.moss, palette.mossLight, 0.14), 1);
+  fillPolygon(foreground, crownPoints(0.63, 0.39, 0xe182, -s * 0.035), mixColor(palette.moss, palette.mossLight, 0.34), 0.82);
+  fillPolygon(foreground, crownPoints(0.49, 0.28, 0xe183, -s * 0.09), mixColor(palette.moss, palette.mossLight, 0.56), 0.4);
+  for (let leaf = 0; leaf < 260; leaf += 1) {
+    const angle = detailRandom(seed, landmark, leaf, 0xe190) * Math.PI * 2;
+    const distance = Math.sqrt(detailRandom(seed, landmark, leaf, 0xe191));
+    const x = crownCenter.x + Math.cos(angle) * s * 0.7 * distance;
+    const y = crownCenter.y + Math.sin(angle) * s * 0.43 * distance;
+    const width = s * (0.013 + detailRandom(seed, landmark, leaf, 0xe192) * 0.015);
+    const leafAngle = detailRandom(seed, landmark, leaf, 0xe195) * Math.PI * 2;
+    const color = leaf % 5 === 0
+      ? palette.mossLight
+      : mixColor(palette.moss, palette.mossLight, 0.3 + detailRandom(seed, landmark, leaf, 0xe193) * 0.5);
+    drawLeafShape(
+      foreground,
+      x,
+      y,
+      width,
+      leafAngle,
+      color,
+      0.62 + detailRandom(seed, landmark, leaf, 0xe194) * 0.32,
+      palette.mossLight
+    );
+  }
+
+  // The doorway is cut into the trunk itself; the independent door layer covers this hollow when
+  // closed and swings aside around a fixed left hinge.
+  const entrance = plan.entrance;
+  if (entrance) {
+    const doorwayY = ancientTreeDoorY(entrance, s);
+    foreground.fillStyle(shadeColor(palette.wood, -0.31), 1);
+    foreground.fillCircle(entrance.worldX, doorwayY, s * 0.15);
+    foreground.lineStyle(Math.max(2, s * 0.009), palette.woodLight, 0.38);
+    foreground.strokeCircle(entrance.worldX, doorwayY, s * 0.142);
+    foreground.fillStyle(0x020403, 1);
+    foreground.fillCircle(entrance.worldX, doorwayY, s * 0.112);
+    foreground.fillStyle(0x0b120d, 0.92);
+    foreground.fillEllipse(entrance.worldX, doorwayY + s * 0.035, s * 0.15, s * 0.055);
+  }
+
+  seamlessAncientTreeFruitPositions(seed, landmark, center, r).forEach((fruit, index) => {
+    foreground.lineStyle(Math.max(1, s * 0.003), mixColor(palette.moss, palette.mossLight, 0.36), 0.8);
+    foreground.lineBetween(fruit.stemX, fruit.stemY, fruit.x, fruit.y - s * 0.012);
+    foreground.fillStyle(0xe9fff8, 0.98);
+    foreground.fillEllipse(fruit.x, fruit.y, s * 0.055, s * 0.074);
+    foreground.lineStyle(Math.max(1, s * 0.0025), 0xcff9ed, 0.72);
+    foreground.strokeEllipse(fruit.x, fruit.y, s * 0.059, s * 0.078);
+    foreground.fillStyle(0xffffff, 0.9);
+    foreground.fillCircle(fruit.x - s * 0.006, fruit.y - s * 0.01, Math.max(1.4, s * 0.004));
+    if (index % 3 === 0) {
+      foreground.fillStyle(palette.mossLight, 0.58);
+      foreground.fillEllipse(fruit.stemX + s * 0.008, fruit.stemY + s * 0.014, s * 0.019, s * 0.008);
+    }
+  });
+};
+
 const drawWaterfall = (seed: string, visual: LandmarkVisual, palette: LandmarkPalette): void => {
   const { landmark, plan, structure, shadow, foreground } = visual;
   const center = centerFor(landmark);
@@ -1421,7 +1783,7 @@ const drawStaticVisual = (
   plan.groundDetails.forEach((detail, index) => drawGroundDetail(ground, seed, landmark, detail, palette, index));
   switch (landmark.type) {
     case LandmarkType.GiantAncientTree:
-      drawAncientTreeTall(seed, visual, palette);
+      drawAncientTreeUnified(seed, visual, palette);
       break;
     case LandmarkType.Waterfall:
       drawWaterfall(seed, visual, palette);
@@ -1458,68 +1820,76 @@ const drawAncientTreeDoor = (
   const { door, landmark, plan } = visual;
   door.clear();
   const entrance = plan.entrance;
-  if (landmark.type !== LandmarkType.GiantAncientTree || !entrance || visual.doorProgress >= 0.995) {
+  if (landmark.type !== LandmarkType.GiantAncientTree || !entrance) {
     return;
   }
   const center = centerFor(landmark);
   const r = landmark.footprintRadiusTiles * WORLD_TILE_SIZE;
+  const s = r * 0.78;
   const angle = Math.atan2(entrance.worldY - center.y, entrance.worldX - center.x);
   const eased = Phaser.Math.Easing.Sine.InOut(visual.doorProgress);
-  const outward = r * 0.2 * eased;
-  const doorX = entrance.worldX + Math.cos(angle) * outward;
-  const doorY = entrance.worldY - r * 0.035 + Math.sin(angle) * outward - r * 0.015 * eased;
-  const radius = r * 0.116 * (1 - eased * 0.08);
-  const alpha = 1 - Math.max(0, eased - 0.76) / 0.24;
-  const grainAngle = detailRandom(seed, landmark, 0, 0xa850) * Math.PI;
+  const radius = s * 0.112;
+  const closedX = entrance.worldX;
+  const closedY = ancientTreeDoorY(entrance, s);
+  const tangentX = -Math.sin(angle);
+  const tangentY = Math.cos(angle);
+  const outwardX = Math.cos(angle);
+  const outwardY = Math.sin(angle);
+  const hingeX = closedX + tangentX * radius * 0.94;
+  const hingeY = closedY + tangentY * radius * 0.94;
+  const swingAngle = eased * Math.PI * 0.58;
+  const projection = Math.cos(swingAngle);
+  const projectedRadius = Math.max(radius * 0.12, Math.abs(projection) * radius);
+  const doorX = hingeX - tangentX * radius * projection + outwardX * Math.sin(swingAngle) * s * 0.035;
+  const doorY = hingeY - tangentY * radius * projection + outwardY * Math.sin(swingAngle) * s * 0.035;
+  const verticalRadius = radius * (1 - Math.sin(swingAngle) * 0.13);
+  const faceColor = projection >= 0
+    ? mixColor(palette.wood, palette.woodDark, 0.08)
+    : shadeColor(palette.woodDark, -0.12);
 
-  door.fillStyle(0x050604, 0.34 * alpha);
-  door.fillEllipse(doorX + r * 0.025, doorY + r * 0.035, radius * 2.25, radius * 0.9);
-  door.fillStyle(palette.woodDark, alpha);
-  door.fillCircle(doorX, doorY, radius * 1.13);
-  door.lineStyle(Math.max(3, r * 0.011), palette.woodLight, 0.58 * alpha);
-  door.strokeCircle(doorX, doorY, radius * 1.04);
-  door.fillStyle(mixColor(palette.wood, palette.woodDark, 0.08), alpha);
-  door.fillCircle(doorX, doorY, radius * 0.94);
+  door.fillStyle(0x040504, 0.3);
+  door.fillEllipse(doorX + outwardX * s * 0.025, doorY + outwardY * s * 0.025, projectedRadius * 2.24, verticalRadius * 0.72);
+  door.fillStyle(palette.woodDark, 1);
+  door.fillEllipse(doorX, doorY, projectedRadius * 2.22, verticalRadius * 2.22);
+  door.fillStyle(faceColor, 1);
+  door.fillEllipse(doorX, doorY, projectedRadius * 1.9, verticalRadius * 1.9);
+  door.lineStyle(Math.max(2, s * 0.008), palette.woodLight, projection >= 0 ? 0.52 : 0.22);
+  door.strokeEllipse(doorX, doorY, projectedRadius * 2.02, verticalRadius * 2.02);
 
-  // A carved growth-ring plug with recessed radial grooves and a hand-sized wooden pull.
+  // Growth rings and vertical grain compress with the door face as it rotates around its hinge.
   for (let ring = 1; ring <= 4; ring += 1) {
-    door.lineStyle(Math.max(1, r * 0.0035), ring % 2 ? palette.woodLight : palette.woodDark, (0.22 + ring * 0.045) * alpha);
-    door.strokeCircle(doorX, doorY, radius * (0.18 + ring * 0.17));
-  }
-  const tangentX = Math.cos(grainAngle);
-  const tangentY = Math.sin(grainAngle);
-  for (let groove = -3; groove <= 3; groove += 1) {
-    const offset = groove * radius * 0.2;
-    const normalX = -tangentY;
-    const normalY = tangentX;
-    const extent = Math.sqrt(Math.max(0, radius * radius * 0.72 - offset * offset));
-    door.lineStyle(Math.max(1, r * 0.003), groove === 0 ? palette.woodDark : palette.woodLight, (groove === 0 ? 0.47 : 0.18) * alpha);
-    door.lineBetween(
-      doorX + normalX * offset - tangentX * extent,
-      doorY + normalY * offset - tangentY * extent,
-      doorX + normalX * offset + tangentX * extent,
-      doorY + normalY * offset + tangentY * extent
+    door.lineStyle(Math.max(1, s * 0.003), ring % 2 ? palette.woodLight : palette.woodDark, 0.18 + ring * 0.04);
+    door.strokeEllipse(
+      doorX,
+      doorY,
+      projectedRadius * (0.35 + ring * 0.32),
+      verticalRadius * (0.35 + ring * 0.32)
     );
   }
-  door.lineStyle(Math.max(2, r * 0.007), shadeColor(palette.woodLight, 0.1), 0.7 * alpha);
-  door.strokeCircle(doorX, doorY, radius * 0.39);
-  for (let rune = 0; rune < 6; rune += 1) {
-    const runeAngle = rune / 6 * Math.PI * 2 + landmark.variation * 0.4;
-    const inner = radius * 0.3;
-    const outer = radius * 0.48;
+  for (let groove = -2; groove <= 2; groove += 1) {
+    const offset = groove * projectedRadius * 0.3;
+    const extent = verticalRadius * Math.sqrt(Math.max(0, 0.78 - (offset / Math.max(1, projectedRadius)) ** 2));
+    door.lineStyle(Math.max(1, s * 0.0025), groove === 0 ? palette.woodDark : palette.woodLight, groove === 0 ? 0.4 : 0.17);
     door.lineBetween(
-      doorX + Math.cos(runeAngle) * inner,
-      doorY + Math.sin(runeAngle) * inner,
-      doorX + Math.cos(runeAngle + 0.17) * outer,
-      doorY + Math.sin(runeAngle + 0.17) * outer
+      doorX + tangentX * offset - outwardX * extent,
+      doorY + tangentY * offset - outwardY * extent,
+      doorX + tangentX * offset + outwardX * extent,
+      doorY + tangentY * offset + outwardY * extent
     );
   }
-  const handleX = doorX + Math.cos(angle) * radius * 0.36;
-  const handleY = doorY + Math.sin(angle) * radius * 0.36;
-  door.fillStyle(palette.woodDark, alpha);
-  door.fillCircle(handleX, handleY, radius * 0.115);
-  door.fillStyle(palette.woodLight, 0.9 * alpha);
-  door.fillCircle(handleX - r * 0.003, handleY - r * 0.004, radius * 0.055);
+
+  // The hinge remains fixed to the trunk while the entire door face rotates around it.
+  door.lineStyle(Math.max(3, s * 0.009), shadeColor(palette.woodDark, -0.22), 1);
+  door.lineBetween(hingeX, hingeY - radius * 0.78, hingeX, hingeY + radius * 0.78);
+  door.fillStyle(palette.woodLight, 0.82);
+  door.fillCircle(hingeX, hingeY - radius * 0.72, Math.max(2.2, s * 0.008));
+  door.fillCircle(hingeX, hingeY + radius * 0.72, Math.max(2.2, s * 0.008));
+  const handleX = doorX - tangentX * projectedRadius * 0.42;
+  const handleY = doorY - tangentY * projectedRadius * 0.42;
+  door.fillStyle(palette.woodDark, 1);
+  door.fillCircle(handleX, handleY, Math.max(2.5, radius * 0.095));
+  door.fillStyle(palette.woodLight, 0.9);
+  door.fillCircle(handleX - s * 0.002, handleY - s * 0.003, Math.max(1.4, radius * 0.045));
 };
 
 const drawAnimatedVisual = (
@@ -1548,18 +1918,108 @@ const drawAnimatedVisual = (
     }
   } else if (landmark.type === LandmarkType.GiantAncientTree) {
     const center = centerFor(landmark);
+    const treeScale = r * 0.78;
+    const crownY = center.y - treeScale * 1.28;
+    for (let leaf = 0; leaf < 72; leaf += 1) {
+      const angle = detailRandom(seed, landmark, leaf, 0xdd00) * Math.PI * 2;
+      const distance = Math.sqrt(detailRandom(seed, landmark, leaf, 0xdd01));
+      const phase = detailRandom(seed, landmark, leaf, 0xdd02) * Math.PI * 2;
+      const sway = Math.sin(time * (0.00125 + detailRandom(seed, landmark, leaf, 0xdd03) * 0.0007) + phase);
+      const x = center.x + Math.cos(angle) * treeScale * 0.7 * distance + sway * treeScale * 0.009;
+      const y = crownY + Math.sin(angle) * treeScale * 0.43 * distance
+        + Math.cos(time * 0.0011 + phase) * treeScale * 0.0035;
+      const width = treeScale * (0.014 + detailRandom(seed, landmark, leaf, 0xdd04) * 0.015);
+      const leafAngle = detailRandom(seed, landmark, leaf, 0xdd05) * Math.PI * 2 + sway * 0.16;
+      const color = leaf % 4 === 0 ? palette.mossLight : mixColor(palette.moss, palette.mossLight, 0.56);
+      drawLeafShape(accent, x, y, width, leafAngle, color, 0.66 + (leaf % 5) * 0.055, palette.mossLight);
+    }
+    // Pendulous sprays turn the crown edge into a mass of small leaves rather than a flat green
+    // silhouette. Every spray has its own seeded length, phase, and leaf count, while all motion
+    // stays in this single throttled Graphics batch.
+    for (let spray = 0; spray < 30; spray += 1) {
+      const amount = (spray + 0.5) / 30;
+      const arcAngle = Math.PI * (0.055 + amount * 0.89);
+      const anchorX = center.x + Math.cos(arcAngle) * treeScale * 0.73;
+      const anchorY = crownY + Math.sin(arcAngle) * treeScale * 0.41;
+      const length = treeScale * (0.14 + detailRandom(seed, landmark, spray, 0xdd20) * 0.26);
+      const leafCount = 5 + Math.floor(detailRandom(seed, landmark, spray, 0xdd21) * 5);
+      const phase = detailRandom(seed, landmark, spray, 0xdd22) * Math.PI * 2;
+      const wind = Math.sin(time * 0.00145 + phase) * treeScale * 0.025;
+      let previousX = anchorX;
+      let previousY = anchorY;
+      for (let segment = 1; segment <= leafCount; segment += 1) {
+        const progress = segment / leafCount;
+        const x = anchorX
+          + wind * progress * progress
+          + Math.sin(progress * Math.PI * 1.7 + phase) * treeScale * 0.012;
+        const y = anchorY + length * progress;
+        accent.lineStyle(Math.max(1.2, treeScale * 0.0032), mixColor(palette.moss, palette.mossLight, 0.62), 0.84);
+        accent.lineBetween(previousX, previousY, x, y);
+        const leafLength = treeScale * (0.026 + detailRandom(seed, landmark, spray * 10 + segment, 0xdd23) * 0.017);
+        const side = segment % 2 === 0 ? 1 : -1;
+        drawLeafShape(
+          accent,
+          x + side * leafLength * 0.38,
+          y,
+          leafLength,
+          Math.PI * 0.5 + side * (0.58 + Math.sin(time * 0.0012 + phase) * 0.12),
+          segment % 3 === 0 ? mixColor(palette.mossLight, 0xb8df83, 0.38) : mixColor(palette.moss, palette.mossLight, 0.62),
+          0.88,
+          palette.mossLight
+        );
+        previousX = x;
+        previousY = y;
+      }
+    }
+    // Long, sparse vines descend beyond the leaf curtain and carry occasional paired leaflets.
+    for (let vine = 0; vine < 14; vine += 1) {
+      const amount = (vine + 0.5) / 14 * 2 - 1;
+      const anchorX = center.x + amount * treeScale * 0.66;
+      const anchorY = crownY + treeScale * (0.31 + (1 - Math.abs(amount)) * 0.1);
+      const length = treeScale * (0.18 + detailRandom(seed, landmark, vine, 0xdd30) * 0.34);
+      const phase = detailRandom(seed, landmark, vine, 0xdd31) * Math.PI * 2;
+      let previousX = anchorX;
+      let previousY = anchorY;
+      for (let segment = 1; segment <= 8; segment += 1) {
+        const progress = segment / 8;
+        const x = anchorX
+          + Math.sin(time * 0.0011 + phase + progress * 1.7) * treeScale * 0.018 * progress
+          + Math.sin(progress * Math.PI * 2 + phase) * treeScale * 0.01;
+        const y = anchorY + length * progress;
+        accent.lineStyle(Math.max(1.4, treeScale * 0.0042), mixColor(palette.mossLight, 0xb9df82, 0.42), 0.82);
+        accent.lineBetween(previousX, previousY, x, y);
+        if (segment % 2 === 0 && segment < 8) {
+          const leafLength = treeScale * 0.032;
+          const side = segment % 4 === 0 ? 1 : -1;
+          drawLeafShape(
+            accent,
+            x + side * leafLength * 0.35,
+            y,
+            leafLength,
+            Math.PI * 0.5 + side * 0.72,
+            mixColor(palette.mossLight, 0xb9df82, 0.34),
+            0.9,
+            palette.mossLight
+          );
+        }
+        previousX = x;
+        previousY = y;
+      }
+    }
     for (let mote = 0; mote < 10; mote += 1) {
       const phase = time * (0.00032 + mote * 0.000017) + detailRandom(seed, landmark, mote, 0xdd10) * Math.PI * 2;
-      const distance = r * (0.18 + detailRandom(seed, landmark, mote, 0xdd11) * 0.62);
+      const distance = treeScale * (0.16 + detailRandom(seed, landmark, mote, 0xdd11) * 0.62);
       accent.fillStyle(mote % 3 ? 0xb9ef7d : 0xf2c86b, 0.24 + pulse * 0.42);
-      accent.fillCircle(center.x + Math.cos(phase) * distance, center.y - r * 1.12 + Math.sin(phase * 1.3) * r * 0.42, 2 + (mote % 3));
+      accent.fillCircle(center.x + Math.cos(phase) * distance, crownY + Math.sin(phase * 1.3) * treeScale * 0.33, 2 + (mote % 3));
     }
-    ancientTreeFruitPositions(seed, landmark, center, r).forEach((fruit, index) => {
+    seamlessAncientTreeFruitPositions(seed, landmark, center, r).forEach((fruit, index) => {
       const fruitPulse = 0.5 + Math.sin(time * 0.0024 + index * 1.73 + landmark.variation * 4) * 0.5;
-      accent.fillStyle(0xeaffff, 0.055 + fruitPulse * 0.085);
-      accent.fillCircle(fruit.x, fruit.y, r * (0.038 + fruitPulse * 0.012));
-      accent.fillStyle(0xffffff, 0.44 + fruitPulse * 0.42);
-      accent.fillCircle(fruit.x, fruit.y - r * 0.004, Math.max(2, r * (0.004 + fruitPulse * 0.002)));
+      accent.fillStyle(0xeaffff, 0.1 + fruitPulse * 0.14);
+      accent.fillCircle(fruit.x, fruit.y, treeScale * (0.06 + fruitPulse * 0.016));
+      accent.fillStyle(0xf6ffff, 0.88 + fruitPulse * 0.12);
+      accent.fillEllipse(fruit.x, fruit.y, treeScale * 0.05, treeScale * 0.068);
+      accent.fillStyle(0xffffff, 0.74 + fruitPulse * 0.26);
+      accent.fillCircle(fruit.x - treeScale * 0.007, fruit.y - treeScale * 0.014, Math.max(2.5, treeScale * 0.007));
     });
   } else if (landmark.type === LandmarkType.StoneCircle) {
     const center = centerFor(landmark);
@@ -1598,9 +2058,13 @@ const createVisual = (
     ground: scene.add.graphics().setDepth(LANDMARK_GROUND_DEPTH),
     shadow: scene.add.graphics().setDepth(LANDMARK_SHADOW_DEPTH),
     structure: scene.add.graphics().setDepth(LANDMARK_STRUCTURE_DEPTH),
-    accent: scene.add.graphics().setDepth(LANDMARK_ACCENT_DEPTH),
+    accent: scene.add.graphics().setDepth(
+      landmark.type === LandmarkType.GiantAncientTree ? LANDMARK_TREE_ANIMATION_FRONT_DEPTH : LANDMARK_ACCENT_DEPTH
+    ),
     door: scene.add.graphics().setDepth(LANDMARK_DOOR_DEPTH),
-    foreground: scene.add.graphics().setDepth(LANDMARK_FOREGROUND_DEPTH),
+    foreground: scene.add.graphics().setDepth(
+      landmark.type === LandmarkType.GiantAncientTree ? LANDMARK_TREE_FRONT_DEPTH : LANDMARK_FOREGROUND_DEPTH
+    ),
     doorProgress: 0
   };
   drawStaticVisual(seed, visual, state);
@@ -1664,7 +2128,18 @@ export class LandmarkManager {
     });
   }
 
-  updateAnimation(time: number): void {
+  updateAnimation(time: number, playerWorldX: number, playerWorldY: number): void {
+    this.visuals.forEach((visual) => {
+      if (visual.landmark.type !== LandmarkType.GiantAncientTree) {
+        return;
+      }
+      const playerIsBehind = ancientTreeOccludesWorldPoint(visual.landmark, playerWorldX, playerWorldY);
+      visual.foreground.setDepth(playerIsBehind ? LANDMARK_TREE_BEHIND_DEPTH : LANDMARK_TREE_FRONT_DEPTH);
+      visual.accent.setDepth(
+        playerIsBehind ? LANDMARK_TREE_ANIMATION_BEHIND_DEPTH : LANDMARK_TREE_ANIMATION_FRONT_DEPTH
+      );
+      visual.door.setDepth(playerIsBehind ? LANDMARK_TREE_DOOR_BEHIND_DEPTH : LANDMARK_DOOR_DEPTH);
+    });
     const frame = Math.floor(time / LANDMARK_ANIMATION_INTERVAL_MS);
     if (frame === this.lastAnimationFrame) {
       return;

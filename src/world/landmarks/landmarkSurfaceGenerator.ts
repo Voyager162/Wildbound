@@ -3,7 +3,7 @@ import { LandmarkType, type ProceduralLandmark } from '../landmarkConfig';
 import { randomAtTile } from '../generation/noise';
 import { WORLD_TILE_SIZE } from '../worldConfig';
 
-export const LANDMARK_SURFACE_GENERATION_VERSION = 3;
+export const LANDMARK_SURFACE_GENERATION_VERSION = 4;
 
 export type LandmarkComponentRole =
   | 'ancient-trunk'
@@ -285,15 +285,16 @@ const treePlan = (seed: string, landmark: ProceduralLandmark): Omit<LandmarkSurf
   const entranceAngle = Math.PI / 2 - landmark.rotation;
   const tangentAngle = entranceAngle + Math.PI / 2;
   const trunkRotation = entranceAngle - Math.PI / 2;
-  // Two buttress walls preserve a walkable channel into the hollow without making the trunk
-  // collision feel split. Their long axes point toward the front door.
+  // Only the compact physical heart of the trunk blocks movement. The much larger rendered
+  // trunk and crown intentionally occlude the player without trapping them behind invisible
+  // root or canopy barriers.
   [-1, 1].forEach((side, index) => {
     const shape = box(
-      Math.cos(tangentAngle) * side * r * 0.22 - Math.cos(entranceAngle) * r * 0.08,
-      Math.sin(tangentAngle) * side * r * 0.22 - Math.sin(entranceAngle) * r * 0.08,
-      r * 0.27,
-      r * 0.82,
-      trunkRotation + side * 0.035
+      Math.cos(tangentAngle) * side * r * 0.105 - Math.cos(entranceAngle) * r * 0.035,
+      Math.sin(tangentAngle) * side * r * 0.105 - Math.sin(entranceAngle) * r * 0.035,
+      r * 0.15,
+      r * 0.38,
+      trunkRotation
     );
     shapes.push(shape);
     components.push(component(landmark, 'ancient-trunk', index, shape, r * 1.62, side * 0.035, trunkRotation, 1, planRandom(planSeed, 1, index), index));
@@ -313,7 +314,6 @@ const treePlan = (seed: string, landmark: ProceduralLandmark): Omit<LandmarkSurf
     details.push(groundDetail(landmark, 'root-trace', index, startX, startY, length, r * 0.07, angle, 0.2, planRandom(planSeed, 3, index)));
     if (!pointsTowardEntrance) {
       const shape = capsule(startX, startY, endX, endY, r * (0.045 + planRandom(planSeed, 2, index, 4) * 0.035));
-      shapes.push(shape);
       components.push(component(landmark, 'ancient-root', index, shape, r * 0.09, (planRandom(planSeed, 2, index, 5) - 0.5) * 0.12, angle, 1, planRandom(planSeed, 2, index, 6), 20 + index));
     }
   }
@@ -346,8 +346,8 @@ const treePlan = (seed: string, landmark: ProceduralLandmark): Omit<LandmarkSurf
     groundDetails: details,
     entrance: createEntrance(
       landmark,
-      Math.cos(entranceAngle) * r * 0.33,
-      Math.sin(entranceAngle) * r * 0.33,
+      Math.cos(entranceAngle) * r * 0.2,
+      Math.sin(entranceAngle) * r * 0.2,
       entranceAngle
     )
   };
@@ -747,6 +747,23 @@ export const landmarkStructureContainsWorldPoint = (
 
 export const landmarkCollisionContainsWorldPoint = landmarkStructureContainsWorldPoint;
 
+export const ancientTreeOccludesWorldPoint = (
+  landmark: ProceduralLandmark,
+  worldX: number,
+  worldY: number
+): boolean => {
+  if (landmark.type !== LandmarkType.GiantAncientTree) {
+    return false;
+  }
+  const center = centerWorld(landmark);
+  const radius = landmark.footprintRadiusTiles * WORLD_TILE_SIZE;
+  const normalizedX = (worldX - center.x) / (radius * 0.7);
+  // The front root flare and doorway remain below the avatar. Only the trunk and crown north of
+  // the center become foreground when the player walks behind them.
+  const normalizedY = (worldY - (center.y - radius * 0.72)) / (radius * 0.78);
+  return normalizedX * normalizedX + normalizedY * normalizedY <= 1;
+};
+
 export const landmarkPlanBlocksFeatureTile = (
   plan: LandmarkSurfacePlan,
   tileX: number,
@@ -754,6 +771,15 @@ export const landmarkPlanBlocksFeatureTile = (
 ): boolean => {
   const worldX = (tileX + 0.5) * WORLD_TILE_SIZE;
   const worldY = (tileY + 0.5) * WORLD_TILE_SIZE;
+  if (plan.landmark.type === LandmarkType.GiantAncientTree) {
+    const center = centerWorld(plan.landmark);
+    const radius = plan.landmark.footprintRadiusTiles * WORLD_TILE_SIZE;
+    const normalizedX = (worldX - center.x) / (radius * 0.84);
+    const normalizedY = (worldY - (center.y - radius * 0.34)) / (radius * 1.18);
+    if (normalizedX * normalizedX + normalizedY * normalizedY <= 1) {
+      return true;
+    }
+  }
   if (landmarkStructureContainsWorldPoint(plan, worldX, worldY, WORLD_TILE_SIZE * 0.58)) {
     return true;
   }

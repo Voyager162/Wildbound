@@ -32,6 +32,7 @@ import {
 } from '../../src/world/generation/landmarkGenerator';
 import {
   createLandmarkSurfacePlan,
+  ancientTreeOccludesWorldPoint,
   findLandmarkEntrance,
   findLandmarkEntranceNearWorldPoint,
   landmarkPlanBlocksFeatureTile,
@@ -343,6 +344,67 @@ assert.ok(
   ancientTreePlan.components.filter((component) => component.role === 'ancient-root').length >= 8,
   'Ancient trees must retain a substantial deterministic buttress-root network while leaving the door lane open'
 );
+assert.equal(
+  ancientTreePlan.structuralShapes.length,
+  2,
+  'Only the compact split trunk core may block movement around an ancient tree'
+);
+assert.ok(
+  ancientTreePlan.structuralShapes.every((shape) => shape.kind === 'oriented-box'),
+  'Ancient-tree roots and canopy must remain visual rather than invisible movement barriers'
+);
+const ancientTreeRadius = ancientTreePlan.landmark.footprintRadiusTiles * WORLD_TILE_SIZE;
+assert.equal(
+  landmarkStructureContainsWorldPoint(
+    ancientTreePlan,
+    ancientTreeCenterWorldX,
+    ancientTreeCenterWorldY - ancientTreeRadius * 0.48,
+    23
+  ),
+  false,
+  'The walkable area behind an ancient-tree trunk must not contain an invisible barrier'
+);
+assert.equal(
+  ancientTreeOccludesWorldPoint(
+    ancientTreePlan.landmark,
+    ancientTreePlan.entrance!.worldX,
+    ancientTreePlan.entrance!.worldY
+  ),
+  false,
+  'The ancient-tree doorway must render in front of the tree without hiding the player'
+);
+assert.equal(
+  ancientTreeOccludesWorldPoint(
+    ancientTreePlan.landmark,
+    ancientTreeCenterWorldX,
+    ancientTreeCenterWorldY - ancientTreeRadius * 0.55
+  ),
+  true,
+  'The ancient-tree trunk must hide a player walking behind it'
+);
+assert.equal(
+  ancientTreeOccludesWorldPoint(
+    ancientTreePlan.landmark,
+    ancientTreeCenterWorldX + ancientTreeRadius * 0.9,
+    ancientTreeCenterWorldY - ancientTreeRadius * 0.55
+  ),
+  false,
+  'The ancient-tree occlusion must end when the player clears the crown horizontally'
+);
+for (let offsetY = -1.35; offsetY <= 0.55; offsetY += 0.19) {
+  for (let offsetX = -0.7; offsetX <= 0.7; offsetX += 0.2) {
+    const normalizedX = offsetX / 0.84;
+    const normalizedY = (offsetY + 0.34) / 1.18;
+    if (normalizedX * normalizedX + normalizedY * normalizedY > 0.82) continue;
+    const tileX = Math.floor(ancientTreeCenterWorldX / WORLD_TILE_SIZE + offsetX * ancientTreePlan.landmark.footprintRadiusTiles);
+    const tileY = Math.floor(ancientTreeCenterWorldY / WORLD_TILE_SIZE + offsetY * ancientTreePlan.landmark.footprintRadiusTiles);
+    assert.equal(
+      landmarkPlanBlocksFeatureTile(ancientTreePlan, tileX, tileY),
+      true,
+      'Ancient-tree occlusion footprint must suppress hidden terrain features'
+    );
+  }
+}
 
 const stonePlan = plans.find((plan) => plan.landmark.type === LandmarkType.StoneCircle)!;
 const stoneCenterWorldX = (stonePlan.landmark.centerTileX + 0.5) * WORLD_TILE_SIZE;
