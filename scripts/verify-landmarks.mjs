@@ -20,6 +20,7 @@ const verificationSource = String.raw`
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { Biome } from '../../src/world/generation/biomeGenerator';
+import { ANCIENT_TREE_FRUIT_COUNT } from '../../src/world/landmarks/ancientTreeConfig';
 import {
   LANDMARK_DEFINITIONS,
   LandmarkType,
@@ -39,6 +40,7 @@ import {
   landmarkStructureContainsWorldPoint,
   type LandmarkSurfacePlan
 } from '../../src/world/landmarks/landmarkSurfaceGenerator';
+
 import {
   LANDMARK_INTERIOR_THEMES,
   LANDMARK_INTERIOR_TYPES,
@@ -54,6 +56,11 @@ import { ResourceType } from '../../src/world/resources';
 import { SessionWorldState } from '../../src/world/SessionWorldState';
 import { SAVEABLE_LANDMARK_TYPES, isSaveGameData } from '../../src/save/SaveGameData';
 import { WORLD_TILE_SIZE } from '../../src/world/worldConfig';
+
+assert.ok(
+  Number.isInteger(ANCIENT_TREE_FRUIT_COUNT) && ANCIENT_TREE_FRUIT_COUNT >= 0,
+  'Ancient-tree fruit count tuning must be a non-negative integer'
+);
 
 const EXPECTED_LANDMARK_TYPES = [
   LandmarkType.GiantAncientTree,

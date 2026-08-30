@@ -447,6 +447,14 @@ export class ChunkManager {
     return this.ambientParticleManager.getNightLights(time);
   }
 
+  getLandmarkNightLights(): readonly NightAmbientLight[] {
+    return this.landmarkManager.getNightLights();
+  }
+
+  get loadedLandmarkNightLightCount(): number {
+    return this.landmarkManager.getNightLights().length;
+  }
+
   getTopographyAt(worldX: number, worldY: number): TopographySample {
     return sampleTopography(this.seed, worldX, worldY);
   }

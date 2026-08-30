@@ -125,8 +125,14 @@ export class NightAmbientOverlay {
     // scroll removes the sub-pixel disagreement that made DOM lights slide and snap over a moving
     // world, especially at the game's low exploration zoom.
     lights.forEach((light) => {
-      const screenX = (light.worldX - scrollX) * camera.zoom + camera.x;
-      const screenY = (light.worldY - scrollY) * camera.zoom + camera.y;
+      // Phaser scales around the camera origin, which is normally the viewport centre. Applying
+      // only scroll and zoom shifts every DOM-composited light toward the upper-left whenever
+      // zoom is below 1. Mirror the camera matrix's origin compensation so each glow remains
+      // centred on its world-space source at every resolution and zoom level.
+      const screenX = (light.worldX - scrollX) * camera.zoom
+        + camera.x + camera.width * camera.originX * (1 - camera.zoom);
+      const screenY = (light.worldY - scrollY) * camera.zoom
+        + camera.y + camera.height * camera.originY * (1 - camera.zoom);
       const radius = Math.max(14, light.radius * camera.zoom * (light.radiusMultiplier ?? NIGHT_AMBIENT_LIGHT_RADIUS_MULTIPLIER));
       const edgeDistance = Math.min(
         screenX + radius,

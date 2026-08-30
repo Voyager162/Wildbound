@@ -105,8 +105,10 @@ export class PlacedLightOverlay {
     context.setTransform(scale, 0, 0, scale, 0, 0);
     context.globalCompositeOperation = 'source-over';
     lights.forEach((light) => {
-      const screenX = (light.worldX - scrollX) * camera.zoom + camera.x;
-      const screenY = (light.worldY - scrollY) * camera.zoom + camera.y;
+      const screenX = (light.worldX - scrollX) * camera.zoom
+        + camera.x + camera.width * camera.originX * (1 - camera.zoom);
+      const screenY = (light.worldY - scrollY) * camera.zoom
+        + camera.y + camera.height * camera.originY * (1 - camera.zoom);
       const radius = Math.max(14, light.radius * camera.zoom * (light.radiusMultiplier ?? 1));
       const [red, green, blue] = colorChannels(light.color);
       const warmth = clampUnit(light.warmth, 0.8);

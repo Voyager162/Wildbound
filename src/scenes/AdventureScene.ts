@@ -30,6 +30,7 @@ import { PotionEffectOverlay } from '../ui/PotionEffectOverlay';
 import { WorldMapOverlay } from '../ui/WorldMapOverlay';
 import { MINIMAP_AREA_SCALE } from '../ui/uiConfig';
 import { ChunkManager } from '../world/ChunkManager';
+import type { NightAmbientLight } from '../world/AmbientParticleManager';
 import { BiomeAmbientAudio } from '../world/BiomeAmbientAudio';
 import { SWIM_RECORDING_REPEAT_INTERVAL_MS } from '../world/swimmingAudioConfig';
 import {
@@ -264,6 +265,7 @@ export class AdventureScene extends Phaser.Scene {
   private dayNightOverlay!: DayNightOverlay;
   private nightAmbientOverlay!: NightAmbientOverlay;
   private placedLightOverlay!: PlacedLightOverlay;
+  private readonly ambientWorldLights: NightAmbientLight[] = [];
   private potionEffectOverlay!: PotionEffectOverlay;
   private worldMapOverlay!: WorldMapOverlay;
   private pauseMenuOverlay!: PauseMenuOverlay;
@@ -2291,11 +2293,10 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     this.lastNightAmbientLightingUpdateMs = time;
-    this.nightAmbientOverlay.update(
-      this.ambientLightAmount,
-      this.cameras.main,
-      this.chunkManager.getNightAmbientLights(time)
-    );
+    this.ambientWorldLights.length = 0;
+    this.ambientWorldLights.push(...this.chunkManager.getNightAmbientLights(time));
+    this.ambientWorldLights.push(...this.chunkManager.getLandmarkNightLights());
+    this.nightAmbientOverlay.update(this.ambientLightAmount, this.cameras.main, this.ambientWorldLights);
   }
 
   private updateAmbientAudio(): void {
@@ -6054,6 +6055,7 @@ export class AdventureScene extends Phaser.Scene {
       `Loaded      ${this.chunkManager.loadedChunkCount} chunks`,
       `Streaming   ${this.chunkManager.pendingChunkCount} terrain / ${this.chunkManager.pendingGroundGrassChunkCount} grass pending`,
       `Landmarks   ${this.chunkManager.loadedLandmarkCount} nearby`,
+      `LM lights   ${this.chunkManager.loadedLandmarkNightLightCount} projected`,
       `Rare finds  ${this.sessionWorldState.harvestedLandmarkMaterialCount} harvested`,
       `Moving FPS  ${this.movingFps > 0 ? this.movingFps.toFixed(0) : '--'} (${this.movingWorstFrameMs.toFixed(1)}ms worst)`,
       `FPS         ${this.renderedFps.toFixed(0)} (${this.frameRateLimitLabel()})`
