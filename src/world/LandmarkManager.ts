@@ -1351,10 +1351,10 @@ const ancientTreeNightLights = (
   return seamlessAncientTreeFruitPositions(seed, landmark, center, radius).map((fruit, index) => ({
     worldX: fruit.x,
     worldY: fruit.y,
-    radius: 48 + detailRandom(seed, landmark, index, 0xe115) * 12,
+    radius: 58 + detailRandom(seed, landmark, index, 0xe115) * 14,
     radiusMultiplier: 1,
     color: index % 3 === 0 ? 0xffe99b : 0xffffe8,
-    intensity: 0.075 + detailRandom(seed, landmark, index, 0xe116) * 0.025
+    intensity: 0.13 + detailRandom(seed, landmark, index, 0xe116) * 0.04
   }));
 };
 
@@ -1532,34 +1532,54 @@ const drawAncientTreeUnified = (
     { x: center.x + s * 0.14, y: center.y - s * 1.17 },
     { x: center.x + s * 0.28, y: center.y + s * 0.2 }
   ], palette.woodDark, 0.24);
-  for (let groove = 0; groove < 36; groove += 1) {
-    const xAmount = -0.76 + detailRandom(seed, landmark, groove, 0xe160) * 1.52;
-    const startT = detailRandom(seed, landmark, groove, 0xe161) * 0.72;
-    const lengthT = 0.16 + detailRandom(seed, landmark, groove, 0xe162) * 0.27;
+  const trunkHalfWidthAt = (t: number): number => {
+    const taper = s * (0.34 * (1 - t) + 0.13 * t);
+    const rootFlare = t < 0.22 ? s * 0.13 * (1 - t / 0.22) : 0;
+    return taper + rootFlare;
+  };
+  // Bark lanes are stratified across the whole silhouette, rather than randomly clustering near
+  // its centre. Their short, staggered runs preserve the rounded form while carrying detail all
+  // the way into both outer edges and the broad root flare.
+  const grooveCount = 56;
+  for (let groove = 0; groove < grooveCount; groove += 1) {
+    const lane = (groove + 0.16 + detailRandom(seed, landmark, groove, 0xe160) * 0.68) / grooveCount;
+    const xAmount = -0.96 + lane * 1.92;
+    const startT = 0.025 + detailRandom(seed, landmark, groove, 0xe161) * 0.78;
+    const lengthT = 0.13 + detailRandom(seed, landmark, groove, 0xe162) * 0.29;
     const points: Point[] = [];
-    for (let step = 0; step < 6; step += 1) {
-      const t = Math.min(0.98, startT + lengthT * step / 5);
-      const halfWidth = s * (0.27 * (1 - t) + 0.095 * t);
+    for (let step = 0; step < 7; step += 1) {
+      const t = Math.min(0.985, startT + lengthT * step / 6);
+      const halfWidth = trunkHalfWidthAt(t);
       points.push({
-        x: center.x + xAmount * halfWidth + Math.sin(step * 1.7 + groove) * s * 0.005,
+        x: center.x + xAmount * halfWidth + Math.sin(step * 1.55 + groove) * s * 0.006,
         y: center.y + s * 0.18 - t * s * 1.53
       });
     }
+    const isHighlight = groove % 7 === 0;
     strokePolyline(
       foreground,
       points,
-      groove % 6 === 0 ? palette.woodLight : palette.woodDark,
-      Math.max(1, s * (groove % 6 === 0 ? 0.0035 : 0.005)),
-      groove % 6 === 0 ? 0.34 : 0.55
+      isHighlight ? palette.woodLight : palette.woodDark,
+      Math.max(1, s * (isHighlight ? 0.0035 : 0.0048)),
+      isHighlight ? 0.31 : 0.54
     );
   }
-  for (let knot = 0; knot < 10; knot += 1) {
-    const t = 0.24 + detailRandom(seed, landmark, knot, 0xe170) * 0.61;
-    const halfWidth = s * (0.32 * (1 - t) + 0.12 * t);
-    const x = center.x + (detailRandom(seed, landmark, knot, 0xe171) - 0.5) * halfWidth * 1.2;
+  const knotCount = 17;
+  for (let knot = 0; knot < knotCount; knot += 1) {
+    const t = 0.075 + (knot + detailRandom(seed, landmark, knot, 0xe170) * 0.72) / knotCount * 0.86;
+    const halfWidth = trunkHalfWidthAt(t);
+    const randomSideAmount = detailRandom(seed, landmark, knot, 0xe171) * 2 - 1;
+    const side = knot % 2 === 0 ? -1 : 1;
+    const xAmount = knot < 7
+      ? side * (0.66 + detailRandom(seed, landmark, knot, 0xe174) * 0.22)
+      : Math.sign(randomSideAmount) * Math.pow(Math.abs(randomSideAmount), 0.7) * 0.88;
+    const x = center.x + xAmount * halfWidth;
     const y = center.y + s * 0.15 - t * s * 1.51;
     const knotWidth = s * (0.048 + detailRandom(seed, landmark, knot, 0xe172) * 0.034);
     const knotHeight = knotWidth * (0.48 + detailRandom(seed, landmark, knot, 0xe173) * 0.2);
+    if (plan.entrance && Math.hypot(x - plan.entrance.worldX, y - ancientTreeDoorY(plan.entrance, s)) < s * 0.19) {
+      continue;
+    }
     foreground.fillStyle(palette.woodDark, 0.54);
     foreground.fillEllipse(x, y, knotWidth, knotHeight);
     foreground.fillStyle(shadeColor(palette.woodDark, -0.18), 0.72);
@@ -1567,11 +1587,12 @@ const drawAncientTreeUnified = (
     foreground.lineStyle(Math.max(1, s * 0.0025), palette.woodLight, 0.24);
     foreground.strokeEllipse(x, y, knotWidth * 1.48, knotHeight * 1.62);
     foreground.lineStyle(Math.max(1, s * 0.003), palette.woodDark, 0.38);
+    const inward = x >= center.x ? -1 : 1;
     foreground.beginPath();
-    foreground.moveTo(x - knotWidth * 0.7, y);
-    foreground.lineTo(x - knotWidth * 1.55, y - knotHeight * 0.42);
-    foreground.moveTo(x + knotWidth * 0.7, y);
-    foreground.lineTo(x + knotWidth * 1.55, y + knotHeight * 0.35);
+    foreground.moveTo(x + inward * knotWidth * 0.68, y);
+    foreground.lineTo(x + inward * knotWidth * 1.7, y - knotHeight * 0.42);
+    foreground.moveTo(x + inward * knotWidth * 0.42, y + knotHeight * 0.18);
+    foreground.lineTo(x + inward * knotWidth * 1.32, y + knotHeight * 0.56);
     foreground.strokePath();
   }
 
@@ -1595,7 +1616,7 @@ const drawAncientTreeUnified = (
   }
 
   seamlessAncientTreeFruitPositions(seed, landmark, center, r).forEach((fruit, index) => {
-    foreground.lineStyle(Math.max(1, s * 0.003), mixColor(palette.moss, palette.mossLight, 0.36), 0.8);
+    foreground.lineStyle(Math.max(1, s * 0.003), mixColor(0x12351f, palette.moss, 0.22), 0.9);
     foreground.lineBetween(fruit.stemX, fruit.stemY, fruit.x, fruit.y - s * 0.012);
     foreground.fillStyle(index % 3 === 0 ? 0xffe58d : 0xffffe8, 1);
     foreground.fillEllipse(fruit.x, fruit.y, s * 0.055, s * 0.074);
@@ -1604,7 +1625,7 @@ const drawAncientTreeUnified = (
     foreground.fillStyle(0xffffff, 0.9);
     foreground.fillCircle(fruit.x - s * 0.006, fruit.y - s * 0.01, Math.max(1.4, s * 0.004));
     if (index % 3 === 0) {
-      foreground.fillStyle(palette.mossLight, 0.58);
+      foreground.fillStyle(mixColor(0x173b23, palette.moss, 0.24), 0.82);
       foreground.fillEllipse(fruit.stemX + s * 0.008, fruit.stemY + s * 0.014, s * 0.019, s * 0.008);
     }
   });
@@ -1965,25 +1986,36 @@ const drawAnimatedVisual = (
     const treeScale = r * 0.78;
     const crownY = center.y - treeScale * 1.28;
     const animatedCrownCenter = { x: center.x - treeScale * 0.018, y: crownY };
-    forEachAncientTreeLeafPlacement(seed, landmark, animatedCrownCenter, treeScale, 17, 30, 0xdd00, ({ x, y, index }) => {
+    forEachAncientTreeLeafPlacement(seed, landmark, animatedCrownCenter, treeScale, 21, 36, 0xdd00, ({ x, y, index }) => {
       const phase = detailRandom(seed, landmark, index, 0xdd02) * Math.PI * 2;
       const sway = Math.sin(time * (0.00125 + detailRandom(seed, landmark, index, 0xdd03) * 0.0007) + phase);
       const animatedX = x + sway * treeScale * 0.014;
       const animatedY = y + Math.cos(time * 0.0011 + phase) * treeScale * 0.006;
-      const width = treeScale * (0.046 + detailRandom(seed, landmark, index, 0xdd04) * 0.034);
+      const width = treeScale * (0.043 + detailRandom(seed, landmark, index, 0xdd04) * 0.032);
       // Leaves generally hang downward from their stems, while deterministic variation and wind
       // keep the crown organic instead of forming rows or a repeated circular pattern.
       const leafAngle = Math.PI * 0.5
         + (detailRandom(seed, landmark, index, 0xdd05) - 0.5) * 1.7
         + sway * 0.24;
-      const color = index % 5 === 0
-        ? mixColor(palette.mossLight, 0xc5ee8b, 0.76)
-        : mixColor(0x559844, 0xafe579, 0.42 + detailRandom(seed, landmark, index, 0xdd06) * 0.5);
-      drawLeafShape(accent, animatedX, animatedY, width, leafAngle, color, 0.82 + (index % 5) * 0.04, 0xbce58a);
+      const leafDepth = detailRandom(seed, landmark, index, 0xdd06);
+      const color = leafDepth > 0.86
+        ? mixColor(0x315f35, palette.moss, 0.22)
+        : mixColor(0x112f1d, 0x32663a, 0.22 + leafDepth * 0.62);
+      drawLeafShape(
+        accent,
+        animatedX,
+        animatedY,
+        width,
+        leafAngle,
+        color,
+        0.9 + (index % 4) * 0.025,
+        mixColor(0x173b23, 0x46754a, leafDepth * 0.62)
+      );
     });
-    // Long, sparse vines descend beyond the leaf curtain and carry occasional paired leaflets.
-    for (let vine = 0; vine < 14; vine += 1) {
-      const amount = (vine + 0.5) / 14 * 2 - 1;
+    // Dense, deep-green vines descend beyond the leaf curtain and carry paired leaflets.
+    const vineCount = 20;
+    for (let vine = 0; vine < vineCount; vine += 1) {
+      const amount = (vine + 0.5) / vineCount * 2 - 1;
       const anchorX = center.x + amount * treeScale * 0.66;
       const anchorY = crownY + treeScale * (0.31 + (1 - Math.abs(amount)) * 0.1);
       const length = treeScale * (0.18 + detailRandom(seed, landmark, vine, 0xdd30) * 0.34);
@@ -1996,7 +2028,7 @@ const drawAnimatedVisual = (
           + Math.sin(time * 0.0011 + phase + progress * 1.7) * treeScale * 0.018 * progress
           + Math.sin(progress * Math.PI * 2 + phase) * treeScale * 0.01;
         const y = anchorY + length * progress;
-        accent.lineStyle(Math.max(1.4, treeScale * 0.0042), mixColor(palette.mossLight, 0xa7d874, 0.62), 0.9);
+        accent.lineStyle(Math.max(1.4, treeScale * 0.0042), mixColor(0x12351f, palette.moss, 0.24), 0.96);
         accent.lineBetween(previousX, previousY, x, y);
         if (segment % 2 === 0 && segment < 8) {
           const leafLength = treeScale * 0.032;
@@ -2007,9 +2039,9 @@ const drawAnimatedVisual = (
             y,
             leafLength,
             Math.PI * 0.5 + side * 0.72,
-            mixColor(palette.mossLight, 0xc1e88b, 0.58),
-            0.96,
-            0xc1e88b
+            mixColor(0x173b23, 0x35683a, 0.52),
+            0.98,
+            0x315f36
           );
         }
         previousX = x;
