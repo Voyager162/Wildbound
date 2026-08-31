@@ -65,9 +65,10 @@ import {
   nearestLandmarkToTile
 } from '../world/generation/landmarkGenerator';
 import { LandmarkType, type ProceduralLandmark } from '../world/landmarkConfig';
-import type {
-  LandmarkEntrance,
-  LandmarkMaterialNode
+import {
+  landmarkEntranceVisualPosition,
+  type LandmarkEntrance,
+  type LandmarkMaterialNode
 } from '../world/landmarks/landmarkSurfaceGenerator';
 import {
   generateLandmarkInterior,
@@ -3067,11 +3068,12 @@ export class AdventureScene extends Phaser.Scene {
 
     if (entrance) {
       this.surfaceLandmarkMaterialTarget = null;
+      const visualPosition = landmarkEntranceVisualPosition(entrance);
       this.interactionHighlight
         .setRadius(38)
-        .setPosition(entrance.worldX, entrance.worldY)
+        .setPosition(visualPosition.worldX, visualPosition.worldY)
         .setVisible(true);
-      this.drawLandmarkHint('Press E to enter', entrance.worldX, entrance.worldY - 54, 0x9ed9a5);
+      this.drawLandmarkHint('Press E to enter', visualPosition.worldX, visualPosition.worldY - 54, 0x9ed9a5);
       return;
     }
 

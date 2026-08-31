@@ -105,6 +105,23 @@ export interface LandmarkEntrance {
   readonly label: string;
 }
 
+export interface LandmarkEntranceVisualPosition {
+  readonly worldX: number;
+  readonly worldY: number;
+}
+
+// Interaction is measured from the walkable ground in front of an entrance, but the ancient
+// tree's circular door is carved higher into its trunk. UI markers and the renderer share this
+// visible position so the prompt ring never drifts below the artwork.
+export const landmarkEntranceVisualPosition = (
+  entrance: LandmarkEntrance
+): LandmarkEntranceVisualPosition => ({
+  worldX: entrance.worldX,
+  worldY: entrance.landmark.type === LandmarkType.GiantAncientTree
+    ? entrance.worldY - entrance.landmark.footprintRadiusTiles * WORLD_TILE_SIZE * 0.78 * 0.105
+    : entrance.worldY
+});
+
 export interface LandmarkMaterialNode {
   readonly id: string;
   readonly landmarkId: string;

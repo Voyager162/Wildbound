@@ -36,6 +36,7 @@ import {
   ancientTreeOccludesWorldPoint,
   findLandmarkEntrance,
   findLandmarkEntranceNearWorldPoint,
+  landmarkEntranceVisualPosition,
   landmarkPlanBlocksFeatureTile,
   landmarkStructureContainsWorldPoint,
   type LandmarkSurfacePlan
@@ -332,6 +333,7 @@ assert.equal(entranceCount, 3, 'Exactly three landmark surface plans must expose
 
 const ancientTreePlan = plans.find((plan) => plan.landmark.type === LandmarkType.GiantAncientTree)!;
 const ancientTreeEntrance = ancientTreePlan.entrance!;
+const ancientTreeEntranceVisual = landmarkEntranceVisualPosition(ancientTreeEntrance);
 const ancientTreeCenterWorldX = (ancientTreePlan.landmark.centerTileX + 0.5) * WORLD_TILE_SIZE;
 const ancientTreeCenterWorldY = (ancientTreePlan.landmark.centerTileY + 0.5) * WORLD_TILE_SIZE;
 assert.ok(
@@ -339,6 +341,20 @@ assert.ok(
     && ancientTreeEntrance.worldY > ancientTreeCenterWorldY,
   'The ancient-tree door must remain centered on the visible southern trunk face'
 );
+assert.ok(
+  ancientTreeEntranceVisual.worldY < ancientTreeEntrance.worldY,
+  'The ancient-tree entrance marker must be raised from the ground interaction point onto the carved door'
+);
+plans
+  .filter((plan) => plan.entrance && plan.landmark.type !== LandmarkType.GiantAncientTree)
+  .forEach((plan) => {
+    const entrance = plan.entrance!;
+    assert.deepEqual(
+      landmarkEntranceVisualPosition(entrance),
+      { worldX: entrance.worldX, worldY: entrance.worldY },
+      plan.landmark.type + ' entrance marker must remain on its authored entrance position'
+    );
+  });
 assert.ok(
   Math.abs(ancientTreeEntrance.facingAngle - Math.PI / 2) < 0.001,
   'The ancient-tree doorway must face world south regardless of landmark rotation'

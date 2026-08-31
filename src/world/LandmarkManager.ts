@@ -7,6 +7,7 @@ import { LandmarkType, type ProceduralLandmark } from './landmarkConfig';
 import {
   ancientTreeOccludesWorldPoint,
   createLandmarkSurfacePlan,
+  landmarkEntranceVisualPosition,
   landmarkCollisionContainsWorldPoint,
   type LandmarkEntrance,
   type LandmarkGroundDetail,
@@ -1222,8 +1223,8 @@ interface AncientTreeLeafPlacement extends Point {
   readonly index: number;
 }
 
-const ancientTreeDoorY = (entrance: LandmarkEntrance, scale: number): number => (
-  entrance.worldY - scale * 0.105
+const ancientTreeDoorY = (entrance: LandmarkEntrance): number => (
+  landmarkEntranceVisualPosition(entrance).worldY
 );
 
 const drawLeafShape = (
@@ -1577,7 +1578,7 @@ const drawAncientTreeUnified = (
     const y = center.y + s * 0.15 - t * s * 1.51;
     const knotWidth = s * (0.048 + detailRandom(seed, landmark, knot, 0xe172) * 0.034);
     const knotHeight = knotWidth * (0.48 + detailRandom(seed, landmark, knot, 0xe173) * 0.2);
-    if (plan.entrance && Math.hypot(x - plan.entrance.worldX, y - ancientTreeDoorY(plan.entrance, s)) < s * 0.19) {
+    if (plan.entrance && Math.hypot(x - plan.entrance.worldX, y - ancientTreeDoorY(plan.entrance)) < s * 0.19) {
       continue;
     }
     foreground.fillStyle(palette.woodDark, 0.54);
@@ -1604,7 +1605,7 @@ const drawAncientTreeUnified = (
   // closed and swings aside around a fixed left hinge.
   const entrance = plan.entrance;
   if (entrance) {
-    const doorwayY = ancientTreeDoorY(entrance, s);
+    const doorwayY = ancientTreeDoorY(entrance);
     foreground.fillStyle(shadeColor(palette.wood, -0.31), 1);
     foreground.fillCircle(entrance.worldX, doorwayY, s * 0.15);
     foreground.lineStyle(Math.max(2, s * 0.009), palette.woodLight, 0.38);
@@ -1895,7 +1896,7 @@ const drawAncientTreeDoor = (
   const eased = Phaser.Math.Easing.Sine.InOut(visual.doorProgress);
   const radius = s * 0.112;
   const closedX = entrance.worldX;
-  const closedY = ancientTreeDoorY(entrance, s);
+  const closedY = ancientTreeDoorY(entrance);
   const tangentX = -Math.sin(angle);
   const tangentY = Math.cos(angle);
   const outwardX = Math.cos(angle);
