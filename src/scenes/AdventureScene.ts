@@ -458,7 +458,10 @@ export class AdventureScene extends Phaser.Scene {
     this.caveLavaGraphics = this.add.graphics().setDepth(2.2).setVisible(false);
     this.caveEntranceLightGraphics = this.add.graphics().setDepth(2.1).setVisible(false);
     this.landmarkInteriorGraphics = this.add.graphics().setDepth(2).setVisible(false);
-    this.landmarkInteriorAccentGraphics = this.add.graphics().setDepth(2.35).setVisible(false);
+    this.landmarkInteriorAccentGraphics = this.add.graphics()
+      .setDepth(2.35)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setVisible(false);
     this.createCaveFogOverlay();
     this.interactionHighlight = this.add
       .circle(0, 0, 62, 0xf5d76e, 0.09)
@@ -2329,8 +2332,13 @@ export class AdventureScene extends Phaser.Scene {
     this.lastNightAmbientLightingUpdateMs = Number.NEGATIVE_INFINITY;
 
     if (active) {
+      // The finite interior artwork cannot cover an unbounded camera. Matching the camera clear
+      // color prevents the surface-green canvas from appearing when the viewport reaches an edge.
+      this.cameras.main.setBackgroundColor(this.activeLandmarkInterior?.layout.palette.background ?? 0x050704);
       return;
     }
+
+    this.cameras.main.setBackgroundColor('#16261f');
 
     // Repaint the normal surface overlays immediately on exit instead of waiting for their
     // throttled refresh cadence.
@@ -3439,6 +3447,9 @@ export class AdventureScene extends Phaser.Scene {
       graphics.fillPoints(this.landmarkInteriorRoomPoints(room, origin), true);
     });
 
+    if (layout.themeId === 'hollow-tree') {
+      this.drawAncientTreeInteriorArchitecture(interior);
+    }
     this.drawLandmarkInteriorFloorTexture(interior);
     layout.decorations.filter((decoration) => decoration.layer === 'floor')
       .forEach((decoration) => this.drawLandmarkInteriorDecoration(decoration, interior));
@@ -3454,6 +3465,52 @@ export class AdventureScene extends Phaser.Scene {
     });
     layout.decorations.filter((decoration) => decoration.layer === 'overhead')
       .forEach((decoration) => this.drawLandmarkInteriorDecoration(decoration, interior));
+  }
+
+  private drawAncientTreeInteriorArchitecture(interior: ActiveLandmarkInterior): void {
+    const room = interior.layout.terrain.rooms[0];
+    if (!room) {
+      return;
+    }
+    const graphics = this.landmarkInteriorGraphics;
+    const palette = interior.layout.palette;
+    const centerX = interior.origin.x + room.x * WORLD_TILE_SIZE;
+    const centerY = interior.origin.y + room.y * WORLD_TILE_SIZE;
+    const cosine = Math.cos(room.rotation);
+    const sine = Math.sin(room.rotation);
+    const radialPoint = (angle: number, radiusScale: number): CaveRenderPoint => {
+      const localX = Math.cos(angle) * room.radiusX * WORLD_TILE_SIZE * radiusScale;
+      const localY = Math.sin(angle) * room.radiusY * WORLD_TILE_SIZE * radiusScale;
+      return {
+        x: centerX + localX * cosine - localY * sine,
+        y: centerY + localX * sine + localY * cosine
+      };
+    };
+
+    // These nested grain lines make the room read as one continuous hollow trunk. They are
+    // deliberately static, with all variation derived from the landmark seed.
+    [0.965, 0.93, 0.885, 0.82].forEach((scale, index) => {
+      graphics.lineStyle(2.6 - index * 0.35, index % 2 ? palette.floorAccent : palette.wallHighlight, 0.23 + index * 0.035);
+      graphics.strokePoints(this.landmarkInteriorRoomPoints(room, interior.origin, scale), true);
+    });
+
+    for (let root = 0; root < 18; root += 1) {
+      const seeded = this.landmarkInteriorVisualRandom(interior, root, room.edgeFrequency, 0x4a91);
+      const angle = root / 18 * Math.PI * 2 + (seeded - 0.5) * 0.18;
+      const halfWidth = 0.022 + seeded * 0.018;
+      const outerLeft = radialPoint(angle - halfWidth, 0.965);
+      const outerRight = radialPoint(angle + halfWidth, 0.965);
+      const innerRight = radialPoint(angle + halfWidth * 0.3, 0.58 + seeded * 0.17);
+      const innerLeft = radialPoint(angle - halfWidth * 0.3, 0.58 + seeded * 0.17);
+      const ridge = radialPoint(angle, 0.69 + seeded * 0.12);
+      const outer = radialPoint(angle, 0.95);
+      graphics.fillStyle(root % 3 === 0 ? palette.wallBase : palette.floorAccent, 0.19 + seeded * 0.08);
+      graphics.fillPoints([outerLeft, outerRight, innerRight, innerLeft], true);
+      graphics.lineStyle(1.3 + seeded, palette.wallHighlight, 0.3);
+      graphics.lineBetween(outer.x, outer.y, ridge.x, ridge.y);
+      graphics.lineStyle(1, palette.wallShadow, 0.46);
+      graphics.lineBetween(outerLeft.x, outerLeft.y, innerLeft.x, innerLeft.y);
+    }
   }
 
   private landmarkInteriorVisualRandom(
@@ -3558,6 +3615,23 @@ export class AdventureScene extends Phaser.Scene {
     };
 
     switch (decoration.kind) {
+      case 'moss-carpet':
+        for (let tuft = 0; tuft < 13; tuft += 1) {
+          const angle = decoration.rotation + tuft * 2.399;
+          const distance = (4 + (tuft % 5) * 7) * scale;
+          const tuftX = position.x + Math.cos(angle) * distance;
+          const tuftY = position.y + Math.sin(angle) * distance * 0.58;
+          graphics.fillStyle(
+            tuft % 3 === 0 ? palette.glow : palette.secondaryAccent,
+            alpha * (tuft % 3 === 0 ? 0.18 : 0.54)
+          );
+          graphics.fillEllipse(tuftX, tuftY, (11 + tuft % 4 * 3) * scale, (5 + tuft % 3 * 2) * scale);
+          if (tuft % 2 === 0) {
+            graphics.lineStyle(1.1 * scale, palette.wallHighlight, alpha * 0.24);
+            graphics.lineBetween(tuftX, tuftY, tuftX + Math.cos(angle) * 7 * scale, tuftY - 5 * scale);
+          }
+        }
+        break;
       case 'growth-rings':
         graphics.lineStyle(1.4 * scale, palette.floorDetail, alpha * 0.7);
         for (let ring = 0; ring < 3; ring += 1) {
@@ -3597,6 +3671,33 @@ export class AdventureScene extends Phaser.Scene {
           const leaf = point(vine * 6 + (vine % 2) * 3, vine * 7);
           graphics.fillStyle(palette.glow, alpha * 0.35);
           graphics.fillEllipse(leaf.x, leaf.y, 9 * scale, 4 * scale);
+        }
+        break;
+      case 'glowing-berry-cluster': {
+        line(-18, -22, -5, -4, 2.5, palette.secondaryAccent, alpha * 0.86);
+        line(17, -20, 4, -3, 2.2, palette.secondaryAccent, alpha * 0.82);
+        const berryCount = 6 + decoration.variant;
+        for (let berry = 0; berry < berryCount; berry += 1) {
+          const berryAngle = berry * 2.399 + decoration.rotation * 0.18;
+          const distance = (5 + (berry % 4) * 7) * scale;
+          const berryX = position.x + Math.cos(berryAngle) * distance;
+          const berryY = position.y + Math.sin(berryAngle) * distance * 0.72;
+          graphics.fillStyle(0xffe88f, alpha * 0.42);
+          graphics.fillCircle(berryX, berryY, (5.2 + berry % 2) * scale);
+          graphics.fillStyle(berry % 3 === 0 ? 0xffffff : 0xfff7c7, alpha);
+          graphics.fillCircle(berryX, berryY, (3.2 + berry % 2 * 0.5) * scale);
+          graphics.fillStyle(0xffffff, alpha * 0.92);
+          graphics.fillCircle(berryX - 1.1 * scale, berryY - 1.4 * scale, 1.1 * scale);
+        }
+        break;
+      }
+      case 'shelf-fungus':
+        for (let shelf = 0; shelf < 5; shelf += 1) {
+          const shelfPoint = point((shelf - 2) * 10, 8 - Math.abs(shelf - 2) * 5);
+          graphics.fillStyle(shelf % 2 ? palette.primaryAccent : palette.floorDetail, alpha * 0.72);
+          graphics.fillEllipse(shelfPoint.x, shelfPoint.y, (19 - Math.abs(shelf - 2) * 2) * scale, 7 * scale);
+          graphics.lineStyle(1.2 * scale, palette.wallHighlight, alpha * 0.48);
+          graphics.lineBetween(shelfPoint.x - 7 * scale, shelfPoint.y, shelfPoint.x + 7 * scale, shelfPoint.y);
         }
         break;
       case 'shallow-pool':
@@ -3944,11 +4045,21 @@ export class AdventureScene extends Phaser.Scene {
     });
 
     interior.layout.decorations.forEach((decoration, index) => {
-      if (decoration.kind !== 'firefly-motes' && decoration.kind !== 'mist-plume') {
+      if (decoration.kind !== 'firefly-motes'
+        && decoration.kind !== 'mist-plume'
+        && decoration.kind !== 'glowing-berry-cluster') {
         return;
       }
       const position = this.landmarkInteriorDecorationPosition(decoration, interior);
-      if (decoration.kind === 'firefly-motes') {
+      if (decoration.kind === 'glowing-berry-cluster') {
+        const phase = 0.82 + Math.sin(time * 0.0014 + index * 0.73) * 0.08;
+        graphics.fillStyle(0xfff1a8, 0.04 * phase);
+        graphics.fillCircle(position.x, position.y, 53 * decoration.scale);
+        graphics.fillStyle(0xffffdc, 0.075 * phase);
+        graphics.fillCircle(position.x, position.y, 34 * decoration.scale);
+        graphics.fillStyle(0xffffff, 0.11 * phase);
+        graphics.fillCircle(position.x, position.y, 17 * decoration.scale);
+      } else if (decoration.kind === 'firefly-motes') {
         for (let mote = 0; mote < 4; mote += 1) {
           const angle = time * 0.00035 * (mote % 2 ? 1 : -1) + index + mote * 1.57;
           const distance = (12 + mote * 7) * decoration.scale;

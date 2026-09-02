@@ -101,8 +101,7 @@ const EXPECTED_INTERIOR_MATERIALS = new Map<LandmarkType, readonly ResourceType[
     ResourceType.AncientWood,
     ResourceType.AmberSap,
     ResourceType.GlowSpores,
-    ResourceType.VineFiber,
-    ResourceType.Heartwood
+    ResourceType.VineFiber
   ]],
   [LandmarkType.Waterfall, [
     ResourceType.DampCrystal,
@@ -556,6 +555,23 @@ EXPECTED_ENTERABLE_TYPES.forEach((type) => {
     type + ' theme material contract is incorrect'
   );
   assert.ok(first.decorations.length >= 20, type + ' interior must include dense environmental decoration');
+  if (type === LandmarkType.GiantAncientTree) {
+    assert.equal(first.terrain.rooms.length, 1, 'Ancient tree interior must be a single room');
+    assert.equal(first.terrain.passages.length, 0, 'Ancient tree interior must not generate corridors');
+    assert.ok(first.decorations.length >= 52, 'Ancient tree sanctuary must have dense organic detail');
+    assert.ok(
+      first.decorations.filter((decoration) => decoration.kind === 'moss-carpet').length >= 10,
+      'Ancient tree sanctuary must have moss distributed around the room'
+    );
+    assert.ok(
+      first.decorations.filter((decoration) => decoration.kind === 'glowing-berry-cluster').length >= 8,
+      'Ancient tree sanctuary must have glowing berry clusters around the room'
+    );
+    assert.ok(
+      first.materialNodes.every((material) => material.resource !== ResourceType.Heartwood),
+      'Heartwood must not generate in the ancient tree interior'
+    );
+  }
   assert.ok(first.floorTiles[first.spawnTileY]?.[first.spawnTileX], type + ' spawn must be on a floor tile');
   assert.ok(first.floorTiles[first.exit.tileY]?.[first.exit.tileX], type + ' exit must be on a floor tile');
   assert.ok(landmarkInteriorContainsPoint(first, first.spawnTileX + 0.5, first.spawnTileY + 0.5), type + ' spawn is outside terrain');
@@ -657,7 +673,7 @@ assert.equal(
 const totalGenerationMs = firstGenerationMs + surfaceGenerationMs + interiorGenerationMs;
 assert.ok(totalGenerationMs < 12_000, 'Combined landmark generation verification exceeded the 12 second budget');
 
-console.log('Landmark verification passed: 6 surface landmarks, 3 enterable interiors, and 21 rare materials.');
+console.log('Landmark verification passed: 6 surface landmarks, 3 enterable interiors, and 20 rare materials.');
 console.log('World scan: ' + generatedLandmarks.length + ' landmarks in ' + firstGenerationMs.toFixed(1) + ' ms.');
 console.log('Surface plans: ' + surfaceGenerationMs.toFixed(1) + ' ms; interiors: ' + interiorGenerationMs.toFixed(1) + ' ms.');
 console.log('Determinism, variation, F3 nearest lookup, entrances, reachability, collision, save compatibility, and state round trips passed.');

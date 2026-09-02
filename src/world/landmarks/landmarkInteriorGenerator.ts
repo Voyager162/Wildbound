@@ -2,7 +2,7 @@ import { LandmarkType } from '../landmarkConfig';
 import { ResourceType } from '../resources';
 import { WORLD_TILE_SIZE } from '../worldConfig';
 
-export const LANDMARK_INTERIOR_GENERATION_VERSION = 1;
+export const LANDMARK_INTERIOR_GENERATION_VERSION = 2;
 
 export const LANDMARK_INTERIOR_TYPES = [
   LandmarkType.GiantAncientTree,
@@ -35,6 +35,9 @@ export type LandmarkInteriorDecorationKind =
   | 'bark-rib'
   | 'sap-runnel'
   | 'spore-cluster'
+  | 'moss-carpet'
+  | 'glowing-berry-cluster'
+  | 'shelf-fungus'
   | 'hanging-vines'
   | 'growth-rings'
   | 'firefly-motes'
@@ -186,8 +189,7 @@ const TREE_MATERIALS = [
   ResourceType.AncientWood,
   ResourceType.AmberSap,
   ResourceType.GlowSpores,
-  ResourceType.VineFiber,
-  ResourceType.Heartwood
+  ResourceType.VineFiber
 ] as const;
 
 const WATERFALL_MATERIALS = [
@@ -206,30 +208,31 @@ const WATCHTOWER_MATERIALS = [
 export const LANDMARK_INTERIOR_THEMES: Readonly<Record<LandmarkInteriorType, LandmarkInteriorTheme>> = {
   [LandmarkType.GiantAncientTree]: {
     id: 'hollow-tree',
-    label: 'Ancient Heartwood Hollow',
-    floorLabel: 'Living heartwood',
+    label: 'Ancient Tree Sanctuary',
+    floorLabel: 'Ancient growth-ring floor',
     exitLabel: 'Return through the root hollow',
     palette: {
-      background: 0x100d09,
-      floorBase: 0x533820,
-      floorAccent: 0x76502b,
-      floorDetail: 0x9b6940,
-      wallBase: 0x302114,
-      wallEdge: 0x21160f,
-      wallHighlight: 0x8a6137,
-      wallShadow: 0x120c08,
-      primaryAccent: 0xe59a31,
-      secondaryAccent: 0x6eb66e,
-      glow: 0xb8ff8a,
+      background: 0x050604,
+      floorBase: 0x4a301b,
+      floorAccent: 0x704923,
+      floorDetail: 0xa06d39,
+      wallBase: 0x2b1c10,
+      wallEdge: 0x1b110a,
+      wallHighlight: 0x90643a,
+      wallShadow: 0x0d0906,
+      primaryAccent: 0xe6a238,
+      secondaryAccent: 0x315f30,
+      glow: 0xf5ffd0,
       water: 0x73512e,
       mist: 0xa8c978,
-      ambientLight: 0xd59a5b,
-      ambientLightStrength: 0.42
+      ambientLight: 0xffd982,
+      ambientLightStrength: 0.5
     },
     materialResources: TREE_MATERIALS,
     decorationKinds: [
-      'root-ridge', 'bark-rib', 'sap-runnel', 'spore-cluster',
-      'hanging-vines', 'growth-rings', 'firefly-motes'
+      'moss-carpet', 'root-ridge', 'glowing-berry-cluster', 'bark-rib',
+      'moss-carpet', 'hanging-vines', 'glowing-berry-cluster', 'sap-runnel',
+      'shelf-fungus', 'growth-rings', 'firefly-motes', 'moss-carpet'
     ]
   },
   [LandmarkType.Waterfall]: {
@@ -406,29 +409,28 @@ const createPassage = (
 };
 
 const treeTemplate = (random: InteriorRandom): InteriorTemplate => {
-  const width = random.integer(44, 49);
-  const height = random.integer(38, 43);
-  const rooms = [
-    createRoom(random, 'entry-hollow', 'entry', 'ellipse', width * 0.51, height - 5.1, 5.2, 4.8, 0.09),
-    createRoom(random, 'heart-chamber', 'heart', 'ellipse', width * 0.51, height * 0.57, 9.6, 8.3, 0.105),
-    createRoom(random, 'west-root-gallery', 'west-root', 'ellipse', width * 0.25, height * 0.61, 7.4, 5.1, 0.13),
-    createRoom(random, 'east-root-gallery', 'east-root', 'ellipse', width * 0.77, height * 0.55, 7.1, 5.4, 0.13),
-    createRoom(random, 'spore-canopy', 'canopy', 'ellipse', width * 0.53, height * 0.24, 8.5, 6.1, 0.12),
-    createRoom(random, 'sap-vault', 'sap-vault', 'ellipse', width * 0.29, height * 0.29, 6.1, 4.7, 0.115)
-  ];
-  const passages = [
-    createPassage(random, 'entry-to-heart', rooms[0], rooms[1], 2.7),
-    createPassage(random, 'heart-to-west-root', rooms[1], rooms[2], 2.45),
-    createPassage(random, 'heart-to-east-root', rooms[1], rooms[3], 2.45),
-    createPassage(random, 'heart-to-canopy', rooms[1], rooms[4], 2.55),
-    createPassage(random, 'canopy-to-sap-vault', rooms[4], rooms[5], 2.1, 0.16)
-  ];
+  const width = random.integer(42, 46);
+  const height = random.integer(36, 40);
+  const centerX = width * random.range(0.49, 0.51);
+  const centerY = height * random.range(0.48, 0.51);
+  const room = createRoom(
+    random,
+    'ancient-sanctuary',
+    'ancient-sanctuary',
+    'ellipse',
+    centerX,
+    centerY,
+    width * random.range(0.39, 0.415),
+    height * random.range(0.385, 0.41),
+    0.055,
+    0.32
+  );
   return {
     width,
     height,
-    terrain: { rooms, passages },
-    desiredExit: { x: width * 0.51, y: height - 2.5 },
-    desiredSpawn: { x: width * 0.51, y: height - 7.2 }
+    terrain: { rooms: [room], passages: [] },
+    desiredExit: { x: centerX, y: centerY + room.radiusY * 0.9 },
+    desiredSpawn: { x: centerX, y: centerY + room.radiusY * 0.64 }
   };
 };
 
@@ -754,8 +756,10 @@ const decorationLayer = (kind: LandmarkInteriorDecorationKind): LandmarkInterior
     case 'shallow-pool':
     case 'growth-rings':
     case 'sap-runnel':
+    case 'moss-carpet':
       return 'floor';
     case 'hanging-vines':
+    case 'glowing-berry-cluster':
     case 'mist-plume':
     case 'faded-banner':
     case 'firefly-motes':
@@ -775,22 +779,41 @@ const createDecorations = (
 ): LandmarkInteriorDecoration[] => {
   const materialTiles = new Set(materialNodes.map((node) => `${node.tileX},${node.tileY}`));
   const available = candidates.filter((tile) => !materialTiles.has(`${tile.tileX},${tile.tileY}`));
-  const count = Math.min(34, 23 + random.integer(0, 9), available.length);
+  const isAncientTree = theme.id === 'hollow-tree';
+  const count = Math.min(
+    isAncientTree ? 64 : 34,
+    (isAncientTree ? 52 : 23) + random.integer(0, isAncientTree ? 10 : 9),
+    available.length
+  );
   const decorations: LandmarkInteriorDecoration[] = [];
   const usedObjectTiles = new Set<string>();
+  const usedTreeLayerTiles = new Set<string>();
 
   for (let index = 0; index < count; index += 1) {
     const kind = theme.decorationKinds[index % theme.decorationKinds.length];
     const room = terrain.rooms[(index + random.integer(0, terrain.rooms.length - 1)) % terrain.rooms.length];
+    const layer = decorationLayer(kind);
+    const targetAngle = random.range(0, TWO_PI);
+    const targetRadius = isAncientTree
+      ? random.range(
+        kind === 'growth-rings' || kind === 'firefly-motes' ? 0.22 : 0.5,
+        kind === 'moss-carpet' || kind === 'glowing-berry-cluster' || kind === 'hanging-vines' ? 0.93 : 0.84
+      )
+      : 0;
+    const targetX = room.x + Math.cos(targetAngle) * room.radiusX * targetRadius;
+    const targetY = room.y + Math.sin(targetAngle) * room.radiusY * targetRadius;
     let selected: CandidateTile | null = null;
     let selectedScore = Number.POSITIVE_INFINITY;
     for (const candidate of available) {
       const key = `${candidate.tileX},${candidate.tileY}`;
-      if (decorationLayer(kind) === 'object' && usedObjectTiles.has(key)) {
+      if ((layer === 'object' && usedObjectTiles.has(key))
+        || (isAncientTree && usedTreeLayerTiles.has(`${layer}:${key}`))) {
         continue;
       }
-      const distance = Math.hypot(candidate.tileX + 0.5 - room.x, candidate.tileY + 0.5 - room.y);
-      const score = distance + random.next() * 7.5;
+      const distance = isAncientTree
+        ? Math.hypot(candidate.tileX + 0.5 - targetX, candidate.tileY + 0.5 - targetY)
+        : Math.hypot(candidate.tileX + 0.5 - room.x, candidate.tileY + 0.5 - room.y);
+      const score = distance + random.next() * (isAncientTree ? 2.8 : 7.5);
       if (score < selectedScore) {
         selected = candidate;
         selectedScore = score;
@@ -799,9 +822,11 @@ const createDecorations = (
     if (!selected) {
       break;
     }
-    const layer = decorationLayer(kind);
     if (layer === 'object') {
       usedObjectTiles.add(`${selected.tileX},${selected.tileY}`);
+    }
+    if (isAncientTree) {
+      usedTreeLayerTiles.add(`${layer}:${selected.tileX},${selected.tileY}`);
     }
     decorations.push({
       id: `${landmarkId}:interior-decoration:${index}:${kind}`,

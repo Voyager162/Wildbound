@@ -19,7 +19,10 @@ import {
 } from './landmarks/landmarkSurfaceGenerator';
 import { SessionWorldState } from './SessionWorldState';
 import { CHUNK_LOAD_RADIUS, CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from './worldConfig';
-import { ANCIENT_TREE_FRUIT_COUNT } from './landmarks/ancientTreeConfig';
+import {
+  ANCIENT_TREE_FRUIT_COUNT,
+  ANCIENT_TREE_LEAF_DENSITY_MULTIPLIER
+} from './landmarks/ancientTreeConfig';
 
 // Ground traces sit beneath the shared grass Blitters (.9), so vegetation remains rooted through
 // open landmark terrain. Structures remain below the player (10); only genuine foreground roofs,
@@ -1616,20 +1619,6 @@ const drawAncientTreeUnified = (
     foreground.fillEllipse(entrance.worldX, doorwayY + s * 0.035, s * 0.15, s * 0.055);
   }
 
-  seamlessAncientTreeFruitPositions(seed, landmark, center, r).forEach((fruit, index) => {
-    foreground.lineStyle(Math.max(1, s * 0.003), mixColor(0x12351f, palette.moss, 0.22), 0.9);
-    foreground.lineBetween(fruit.stemX, fruit.stemY, fruit.x, fruit.y - s * 0.012);
-    foreground.fillStyle(index % 3 === 0 ? 0xffe58d : 0xffffe8, 1);
-    foreground.fillEllipse(fruit.x, fruit.y, s * 0.055, s * 0.074);
-    foreground.lineStyle(Math.max(1, s * 0.0025), 0xffefad, 0.9);
-    foreground.strokeEllipse(fruit.x, fruit.y, s * 0.059, s * 0.078);
-    foreground.fillStyle(0xffffff, 0.9);
-    foreground.fillCircle(fruit.x - s * 0.006, fruit.y - s * 0.01, Math.max(1.4, s * 0.004));
-    if (index % 3 === 0) {
-      foreground.fillStyle(mixColor(0x173b23, palette.moss, 0.24), 0.82);
-      foreground.fillEllipse(fruit.stemX + s * 0.008, fruit.stemY + s * 0.014, s * 0.019, s * 0.008);
-    }
-  });
 };
 
 const drawWaterfall = (seed: string, visual: LandmarkVisual, palette: LandmarkPalette): void => {
@@ -1987,32 +1976,45 @@ const drawAnimatedVisual = (
     const treeScale = r * 0.78;
     const crownY = center.y - treeScale * 1.28;
     const animatedCrownCenter = { x: center.x - treeScale * 0.018, y: crownY };
-    forEachAncientTreeLeafPlacement(seed, landmark, animatedCrownCenter, treeScale, 21, 36, 0xdd00, ({ x, y, index }) => {
-      const phase = detailRandom(seed, landmark, index, 0xdd02) * Math.PI * 2;
-      const sway = Math.sin(time * (0.00125 + detailRandom(seed, landmark, index, 0xdd03) * 0.0007) + phase);
-      const animatedX = x + sway * treeScale * 0.014;
-      const animatedY = y + Math.cos(time * 0.0011 + phase) * treeScale * 0.006;
-      const width = treeScale * (0.043 + detailRandom(seed, landmark, index, 0xdd04) * 0.032);
-      // Leaves generally hang downward from their stems, while deterministic variation and wind
-      // keep the crown organic instead of forming rows or a repeated circular pattern.
-      const leafAngle = Math.PI * 0.5
-        + (detailRandom(seed, landmark, index, 0xdd05) - 0.5) * 1.7
-        + sway * 0.24;
-      const leafDepth = detailRandom(seed, landmark, index, 0xdd06);
-      const color = leafDepth > 0.86
-        ? mixColor(0x315f35, palette.moss, 0.22)
-        : mixColor(0x112f1d, 0x32663a, 0.22 + leafDepth * 0.62);
-      drawLeafShape(
-        accent,
-        animatedX,
-        animatedY,
-        width,
-        leafAngle,
-        color,
-        0.9 + (index % 4) * 0.025,
-        mixColor(0x173b23, 0x46754a, leafDepth * 0.62)
-      );
-    });
+    const leafDensity = Math.min(3, Math.max(0, ANCIENT_TREE_LEAF_DENSITY_MULTIPLIER));
+    const leafAxisScale = Math.sqrt(leafDensity);
+    const leafRows = leafDensity === 0 ? 0 : Math.max(1, Math.round(21 * leafAxisScale));
+    const leafColumns = leafDensity === 0 ? 0 : Math.max(1, Math.round(36 * leafAxisScale));
+    forEachAncientTreeLeafPlacement(
+      seed,
+      landmark,
+      animatedCrownCenter,
+      treeScale,
+      leafRows,
+      leafColumns,
+      0xdd00,
+      ({ x, y, index }) => {
+        const phase = detailRandom(seed, landmark, index, 0xdd02) * Math.PI * 2;
+        const sway = Math.sin(time * (0.00125 + detailRandom(seed, landmark, index, 0xdd03) * 0.0007) + phase);
+        const animatedX = x + sway * treeScale * 0.014;
+        const animatedY = y + Math.cos(time * 0.0011 + phase) * treeScale * 0.006;
+        const width = treeScale * (0.043 + detailRandom(seed, landmark, index, 0xdd04) * 0.032);
+        // Leaves generally hang downward from their stems, while deterministic variation and wind
+        // keep the crown organic instead of forming rows or a repeated circular pattern.
+        const leafAngle = Math.PI * 0.5
+          + (detailRandom(seed, landmark, index, 0xdd05) - 0.5) * 1.7
+          + sway * 0.24;
+        const leafDepth = detailRandom(seed, landmark, index, 0xdd06);
+        const color = leafDepth > 0.86
+          ? mixColor(0x315f35, palette.moss, 0.22)
+          : mixColor(0x112f1d, 0x32663a, 0.22 + leafDepth * 0.62);
+        drawLeafShape(
+          accent,
+          animatedX,
+          animatedY,
+          width,
+          leafAngle,
+          color,
+          0.9 + (index % 4) * 0.025,
+          mixColor(0x173b23, 0x46754a, leafDepth * 0.62)
+        );
+      }
+    );
     // Dense, deep-green vines descend beyond the leaf curtain and carry paired leaflets.
     const vineCount = 20;
     for (let vine = 0; vine < vineCount; vine += 1) {
@@ -2049,6 +2051,47 @@ const drawAnimatedVisual = (
         previousY = y;
       }
     }
+
+    // Fruit is rendered after the main leaf field so high density cannot bury it. One small
+    // deterministic leaf (occasionally two) then crosses an outer edge, keeping the fruit nestled
+    // in the crown instead of looking pasted on top of it.
+    seamlessAncientTreeFruitPositions(seed, landmark, center, r).forEach((fruit, index) => {
+      const phase = detailRandom(seed, landmark, index, 0xdd50) * Math.PI * 2;
+      const sway = Math.sin(time * 0.00105 + phase);
+      const fruitX = fruit.x + sway * treeScale * 0.006;
+      const fruitY = fruit.y + Math.cos(time * 0.00092 + phase) * treeScale * 0.003;
+      accent.lineStyle(Math.max(1, treeScale * 0.003), mixColor(0x12351f, palette.moss, 0.22), 0.94);
+      accent.lineBetween(fruit.stemX, fruit.stemY, fruitX, fruitY - treeScale * 0.012);
+      accent.fillStyle(index % 3 === 0 ? 0xffe58d : 0xffffe8, 1);
+      accent.fillEllipse(fruitX, fruitY, treeScale * 0.055, treeScale * 0.074);
+      accent.lineStyle(Math.max(1, treeScale * 0.0025), 0xffefad, 0.92);
+      accent.strokeEllipse(fruitX, fruitY, treeScale * 0.059, treeScale * 0.078);
+      accent.fillStyle(0xffffff, 0.94);
+      accent.fillCircle(
+        fruitX - treeScale * 0.006,
+        fruitY - treeScale * 0.01,
+        Math.max(1.4, treeScale * 0.004)
+      );
+
+      const coverLeafCount = index % 5 === 0 ? 2 : 1;
+      for (let coverLeaf = 0; coverLeaf < coverLeafCount; coverLeaf += 1) {
+        const side = (index + coverLeaf) % 2 === 0 ? -1 : 1;
+        const leafLength = treeScale * (0.029 + detailRandom(seed, landmark, index * 2 + coverLeaf, 0xdd51) * 0.007);
+        const leafX = fruitX + side * treeScale * (0.018 + coverLeaf * 0.006);
+        const leafY = fruitY + treeScale * (-0.006 + coverLeaf * 0.018);
+        drawLeafShape(
+          accent,
+          leafX,
+          leafY,
+          leafLength,
+          Math.PI * (side < 0 ? 0.88 : 0.12) + sway * 0.12,
+          mixColor(0x173b23, 0x35683a, 0.48 + coverLeaf * 0.12),
+          0.98,
+          0x477c49
+        );
+      }
+    });
+
     for (let mote = 0; mote < 10; mote += 1) {
       const phase = time * (0.00032 + mote * 0.000017) + detailRandom(seed, landmark, mote, 0xdd10) * Math.PI * 2;
       const distance = treeScale * (0.16 + detailRandom(seed, landmark, mote, 0xdd11) * 0.62);
