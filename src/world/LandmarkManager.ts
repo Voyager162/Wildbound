@@ -2018,23 +2018,32 @@ const drawStoneCircle = (seed: string, visual: LandmarkVisual, palette: Landmark
       structure.fillEllipse(clodX, clodY, 8 + (clod % 4) * 3, 6 + (clod % 3) * 2);
     }
     const grassColor = mixColor(palette.moss, 0x183d27, 0.62);
+    const rootColor = mixColor(grassColor, palette.soilDark, 0.22);
+    const groundContactY = bottomY + Math.max(3, screenDepth * 0.09);
+    // Two low sod mats join the individual roots to the terrain and the buried stone edge. They
+    // remove any transparent interval beneath the blades without covering the carved face.
+    structure.fillStyle(rootColor, 0.98);
+    structure.fillEllipse(center.x - screenWidth * 0.47, groundContactY + 1, screenWidth * 0.45, 7);
+    structure.fillEllipse(center.x + screenWidth * 0.47, groundContactY + 1, screenWidth * 0.45, 7);
     for (let blade = 0; blade < 44; blade += 1) {
       // Grow paired tufts from the ground immediately outside the buried course. Anchoring every
-      // base at bottomY keeps the grass off the pillar face while the tips overlap its side edges.
+      // base to the sod mat keeps the grass off the pillar face while the tips lean into its edges.
       const side = blade % 2 === 0 ? -1 : 1;
       const cluster = Math.floor(blade / 2);
       const spread = cluster / 21;
       const edgeJitter = detailRandom(seed, landmark, blockIndex * 47 + blade, 0xc453);
-      const bladeBaseX = center.x + side * screenWidth * (0.4 + spread * 0.34)
-        + (edgeJitter - 0.5) * screenWidth * 0.11;
-      const bladeBaseY = bottomY + 1 + detailRandom(seed, landmark, blockIndex * 47 + blade, 0xc454) * 5
-        + spread * screenDepth * 0.08;
+      const bladeBaseX = center.x + side * screenWidth * (0.36 + spread * 0.19)
+        + (edgeJitter - 0.5) * screenWidth * 0.07;
+      const bladeBaseY = groundContactY
+        + detailRandom(seed, landmark, blockIndex * 47 + blade, 0xc454) * 2;
       const bladeHeight = 8 + detailRandom(seed, landmark, blockIndex * 41 + blade, 0xc451) * 15;
+      structure.fillStyle(rootColor, 0.98);
+      structure.fillEllipse(bladeBaseX, bladeBaseY + 1, 5.5 + (blade % 3), 3.5);
       structure.lineStyle(1.25 + (blade % 3) * 0.34, blade % 5 === 0 ? mixColor(grassColor, palette.mossLight, 0.22) : grassColor, 0.96);
-      structure.lineBetween(bladeBaseX, bladeBaseY, bladeBaseX + side * (3 + edgeJitter * 4), bladeBaseY - bladeHeight);
+      structure.lineBetween(bladeBaseX, bladeBaseY, bladeBaseX - side * (4 + edgeJitter * 5), bladeBaseY - bladeHeight);
       if (blade % 5 === 0) {
         structure.fillStyle(mixColor(grassColor, palette.mossLight, 0.18), 0.92);
-        structure.fillEllipse(bladeBaseX + side * 3, bladeBaseY - bladeHeight * 0.65, 5.5, 3.2);
+        structure.fillEllipse(bladeBaseX - side * 3, bladeBaseY - bladeHeight * 0.65, 5.5, 3.2);
       }
     }
   });
