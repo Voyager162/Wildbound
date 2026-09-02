@@ -70,6 +70,7 @@ import {
   type LandmarkEntrance,
   type LandmarkMaterialNode
 } from '../world/landmarks/landmarkSurfaceGenerator';
+import { ancientTreeFeatureRegrowthDelayMs } from '../world/landmarks/ancientTreeConfig';
 import {
   generateLandmarkInterior,
   isLandmarkInteriorType,
@@ -781,6 +782,7 @@ export class AdventureScene extends Phaser.Scene {
     let savedGame: SaveGameData | null = null;
     let savedActiveCave: SaveGameData['activeCave'] | undefined;
     let savedActiveLandmarkInterior: SaveGameData['activeLandmarkInterior'] | undefined;
+    let migratedAncientTreeRegrowth = false;
 
     await this.loadGameSettings();
 
@@ -808,6 +810,16 @@ export class AdventureScene extends Phaser.Scene {
         ? savedHotbarSlot
         : 0;
       this.sessionWorldState.restore(savedGame.world);
+      const ancientTreeIdMarker = `:${LandmarkType.GiantAncientTree}:`;
+      this.sessionWorldState.getHarvestedLandmarkMaterialIds().forEach((materialId) => {
+        if (!materialId.includes(ancientTreeIdMarker) || !materialId.includes(':interior-material:')) {
+          return;
+        }
+        migratedAncientTreeRegrowth = this.sessionWorldState.scheduleLandmarkMaterialRegrowth(
+          materialId,
+          ancientTreeFeatureRegrowthDelayMs(this.worldSeed, materialId, this.sessionWorldState.worldAgeMs)
+        ) || migratedAncientTreeRegrowth;
+      });
       savedActiveCave = savedGame.activeCave;
       savedActiveLandmarkInterior = savedGame.activeLandmarkInterior;
       this.player.setPosition(
@@ -903,7 +915,7 @@ export class AdventureScene extends Phaser.Scene {
     this.updateNightAmbientLighting(this.time.now);
     this.updateDebugText();
 
-    if (!savedGame || !hadSavedWorldTime || DAY_NIGHT_START_HOUR_OVERRIDE !== null) {
+    if (!savedGame || !hadSavedWorldTime || DAY_NIGHT_START_HOUR_OVERRIDE !== null || migratedAncientTreeRegrowth) {
       this.markSaveDirty();
     }
   }
@@ -2252,6 +2264,19 @@ export class AdventureScene extends Phaser.Scene {
 
   private updateWorldTime(time: number, delta: number): void {
     this.worldTimeMs = normalizeWorldTime(this.worldTimeMs + delta);
+    const regrownMaterialIds = this.sessionWorldState.advanceWorldAge(delta);
+    if (regrownMaterialIds.length > 0) {
+      this.markSaveDirty();
+      const interior = this.activeLandmarkInterior;
+      if (interior?.landmark.type === LandmarkType.GiantAncientTree) {
+        const regrownIds = new Set(regrownMaterialIds);
+        if (interior.layout.materialNodes.some((material) => regrownIds.has(material.id))) {
+          this.drawActiveLandmarkInterior();
+          this.updateLandmarkInteriorAccents(time, true);
+          this.updateLandmarkInteriorInteraction(true);
+        }
+      }
+    }
     this.nightAmount = sampleDayNight(this.worldTimeMs).nightAmount;
     this.ambientLightAmount = ambientLightScheduleAmount(this.worldTimeMs);
 
@@ -4295,7 +4320,15 @@ export class AdventureScene extends Phaser.Scene {
       this.showWorldFeedback(this.player.x, this.player.y - 28, 'Inventory full');
       return;
     }
-    if (!this.sessionWorldState.harvestLandmarkMaterial(target.id)) {
+    const regrowthDelayMs = insideInterior
+      && this.activeLandmarkInterior?.landmark.type === LandmarkType.GiantAncientTree
+      ? ancientTreeFeatureRegrowthDelayMs(
+        this.worldSeed,
+        target.id,
+        this.sessionWorldState.worldAgeMs
+      )
+      : undefined;
+    if (!this.sessionWorldState.harvestLandmarkMaterial(target.id, regrowthDelayMs)) {
       return;
     }
     this.inventory.add(target.resource, amount);

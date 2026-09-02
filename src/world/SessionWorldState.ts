@@ -67,10 +67,16 @@ export interface FurnaceState {
   job?: FurnaceJob;
 }
 
+export interface LandmarkMaterialRegrowthState {
+  materialId: string;
+  regrowsAtWorldAgeMs: number;
+}
+
 export interface SessionWorldStateData {
   harvestedFeatureKeys: string[];
   harvestedCaveOreKeys?: string[];
   harvestedLandmarkMaterialKeys?: string[];
+  landmarkMaterialRegrowth?: LandmarkMaterialRegrowthState[];
   drops: DroppedItem[];
   nextDropId: number;
   placedObjects?: PlacedObject[];
@@ -81,6 +87,9 @@ export interface SessionWorldStateData {
   explorationRegionSizeTiles?: number;
   explorationRevealStampKeys?: string[];
   worldTimeMs?: number;
+  // Unlike worldTimeMs, world age never wraps at dawn. It supports multi-day deterministic
+  // systems without tying progression to wall-clock time.
+  worldAgeMs?: number;
 }
 
 const isResourceType = (value: unknown): value is ResourceType =>
@@ -216,6 +225,7 @@ export class SessionWorldState {
   private readonly harvestedFeatureKeys = new Set<string>();
   private readonly harvestedCaveOreKeys = new Set<string>();
   private readonly harvestedLandmarkMaterialKeys = new Set<string>();
+  private readonly landmarkMaterialRegrowth = new Map<string, number>();
   private readonly drops = new Map<string, DroppedItem>();
   private readonly placedObjects = new Map<string, PlacedObject>();
   private readonly exploredRegionKeys = new Set<string>();
@@ -223,6 +233,8 @@ export class SessionWorldState {
   private nextDropId = 0;
   private nextPlacedObjectId = 0;
   private savedWorldTimeMs: number | null = null;
+  private savedWorldAgeMs = 0;
+  private nextLandmarkMaterialRegrowthAtMs = Number.POSITIVE_INFINITY;
 
   isFeatureHarvested(tileX: number, tileY: number): boolean {
     return this.harvestedFeatureKeys.has(this.featureKey(tileX, tileY));
@@ -721,15 +733,64 @@ export class SessionWorldState {
     return isLandmarkMaterialKey(materialId) && this.harvestedLandmarkMaterialKeys.has(materialId);
   }
 
-  harvestLandmarkMaterial(materialId: string): boolean {
+  harvestLandmarkMaterial(materialId: string, regrowDelayMs?: number): boolean {
     if (!isLandmarkMaterialKey(materialId)
       || this.harvestedLandmarkMaterialKeys.has(materialId)
+      || (regrowDelayMs !== undefined && (!Number.isFinite(regrowDelayMs) || regrowDelayMs <= 0))
       || this.harvestedLandmarkMaterialKeys.size >= MAX_HARVESTED_LANDMARK_MATERIAL_KEYS) {
       return false;
     }
 
     this.harvestedLandmarkMaterialKeys.add(materialId);
+    if (regrowDelayMs !== undefined) {
+      this.scheduleLandmarkMaterialRegrowth(materialId, regrowDelayMs);
+    } else {
+      this.landmarkMaterialRegrowth.delete(materialId);
+    }
     return true;
+  }
+
+  scheduleLandmarkMaterialRegrowth(materialId: string, regrowDelayMs: number): boolean {
+    if (!isLandmarkMaterialKey(materialId)
+      || !this.harvestedLandmarkMaterialKeys.has(materialId)
+      || this.landmarkMaterialRegrowth.has(materialId)
+      || !Number.isFinite(regrowDelayMs)
+      || regrowDelayMs <= 0) {
+      return false;
+    }
+    const regrowsAtMs = this.savedWorldAgeMs + regrowDelayMs;
+    this.landmarkMaterialRegrowth.set(materialId, regrowsAtMs);
+    this.nextLandmarkMaterialRegrowthAtMs = Math.min(this.nextLandmarkMaterialRegrowthAtMs, regrowsAtMs);
+    return true;
+  }
+
+  getHarvestedLandmarkMaterialIds(): string[] {
+    return Array.from(this.harvestedLandmarkMaterialKeys);
+  }
+
+  advanceWorldAge(deltaMs: number): string[] {
+    if (!Number.isFinite(deltaMs) || deltaMs <= 0) {
+      return [];
+    }
+    this.savedWorldAgeMs += deltaMs;
+    if (this.savedWorldAgeMs < this.nextLandmarkMaterialRegrowthAtMs) {
+      return [];
+    }
+
+    const regrownMaterialIds: string[] = [];
+    let nextRegrowthAtMs = Number.POSITIVE_INFINITY;
+    this.landmarkMaterialRegrowth.forEach((regrowsAtMs, materialId) => {
+      if (regrowsAtMs <= this.savedWorldAgeMs) {
+        this.landmarkMaterialRegrowth.delete(materialId);
+        if (this.harvestedLandmarkMaterialKeys.delete(materialId)) {
+          regrownMaterialIds.push(materialId);
+        }
+      } else {
+        nextRegrowthAtMs = Math.min(nextRegrowthAtMs, regrowsAtMs);
+      }
+    });
+    this.nextLandmarkMaterialRegrowthAtMs = nextRegrowthAtMs;
+    return regrownMaterialIds;
   }
 
   revealRegion(regionX: number, regionY: number): boolean {
@@ -828,11 +889,19 @@ export class SessionWorldState {
     return this.savedWorldTimeMs;
   }
 
+  get worldAgeMs(): number {
+    return this.savedWorldAgeMs;
+  }
+
   toSaveData(): SessionWorldStateData {
     return {
       harvestedFeatureKeys: Array.from(this.harvestedFeatureKeys),
       harvestedCaveOreKeys: Array.from(this.harvestedCaveOreKeys),
       harvestedLandmarkMaterialKeys: Array.from(this.harvestedLandmarkMaterialKeys),
+      landmarkMaterialRegrowth: Array.from(
+        this.landmarkMaterialRegrowth,
+        ([materialId, regrowsAtWorldAgeMs]) => ({ materialId, regrowsAtWorldAgeMs })
+      ),
       drops: this.getDrops(),
       nextDropId: this.nextDropId,
       placedObjects: this.getPlacedObjects(),
@@ -840,7 +909,8 @@ export class SessionWorldState {
       exploredRegionKeys: Array.from(this.exploredRegionKeys),
       explorationRegionSizeTiles: EXPLORATION_SAVE_REGION_SIZE_TILES,
       explorationRevealStampKeys: Array.from(this.explorationRevealStampKeys),
-      worldTimeMs: this.savedWorldTimeMs ?? undefined
+      worldTimeMs: this.savedWorldTimeMs ?? undefined,
+      worldAgeMs: this.savedWorldAgeMs
     };
   }
 
@@ -848,6 +918,7 @@ export class SessionWorldState {
     this.harvestedFeatureKeys.clear();
     this.harvestedCaveOreKeys.clear();
     this.harvestedLandmarkMaterialKeys.clear();
+    this.landmarkMaterialRegrowth.clear();
     this.drops.clear();
     this.placedObjects.clear();
     this.exploredRegionKeys.clear();
@@ -855,12 +926,17 @@ export class SessionWorldState {
     this.nextDropId = 0;
     this.nextPlacedObjectId = 0;
     this.savedWorldTimeMs = null;
+    this.savedWorldAgeMs = 0;
+    this.nextLandmarkMaterialRegrowthAtMs = Number.POSITIVE_INFINITY;
 
     if (!data || typeof data !== 'object') {
       return;
     }
 
     const state = data as Partial<SessionWorldStateData>;
+    if (typeof state.worldAgeMs === 'number' && Number.isFinite(state.worldAgeMs) && state.worldAgeMs >= 0) {
+      this.savedWorldAgeMs = state.worldAgeMs;
+    }
     if (Array.isArray(state.harvestedFeatureKeys)) {
       state.harvestedFeatureKeys.forEach((key) => {
         if (typeof key === 'string') {
@@ -933,6 +1009,28 @@ export class SessionWorldState {
         if (isLandmarkMaterialKey(key)) {
           this.harvestedLandmarkMaterialKeys.add(key);
         }
+      }
+    }
+
+    if (Array.isArray(state.landmarkMaterialRegrowth)) {
+      const limit = Math.min(state.landmarkMaterialRegrowth.length, MAX_HARVESTED_LANDMARK_MATERIAL_KEYS);
+      for (let index = 0; index < limit; index += 1) {
+        const regrowth = state.landmarkMaterialRegrowth[index] as Partial<LandmarkMaterialRegrowthState> | undefined;
+        if (!regrowth || !isLandmarkMaterialKey(regrowth.materialId)
+          || !this.harvestedLandmarkMaterialKeys.has(regrowth.materialId)
+          || typeof regrowth.regrowsAtWorldAgeMs !== 'number'
+          || !Number.isFinite(regrowth.regrowsAtWorldAgeMs)) {
+          continue;
+        }
+        if (regrowth.regrowsAtWorldAgeMs <= this.savedWorldAgeMs) {
+          this.harvestedLandmarkMaterialKeys.delete(regrowth.materialId);
+          continue;
+        }
+        this.landmarkMaterialRegrowth.set(regrowth.materialId, regrowth.regrowsAtWorldAgeMs);
+        this.nextLandmarkMaterialRegrowthAtMs = Math.min(
+          this.nextLandmarkMaterialRegrowthAtMs,
+          regrowth.regrowsAtWorldAgeMs
+        );
       }
     }
 

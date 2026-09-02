@@ -20,7 +20,12 @@ const verificationSource = String.raw`
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { Biome } from '../../src/world/generation/biomeGenerator';
-import { ANCIENT_TREE_FRUIT_COUNT } from '../../src/world/landmarks/ancientTreeConfig';
+import {
+  ANCIENT_TREE_FEATURE_REGROWTH_MAX_DAYS,
+  ANCIENT_TREE_FEATURE_REGROWTH_MIN_DAYS,
+  ANCIENT_TREE_FRUIT_COUNT,
+  ancientTreeFeatureRegrowthDelayMs
+} from '../../src/world/landmarks/ancientTreeConfig';
 import {
   LANDMARK_DEFINITIONS,
   LandmarkType,
@@ -57,6 +62,7 @@ import { ResourceType } from '../../src/world/resources';
 import { SessionWorldState } from '../../src/world/SessionWorldState';
 import { SAVEABLE_LANDMARK_TYPES, isSaveGameData } from '../../src/save/SaveGameData';
 import { WORLD_TILE_SIZE } from '../../src/world/worldConfig';
+import { DAY_NIGHT_CYCLE_DURATION_MS } from '../../src/world/explorationConfig';
 
 assert.ok(
   Number.isInteger(ANCIENT_TREE_FRUIT_COUNT) && ANCIENT_TREE_FRUIT_COUNT >= 0,
@@ -626,6 +632,77 @@ assert.deepEqual(
   'Harvested landmark materials must survive a state round trip'
 );
 persistedMaterialIds.forEach((id) => assert.equal(restoredSession.isLandmarkMaterialHarvested(id), true));
+
+const regrowingTreeMaterialId = generateLandmarkInterior(
+  'interior-verification-seed',
+  fixtureFor(LandmarkType.GiantAncientTree)
+).materialNodes[0].id;
+const harvestedAtWorldAgeMs = 12_345;
+const regrowthDelayMs = ancientTreeFeatureRegrowthDelayMs(
+  'interior-verification-seed',
+  regrowingTreeMaterialId,
+  harvestedAtWorldAgeMs
+);
+assert.equal(
+  ancientTreeFeatureRegrowthDelayMs('interior-verification-seed', regrowingTreeMaterialId, harvestedAtWorldAgeMs),
+  regrowthDelayMs,
+  'Ancient-tree material regrowth delay must be deterministic'
+);
+assert.ok(
+  regrowthDelayMs >= ANCIENT_TREE_FEATURE_REGROWTH_MIN_DAYS * DAY_NIGHT_CYCLE_DURATION_MS
+    && regrowthDelayMs <= ANCIENT_TREE_FEATURE_REGROWTH_MAX_DAYS * DAY_NIGHT_CYCLE_DURATION_MS,
+  'Ancient-tree material regrowth must remain between two and three in-game days'
+);
+assert.ok(
+  new Set(Array.from({ length: 24 }, (_, index) => ancientTreeFeatureRegrowthDelayMs(
+    'interior-verification-seed',
+    regrowingTreeMaterialId + ':' + index,
+    harvestedAtWorldAgeMs + index * 137
+  ))).size > 1,
+  'Ancient-tree material regrowth delays must vary between features and harvests'
+);
+
+const regrowthSession = new SessionWorldState();
+regrowthSession.advanceWorldAge(harvestedAtWorldAgeMs);
+assert.equal(
+  regrowthSession.harvestLandmarkMaterial(regrowingTreeMaterialId, regrowthDelayMs),
+  true,
+  'Ancient-tree material must accept a regrowth deadline'
+);
+const savedRegrowthSession = regrowthSession.toSaveData();
+assert.equal(savedRegrowthSession.worldAgeMs, harvestedAtWorldAgeMs, 'World age must persist without wrapping');
+assert.equal(savedRegrowthSession.landmarkMaterialRegrowth?.length, 1, 'Regrowth deadline must be serialized');
+const restoredRegrowthSession = new SessionWorldState();
+restoredRegrowthSession.restore(savedRegrowthSession);
+assert.equal(restoredRegrowthSession.isLandmarkMaterialHarvested(regrowingTreeMaterialId), true);
+assert.deepEqual(restoredRegrowthSession.advanceWorldAge(regrowthDelayMs - 1), []);
+assert.equal(restoredRegrowthSession.isLandmarkMaterialHarvested(regrowingTreeMaterialId), true);
+assert.deepEqual(
+  restoredRegrowthSession.advanceWorldAge(1),
+  [regrowingTreeMaterialId],
+  'Ancient-tree material must return at its saved deterministic deadline'
+);
+assert.equal(restoredRegrowthSession.isLandmarkMaterialHarvested(regrowingTreeMaterialId), false);
+assert.equal(restoredRegrowthSession.toSaveData().landmarkMaterialRegrowth?.length, 0);
+
+const legacyTreeRegrowthSession = new SessionWorldState();
+legacyTreeRegrowthSession.restore({
+  harvestedFeatureKeys: [],
+  harvestedLandmarkMaterialKeys: [regrowingTreeMaterialId],
+  drops: [],
+  nextDropId: 0
+});
+assert.equal(
+  legacyTreeRegrowthSession.scheduleLandmarkMaterialRegrowth(regrowingTreeMaterialId, regrowthDelayMs),
+  true,
+  'A tree material harvested by an older save must accept a migration deadline'
+);
+assert.equal(
+  legacyTreeRegrowthSession.scheduleLandmarkMaterialRegrowth(regrowingTreeMaterialId, regrowthDelayMs),
+  false,
+  'Loading an already-migrated tree material must not reroll its deadline'
+);
+
 const legacySession = new SessionWorldState();
 legacySession.restore({ harvestedFeatureKeys: [], drops: [], nextDropId: 0 });
 assert.equal(legacySession.harvestedLandmarkMaterialCount, 0, 'A pre-landmark save must restore with an empty material set');
@@ -673,7 +750,7 @@ assert.equal(
 const totalGenerationMs = firstGenerationMs + surfaceGenerationMs + interiorGenerationMs;
 assert.ok(totalGenerationMs < 12_000, 'Combined landmark generation verification exceeded the 12 second budget');
 
-console.log('Landmark verification passed: 6 surface landmarks, 3 enterable interiors, and 20 rare materials.');
+console.log('Landmark verification passed: 6 surface landmarks, 3 enterable interiors, 20 rare materials, and deterministic tree regrowth.');
 console.log('World scan: ' + generatedLandmarks.length + ' landmarks in ' + firstGenerationMs.toFixed(1) + ' ms.');
 console.log('Surface plans: ' + surfaceGenerationMs.toFixed(1) + ' ms; interiors: ' + interiorGenerationMs.toFixed(1) + ' ms.');
 console.log('Determinism, variation, F3 nearest lookup, entrances, reachability, collision, save compatibility, and state round trips passed.');
