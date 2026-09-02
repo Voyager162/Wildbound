@@ -10,6 +10,7 @@ import {
   findNearestLandmarkCollisionFreeWorldPoint,
   landmarkEntranceVisualPosition,
   landmarkCollisionContainsWorldPoint,
+  stoneCircleOccludesWorldPoint,
   type LandmarkEntrance,
   type LandmarkGroundDetail,
   type LandmarkMaterialNode,
@@ -39,6 +40,7 @@ const LANDMARK_TREE_ANIMATION_FRONT_DEPTH = 4.3;
 const LANDMARK_TREE_BEHIND_DEPTH = 11.2;
 const LANDMARK_TREE_ANIMATION_BEHIND_DEPTH = 11.3;
 const LANDMARK_TREE_DOOR_BEHIND_DEPTH = 11.4;
+const LANDMARK_STONE_BEHIND_DEPTH = 11.1;
 const LANDMARK_ANIMATION_INTERVAL_MS = 50;
 
 interface Point {
@@ -2615,15 +2617,20 @@ export class LandmarkManager {
 
   updateAnimation(time: number, playerWorldX: number, playerWorldY: number): void {
     this.visuals.forEach((visual) => {
-      if (visual.landmark.type !== LandmarkType.GiantAncientTree) {
-        return;
+      if (visual.landmark.type === LandmarkType.GiantAncientTree) {
+        const playerIsBehind = ancientTreeOccludesWorldPoint(visual.landmark, playerWorldX, playerWorldY);
+        visual.foreground.setDepth(playerIsBehind ? LANDMARK_TREE_BEHIND_DEPTH : LANDMARK_TREE_FRONT_DEPTH);
+        visual.accent.setDepth(
+          playerIsBehind ? LANDMARK_TREE_ANIMATION_BEHIND_DEPTH : LANDMARK_TREE_ANIMATION_FRONT_DEPTH
+        );
+        visual.door.setDepth(playerIsBehind ? LANDMARK_TREE_DOOR_BEHIND_DEPTH : LANDMARK_DOOR_DEPTH);
+      } else if (visual.landmark.type === LandmarkType.StoneCircle) {
+        visual.structure.setDepth(
+          stoneCircleOccludesWorldPoint(visual.plan, playerWorldX, playerWorldY)
+            ? LANDMARK_STONE_BEHIND_DEPTH
+            : LANDMARK_STRUCTURE_DEPTH
+        );
       }
-      const playerIsBehind = ancientTreeOccludesWorldPoint(visual.landmark, playerWorldX, playerWorldY);
-      visual.foreground.setDepth(playerIsBehind ? LANDMARK_TREE_BEHIND_DEPTH : LANDMARK_TREE_FRONT_DEPTH);
-      visual.accent.setDepth(
-        playerIsBehind ? LANDMARK_TREE_ANIMATION_BEHIND_DEPTH : LANDMARK_TREE_ANIMATION_FRONT_DEPTH
-      );
-      visual.door.setDepth(playerIsBehind ? LANDMARK_TREE_DOOR_BEHIND_DEPTH : LANDMARK_DOOR_DEPTH);
     });
     const frame = Math.floor(time / LANDMARK_ANIMATION_INTERVAL_MS);
     if (frame === this.lastAnimationFrame) {

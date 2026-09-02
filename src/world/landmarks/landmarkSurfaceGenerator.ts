@@ -855,6 +855,37 @@ export const ancientTreeOccludesWorldPoint = (
   return normalizedX * normalizedX + normalizedY * normalizedY <= 1;
 };
 
+export const stoneCircleOccludesWorldPoint = (
+  plan: LandmarkSurfacePlan,
+  worldX: number,
+  worldY: number
+): boolean => {
+  if (plan.landmark.type !== LandmarkType.StoneCircle) {
+    return false;
+  }
+  const landmarkCenter = centerWorld(plan.landmark);
+  return plan.components.some((part) => {
+    if (part.role !== 'stone-block' || part.shape.kind !== 'oriented-box') {
+      return false;
+    }
+    const rotatedCenter = rotateLocal(part.shape.x, part.shape.y, plan.landmark.rotation);
+    const centerX = landmarkCenter.x + rotatedCenter.x;
+    const centerY = landmarkCenter.y + rotatedCenter.y;
+    const worldRotation = part.shape.rotation + plan.landmark.rotation;
+    const screenWidth = Math.abs(Math.cos(worldRotation)) * part.shape.width
+      + Math.abs(Math.sin(worldRotation)) * part.shape.height;
+    const screenDepth = Math.abs(Math.sin(worldRotation)) * part.shape.width
+      + Math.abs(Math.cos(worldRotation)) * part.shape.height;
+    const groundLineY = centerY + screenDepth * 0.13;
+    const visualTopY = centerY - part.height;
+    // Depth is decided by the player's feet. A player south of the ground line is in front;
+    // north of it, the pillar rises between the camera and any overlapping part of the avatar.
+    return Math.abs(worldX - centerX) <= screenWidth * 0.55 + WORLD_TILE_SIZE * 0.12
+      && worldY <= groundLineY + WORLD_TILE_SIZE * 0.06
+      && worldY >= visualTopY - WORLD_TILE_SIZE * 0.12;
+  });
+};
+
 export const landmarkPlanBlocksFeatureTile = (
   plan: LandmarkSurfacePlan,
   tileX: number,

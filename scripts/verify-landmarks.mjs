@@ -52,6 +52,7 @@ import {
   landmarkPlanBlocksFeatureTile,
   landmarkPlanBlocksGroundGrassTile,
   landmarkStructureContainsWorldPoint,
+  stoneCircleOccludesWorldPoint,
   type LandmarkSurfacePlan
 } from '../../src/world/landmarks/landmarkSurfaceGenerator';
 
@@ -464,6 +465,28 @@ assert.ok(
   'Stone circles must use a substantial ring with slightly fewer monoliths'
 );
 assert.ok(stoneBlocks.every((component) => component.shape.kind === 'oriented-box'), 'Stone-circle stones must be protruding square blocks');
+const occlusionStone = stoneBlocks[0]!;
+assert.equal(occlusionStone.shape.kind, 'oriented-box');
+const occlusionRotation = occlusionStone.shape.rotation + stonePlan.landmark.rotation;
+const occlusionCenterOffsetX = occlusionStone.shape.x * Math.cos(stonePlan.landmark.rotation)
+  - occlusionStone.shape.y * Math.sin(stonePlan.landmark.rotation);
+const occlusionCenterOffsetY = occlusionStone.shape.x * Math.sin(stonePlan.landmark.rotation)
+  + occlusionStone.shape.y * Math.cos(stonePlan.landmark.rotation);
+const occlusionCenterX = stoneCenterWorldX + occlusionCenterOffsetX;
+const occlusionCenterY = stoneCenterWorldY + occlusionCenterOffsetY;
+const occlusionScreenDepth = Math.abs(Math.sin(occlusionRotation)) * occlusionStone.shape.width
+  + Math.abs(Math.cos(occlusionRotation)) * occlusionStone.shape.height;
+const occlusionGroundLineY = occlusionCenterY + occlusionScreenDepth * 0.13;
+assert.equal(
+  stoneCircleOccludesWorldPoint(stonePlan, occlusionCenterX, occlusionGroundLineY - WORLD_TILE_SIZE * 0.12),
+  true,
+  'A player overlapping the back of a stone-circle pillar must be occluded'
+);
+assert.equal(
+  stoneCircleOccludesWorldPoint(stonePlan, occlusionCenterX, occlusionGroundLineY + WORLD_TILE_SIZE * 0.18),
+  false,
+  'A player standing in front of a stone-circle pillar must remain visible'
+);
 assert.ok(
   stoneBlocks.every((component) => component.height <= stonePlan.landmark.footprintRadiusTiles * WORLD_TILE_SIZE * 0.3),
   'Stone-circle monoliths must remain broad and moderately tall instead of needle-like'
