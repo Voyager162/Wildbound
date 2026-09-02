@@ -472,6 +472,13 @@ assert.ok(
   watchtowerWalls.every((component) => component.shape.kind === 'oriented-box'),
   'Watchtower masonry walls must use clean connected oriented boxes'
 );
+const watchtowerRadius = watchtowerPlan.landmark.footprintRadiusTiles * WORLD_TILE_SIZE;
+assert.ok(
+  watchtowerWalls.every((component) => (
+    component.height >= watchtowerRadius * 1.16 && component.height <= watchtowerRadius * 1.32
+  )),
+  'Watchtower masonry must retain its tall seeded defensive-tower proportions'
+);
 assert.equal(
   landmarkStructureContainsWorldPoint(
     watchtowerPlan,

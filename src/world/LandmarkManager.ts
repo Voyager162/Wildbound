@@ -2216,11 +2216,11 @@ const drawTower = (seed: string, visual: LandmarkVisual, palette: LandmarkPalett
 
   // Seeded fieldstone courses cover the full facade. Each row changes cadence, stone width,
   // bevel, shade, and wear, producing a continuous wall with no repeated tile-like pattern.
-  const rowCount = 14;
+  const rowCount = 20;
   const rowHeight = towerHeight / rowCount;
   for (let row = 0; row < rowCount; row += 1) {
     const courseTop = topY + row * rowHeight;
-    const columns = 6 + (row % 3) + Math.floor(detailRandom(seed, landmark, row, 0xe510) * 2);
+    const columns = 7 + (row % 4) + Math.floor(detailRandom(seed, landmark, row, 0xe510) * 2);
     const usableWidth = bodyWidth * 0.9;
     const nominalWidth = usableWidth / columns;
     for (let column = 0; column < columns; column += 1) {
@@ -2262,6 +2262,38 @@ const drawTower = (seed: string, visual: LandmarkVisual, palette: LandmarkPalett
     }
   }
 
+  // The visible east return receives its own receding stone courses so it reads as real depth,
+  // rather than a single flat strip attached to the facade.
+  const sideCourseCount = 17;
+  for (let row = 0; row < sideCourseCount; row += 1) {
+    const rowTop = topY + row / sideCourseCount * towerHeight;
+    const rowBottom = topY + (row + 0.88) / sideCourseCount * towerHeight;
+    const inset = r * (0.005 + detailRandom(seed, landmark, row, 0xe514) * 0.007);
+    const offset = row % 2 === 0 ? 0 : sideProjection * 0.12;
+    const sideFace: Point[] = [
+      { x: bodyRight + inset, y: rowTop + r * 0.003 },
+      { x: bodyRight + sideProjection - offset, y: rowTop - bodyDepth * 0.07 + r * 0.002 },
+      { x: bodyRight + sideProjection - offset, y: rowBottom - bodyDepth * 0.07 },
+      { x: bodyRight + inset, y: rowBottom }
+    ];
+    fillPolygon(
+      structure,
+      sideFace,
+      shadeColor(sideStone, (detailRandom(seed, landmark, row, 0xe515) - 0.5) * 0.14),
+      1
+    );
+    strokePolyline(structure, sideFace, palette.stoneDark, Math.max(0.8, r * 0.0018), 0.5, true);
+    if (row % 3 === 1) {
+      structure.lineStyle(Math.max(0.7, r * 0.0015), palette.stoneLight, 0.2);
+      structure.lineBetween(
+        bodyRight + sideProjection * 0.5,
+        rowTop - bodyDepth * 0.034,
+        bodyRight + sideProjection * 0.48,
+        rowBottom - bodyDepth * 0.034
+      );
+    }
+  }
+
   // Alternating corner quoins create the heavy, load-bearing edges seen on old defensive towers.
   const quoinRows = 11;
   for (let row = 0; row < quoinRows; row += 1) {
@@ -2276,6 +2308,58 @@ const drawTower = (seed: string, visual: LandmarkVisual, palette: LandmarkPalett
       structure.lineStyle(Math.max(1, r * 0.0024), palette.stoneDark, 0.64);
       structure.strokeRoundedRect(x, quoinY, quoinWidth, quoinHeight, Math.min(5, r * 0.008));
     });
+  }
+
+  // Two shallow, block-built string courses break up the tall wall without separating it into
+  // icon-like pieces. Individual seeded blocks retain the irregular hand-built character.
+  [0.39, 0.69].forEach((progress, bandIndex) => {
+    const bandY = topY + towerHeight * progress;
+    const blockCount = 9;
+    const bandHeight = r * 0.035;
+    structure.fillStyle(shadeColor(palette.stoneDark, -0.08), 0.62);
+    structure.fillRect(bodyLeft - r * 0.012, bandY + r * 0.007, bodyWidth + r * 0.024, bandHeight);
+    for (let block = 0; block < blockCount; block += 1) {
+      const gap = r * 0.004;
+      const blockWidth = (bodyWidth + r * 0.035) / blockCount;
+      const blockX = bodyLeft - r * 0.018 + block * blockWidth;
+      const wear = detailRandom(seed, landmark, bandIndex * 20 + block, 0xe518);
+      structure.fillStyle(shadeColor(mixColor(palette.stone, palette.stoneLight, 0.16 + wear * 0.14), (wear - 0.5) * 0.1), 1);
+      structure.fillRoundedRect(
+        blockX + gap,
+        bandY,
+        blockWidth - gap * 1.4,
+        bandHeight,
+        Math.min(3, r * 0.005)
+      );
+      structure.lineStyle(Math.max(0.8, r * 0.0017), palette.stoneDark, 0.54);
+      structure.strokeRoundedRect(
+        blockX + gap,
+        bandY,
+        blockWidth - gap * 1.4,
+        bandHeight,
+        Math.min(3, r * 0.005)
+      );
+    }
+  });
+
+  // Fine pitting, mineral stains, and lichen are seeded across the masonry. They are deliberately
+  // small and low-contrast so the surface gains age without turning into scattered symbols.
+  const wetFacade = landmark.biome === Biome.Forest || landmark.biome === Biome.Swamp;
+  const weatherMarkCount = wetFacade ? 46 : 30;
+  for (let mark = 0; mark < weatherMarkCount; mark += 1) {
+    const markX = bodyLeft + bodyWidth * (0.07 + detailRandom(seed, landmark, mark, 0xe519) * 0.86);
+    const markY = topY + towerHeight * (0.05 + detailRandom(seed, landmark, mark, 0xe51a) * 0.88);
+    const markSize = r * (0.0035 + detailRandom(seed, landmark, mark, 0xe51b) * 0.008);
+    const isLichen = landmark.biome !== Biome.Desert && landmark.biome !== Biome.Snow && mark % 3 !== 0;
+    structure.fillStyle(
+      isLichen ? mixColor(palette.moss, palette.stoneDark, 0.42) : shadeColor(palette.stoneDark, -0.1),
+      isLichen ? 0.36 : 0.28
+    );
+    structure.fillEllipse(markX, markY, markSize * (1.2 + mark % 3 * 0.25), markSize);
+    if (isLichen && mark % 4 === 0) {
+      structure.fillStyle(palette.mossLight, 0.2);
+      structure.fillCircle(markX + markSize * 0.45, markY - markSize * 0.2, markSize * 0.3);
+    }
   }
 
   // Broad tapering buttresses bury the front corners into the terrain.
@@ -2338,10 +2422,23 @@ const drawTower = (seed: string, visual: LandmarkVisual, palette: LandmarkPalett
       const angle = Math.PI + stoneIndex / (voussoirCount - 1) * Math.PI;
       const stoneX = openingX + Math.cos(angle) * radius * 1.08;
       const stoneY = springY + Math.sin(angle) * radius * 1.08;
-      structure.fillStyle(mixColor(palette.stone, palette.stoneLight, 0.2 + stoneIndex % 3 * 0.08), 1);
-      structure.fillRoundedRect(stoneX - width * 0.075, stoneY - height * 0.035, width * 0.15, height * 0.07, 3);
-      structure.lineStyle(Math.max(0.8, r * 0.0018), palette.stoneDark, 0.62);
-      structure.strokeRoundedRect(stoneX - width * 0.075, stoneY - height * 0.035, width * 0.15, height * 0.07, 3);
+      const tangentX = -Math.sin(angle) * width * 0.075;
+      const tangentY = Math.cos(angle) * width * 0.075;
+      const radialX = Math.cos(angle) * height * 0.035;
+      const radialY = Math.sin(angle) * height * 0.035;
+      const archStone: Point[] = [
+        { x: stoneX - tangentX - radialX, y: stoneY - tangentY - radialY },
+        { x: stoneX + tangentX - radialX, y: stoneY + tangentY - radialY },
+        { x: stoneX + tangentX + radialX, y: stoneY + tangentY + radialY },
+        { x: stoneX - tangentX + radialX, y: stoneY - tangentY + radialY }
+      ];
+      fillPolygon(
+        structure,
+        archStone,
+        mixColor(palette.stone, palette.stoneLight, 0.2 + stoneIndex % 3 * 0.08),
+        1
+      );
+      strokePolyline(structure, archStone, palette.stoneDark, Math.max(0.8, r * 0.0018), 0.62, true);
     }
   };
 
@@ -2354,15 +2451,31 @@ const drawTower = (seed: string, visual: LandmarkVisual, palette: LandmarkPalett
     structure.fillStyle(mixColor(palette.stone, palette.soilLight, 0.18), 1);
     structure.fillRoundedRect(center.x - doorWidth * 0.68, baseY - r * 0.006, doorWidth * 1.36, r * 0.035, 4);
   }
-  drawArchedOpening(center.x, topY + towerHeight * 0.38, r * 0.105, r * 0.175, false);
+  drawArchedOpening(center.x - bodyWidth * 0.13, topY + towerHeight * 0.25, r * 0.105, r * 0.175, false);
+  drawArchedOpening(center.x + bodyWidth * 0.14, topY + towerHeight * 0.51, r * 0.09, r * 0.15, false);
   [-1, 1].forEach((side, index) => {
     const slitX = center.x + side * bodyWidth * 0.29;
-    const slitY = topY + towerHeight * (0.58 + index * 0.08);
+    const slitY = topY + towerHeight * (0.61 + index * 0.1);
     structure.fillStyle(0x15191a, 0.9);
     structure.fillRoundedRect(slitX - r * 0.013, slitY, r * 0.026, r * 0.11, r * 0.009);
     structure.lineStyle(Math.max(1, r * 0.002), palette.stoneLight, 0.28);
-    structure.strokeRoundedRect(slitX - r * 0.013, slitY, r * 0.026, r * 0.11, r * 0.009);
+      structure.strokeRoundedRect(slitX - r * 0.013, slitY, r * 0.026, r * 0.11, r * 0.009);
   });
+
+  // A worn watchkeeper crest is carved directly into the wall above the entrance. Relief shading
+  // keeps it part of the masonry instead of reading as a separate emblem pasted onto the tower.
+  const crestX = center.x;
+  const crestY = baseY - r * 0.47;
+  const crestRadius = r * 0.055;
+  structure.fillStyle(shadeColor(facadeStone, -0.08), 0.72);
+  structure.fillCircle(crestX, crestY, crestRadius);
+  structure.lineStyle(Math.max(1.2, r * 0.0025), palette.stoneLight, 0.28);
+  structure.strokeCircle(crestX - r * 0.003, crestY - r * 0.003, crestRadius * 0.82);
+  structure.lineStyle(Math.max(1.1, r * 0.0022), palette.stoneDark, 0.48);
+  structure.lineBetween(crestX, crestY - crestRadius * 0.62, crestX, crestY + crestRadius * 0.62);
+  structure.lineBetween(crestX - crestRadius * 0.62, crestY, crestX + crestRadius * 0.62, crestY);
+  structure.fillStyle(palette.stoneLight, 0.24);
+  structure.fillCircle(crestX, crestY, crestRadius * 0.18);
 
   // A projecting timber ring and stone corbels support the defensive crown.
   const crownBeamY = topY + r * 0.055;
@@ -2786,8 +2899,6 @@ const drawAnimatedVisual = (
     const lensY = topY - bodyDepth * 0.04 - r * 0.035;
     accent.fillStyle(0xf3db8a, 0.34 + pulse * 0.42);
     accent.fillCircle(lensX, lensY, 3.2 + pulse * 1.4);
-    accent.lineStyle(2, 0xf5df9a, 0.08 + pulse * 0.11);
-    accent.lineBetween(lensX, lensY, lensX + r * (0.58 + pulse * 0.2), lensY + r * 0.2);
   }
   plan.materials.forEach((node) => {
     if (node.glowStrength <= 0 || state.isLandmarkMaterialHarvested(node.id)) {

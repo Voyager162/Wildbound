@@ -558,7 +558,7 @@ const towerPlan = (seed: string, landmark: ProceduralLandmark): Omit<LandmarkSur
       'tower-foundation',
       index,
       shape,
-      r * (0.82 + planRandom(planSeed, 50, index, 3) * 0.12),
+      r * (1.16 + planRandom(planSeed, 50, index, 3) * 0.16),
       0,
       0,
       1,
