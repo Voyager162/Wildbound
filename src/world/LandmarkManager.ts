@@ -11,6 +11,7 @@ import {
   landmarkEntranceVisualPosition,
   landmarkCollisionContainsWorldPoint,
   stoneCircleOccludesWorldPoint,
+  watchtowerOccludesWorldPoint,
   type LandmarkEntrance,
   type LandmarkGroundDetail,
   type LandmarkMaterialNode,
@@ -41,6 +42,7 @@ const LANDMARK_TREE_BEHIND_DEPTH = 11.2;
 const LANDMARK_TREE_ANIMATION_BEHIND_DEPTH = 11.3;
 const LANDMARK_TREE_DOOR_BEHIND_DEPTH = 11.4;
 const LANDMARK_STONE_BEHIND_DEPTH = 11.1;
+const LANDMARK_TOWER_BEHIND_DEPTH = 11.1;
 const LANDMARK_ANIMATION_INTERVAL_MS = 50;
 
 interface Point {
@@ -2154,67 +2156,330 @@ const drawTower = (seed: string, visual: LandmarkVisual, palette: LandmarkPalett
   const { landmark, plan, structure, shadow, foreground } = visual;
   const center = centerFor(landmark);
   const r = landmark.footprintRadiusTiles * WORLD_TILE_SIZE;
-  shadow.fillStyle(0x121912, 0.34);
-  shadow.fillEllipse(center.x + r * 0.16, center.y + r * 0.22, r * 1.38, r * 0.62);
-  const foundations = plan.components.filter((part) => part.role === 'tower-foundation' && part.shape.kind === 'oriented-box');
-  foundations.forEach((part) => drawPrism(structure, landmark, part.shape as LandmarkOrientedBoxShape, part.height, 0, palette.stoneDark, palette.stone, palette.stoneLight));
-  const legs = plan.components.filter((part) => part.role === 'tower-leg');
-  const platformHeight = r * 0.83;
-  legs.forEach((part, index) => {
-    const base = shapeCenterWorld(landmark, part.shape);
-    const top = { x: center.x + (base.x - center.x) * 0.62 + part.lean * r, y: center.y + (base.y - center.y) * 0.58 - platformHeight };
-    structure.lineStyle(r * 0.09, palette.woodDark, 1);
-    structure.lineBetween(base.x, base.y, top.x, top.y);
-    structure.lineStyle(r * 0.045, mixColor(palette.wood, palette.woodLight, part.variant * 0.3), 1);
-    structure.lineBetween(base.x - 2, base.y, top.x - 2, top.y);
-    const opposite = legs[(index + 2) % legs.length];
-    if (opposite) {
-      const oppositeBase = shapeCenterWorld(landmark, opposite.shape);
-      structure.lineStyle(r * 0.032, palette.wood, 0.92);
-      structure.lineBetween(base.x, base.y - r * 0.12, oppositeBase.x, oppositeBase.y - platformHeight * 0.72);
+  const foundations = plan.components
+    .filter((part) => part.role === 'tower-foundation' && part.shape.kind === 'oriented-box')
+    .sort((first, second) => first.order - second.order);
+  const leftWall = foundations[1];
+  const rightWall = foundations[2];
+  const frontWall = foundations[3];
+  if (!leftWall || !rightWall || !frontWall
+    || leftWall.shape.kind !== 'oriented-box'
+    || rightWall.shape.kind !== 'oriented-box'
+    || frontWall.shape.kind !== 'oriented-box') {
+    return;
+  }
+  const leftWallCenter = shapeCenterWorld(landmark, leftWall.shape);
+  const rightWallCenter = shapeCenterWorld(landmark, rightWall.shape);
+  const frontWallCenter = shapeCenterWorld(landmark, frontWall.shape);
+  const bodyWidth = Math.abs(rightWallCenter.x - leftWallCenter.x) + leftWall.shape.width;
+  const bodyDepth = Math.max(r * 0.38, leftWall.shape.height);
+  const bodyLeft = center.x - bodyWidth * 0.5;
+  const bodyRight = center.x + bodyWidth * 0.5;
+  const baseY = frontWallCenter.y + frontWall.shape.height * 0.48;
+  const towerHeight = Math.max(...foundations.map((part) => part.height));
+  const topY = baseY - towerHeight;
+  const towerVariant = plan.components.find((part) => part.role === 'tower-platform')?.variant ?? 0.5;
+  const mortar = mixColor(palette.stoneDark, palette.soilLight, 0.16);
+  const facadeStone = mixColor(palette.stone, palette.soil, 0.08 + towerVariant * 0.08);
+  const sideStone = shadeColor(mixColor(palette.stoneDark, palette.stone, 0.28), -0.05);
+
+  // A wide, soft contact shadow and an irregular rubble apron plant the mass into the biome.
+  shadow.fillStyle(0x111714, 0.34);
+  shadow.fillEllipse(center.x + bodyWidth * 0.11, baseY + bodyDepth * 0.12, bodyWidth * 1.42, bodyDepth * 0.88);
+  shadow.fillStyle(palette.soilDark, 0.25);
+  shadow.fillEllipse(center.x, baseY + bodyDepth * 0.04, bodyWidth * 1.18, bodyDepth * 0.58);
+  for (let rubble = 0; rubble < 32; rubble += 1) {
+    const side = rubble % 2 === 0 ? -1 : 1;
+    const spread = detailRandom(seed, landmark, rubble, 0xe501);
+    const rubbleX = center.x + side * bodyWidth * (0.34 + spread * 0.28);
+    const rubbleY = baseY + (detailRandom(seed, landmark, rubble, 0xe502) - 0.28) * bodyDepth * 0.34;
+    structure.fillStyle(mixColor(palette.stoneDark, palette.soil, spread * 0.4), 0.92);
+    structure.fillEllipse(rubbleX, rubbleY, r * (0.018 + spread * 0.018), r * (0.01 + spread * 0.009));
+  }
+
+  // Unified facade and a narrow east return establish a solid tower silhouette instead of stilts.
+  fillPolygon(structure, [
+    { x: bodyLeft, y: topY },
+    { x: bodyRight, y: topY },
+    { x: bodyRight, y: baseY },
+    { x: bodyLeft, y: baseY }
+  ], mortar, 1);
+  const sideProjection = bodyDepth * 0.14;
+  fillPolygon(structure, [
+    { x: bodyRight, y: topY },
+    { x: bodyRight + sideProjection, y: topY - bodyDepth * 0.07 },
+    { x: bodyRight + sideProjection, y: baseY - bodyDepth * 0.08 },
+    { x: bodyRight, y: baseY }
+  ], sideStone, 1);
+  structure.lineStyle(Math.max(2, r * 0.006), shadeColor(palette.stoneDark, -0.12), 0.9);
+  structure.lineBetween(bodyRight, topY, bodyRight, baseY);
+
+  // Seeded fieldstone courses cover the full facade. Each row changes cadence, stone width,
+  // bevel, shade, and wear, producing a continuous wall with no repeated tile-like pattern.
+  const rowCount = 14;
+  const rowHeight = towerHeight / rowCount;
+  for (let row = 0; row < rowCount; row += 1) {
+    const courseTop = topY + row * rowHeight;
+    const columns = 6 + (row % 3) + Math.floor(detailRandom(seed, landmark, row, 0xe510) * 2);
+    const usableWidth = bodyWidth * 0.9;
+    const nominalWidth = usableWidth / columns;
+    for (let column = 0; column < columns; column += 1) {
+      const stoneRandom = detailRandom(seed, landmark, row * 17 + column, 0xe511);
+      const stoneWidth = nominalWidth * (0.8 + stoneRandom * 0.33);
+      const stagger = row % 2 === 0 ? 0 : nominalWidth * 0.38;
+      const stoneCenterX = bodyLeft + bodyWidth * 0.05 + column * nominalWidth + nominalWidth * 0.5 - stagger;
+      const left = Math.max(bodyLeft + r * 0.009, stoneCenterX - stoneWidth * 0.48);
+      const right = Math.min(bodyRight - r * 0.009, stoneCenterX + stoneWidth * 0.48);
+      if (right - left < r * 0.018) continue;
+      const top = courseTop + r * 0.004 + detailRandom(seed, landmark, row * 17 + column, 0xe512) * r * 0.007;
+      const bottom = Math.min(baseY - r * 0.005, courseTop + rowHeight - r * (0.004 + stoneRandom * 0.006));
+      const bevel = Math.min(r * 0.014, (right - left) * 0.12);
+      const stone: Point[] = [
+        { x: left + bevel, y: top },
+        { x: right - bevel * 0.7, y: top + (column % 2) * 1.4 },
+        { x: right, y: top + bevel },
+        { x: right - bevel * 0.2, y: bottom - bevel * 0.4 },
+        { x: right - bevel, y: bottom },
+        { x: left + bevel * 0.6, y: bottom - (column % 3) },
+        { x: left, y: bottom - bevel }
+      ];
+      const stoneColor = shadeColor(
+        mixColor(facadeStone, palette.stoneLight, stoneRandom * 0.2),
+        (detailRandom(seed, landmark, row * 17 + column, 0xe513) - 0.5) * 0.2
+      );
+      fillPolygon(structure, stone, stoneColor, 1);
+      strokePolyline(structure, stone, palette.stoneDark, Math.max(0.8, r * 0.0022), 0.48, true);
+      if ((row + column) % 4 === 0) {
+        structure.lineStyle(Math.max(0.7, r * 0.0017), palette.stoneLight, 0.25);
+        structure.lineBetween(left + bevel * 1.1, top + 2, right - bevel * 1.2, top + 2 + (column % 2));
+      }
+      if ((row * 3 + column) % 7 === 0) {
+        const crackX = left + (right - left) * (0.32 + stoneRandom * 0.3);
+        structure.lineStyle(Math.max(0.9, r * 0.002), shadeColor(palette.stoneDark, -0.16), 0.58);
+        structure.lineBetween(crackX, top + rowHeight * 0.2, crackX + (column % 2 ? 4 : -4), top + rowHeight * 0.47);
+        structure.lineBetween(crackX + (column % 2 ? 4 : -4), top + rowHeight * 0.47, crackX + 1, top + rowHeight * 0.7);
+      }
+    }
+  }
+
+  // Alternating corner quoins create the heavy, load-bearing edges seen on old defensive towers.
+  const quoinRows = 11;
+  for (let row = 0; row < quoinRows; row += 1) {
+    const quoinY = topY + row / quoinRows * towerHeight;
+    const quoinHeight = towerHeight / quoinRows * 0.86;
+    const wide = row % 2 === 0;
+    const quoinWidth = r * (wide ? 0.085 : 0.065);
+    [-1, 1].forEach((side) => {
+      const x = side < 0 ? bodyLeft - quoinWidth * 0.08 : bodyRight - quoinWidth * 0.92;
+      structure.fillStyle(shadeColor(mixColor(palette.stone, palette.stoneLight, wide ? 0.3 : 0.16), side > 0 ? -0.08 : 0.03), 1);
+      structure.fillRoundedRect(x, quoinY, quoinWidth, quoinHeight, Math.min(5, r * 0.008));
+      structure.lineStyle(Math.max(1, r * 0.0024), palette.stoneDark, 0.64);
+      structure.strokeRoundedRect(x, quoinY, quoinWidth, quoinHeight, Math.min(5, r * 0.008));
+    });
+  }
+
+  // Broad tapering buttresses bury the front corners into the terrain.
+  [-1, 1].forEach((side) => {
+    const outerX = center.x + side * bodyWidth * 0.55;
+    const innerX = center.x + side * bodyWidth * 0.39;
+    const buttress: Point[] = [
+      { x: outerX, y: baseY + bodyDepth * 0.08 },
+      { x: innerX, y: baseY + bodyDepth * 0.05 },
+      { x: center.x + side * bodyWidth * 0.43, y: baseY - r * 0.23 },
+      { x: center.x + side * bodyWidth * 0.5, y: baseY - r * 0.19 }
+    ];
+    fillPolygon(structure, buttress, mixColor(palette.stoneDark, palette.stone, 0.48), 1);
+    strokePolyline(structure, buttress, palette.stoneDark, Math.max(1.5, r * 0.003), 0.78, true);
+    for (let seam = 1; seam < 4; seam += 1) {
+      const y = baseY - seam * r * 0.05;
+      structure.lineStyle(Math.max(1, r * 0.002), palette.stoneLight, 0.2);
+      structure.lineBetween(
+        center.x + side * bodyWidth * (0.405 + seam * 0.008),
+        y,
+        center.x + side * bodyWidth * (0.52 - seam * 0.006),
+        y + 2
+      );
     }
   });
-  const platformCenter = { x: center.x, y: center.y - platformHeight };
-  const platformWidth = r * 0.97;
-  const platformDepth = r * 0.51;
-  structure.fillStyle(palette.woodDark, 1);
-  structure.fillRect(platformCenter.x - platformWidth * 0.54, platformCenter.y - platformDepth * 0.22, platformWidth * 1.08, platformDepth * 0.55);
-  for (let plank = 0; plank < 9; plank += 1) {
-    const x = platformCenter.x - platformWidth * 0.47 + plank / 8 * platformWidth * 0.94;
-    structure.lineStyle(r * 0.04, plank % 2 ? palette.wood : palette.woodLight, 0.86);
-    structure.lineBetween(x, platformCenter.y - platformDepth * 0.16, x, platformCenter.y + platformDepth * 0.22);
-  }
-  structure.lineStyle(r * 0.026, palette.woodLight, 0.72);
-  for (let rung = 0; rung < 7; rung += 1) {
-    const rungY = center.y + r * 0.19 - rung * r * 0.105;
-    structure.lineBetween(center.x - r * 0.09, rungY, center.x + r * 0.09, rungY);
-  }
-  structure.lineStyle(r * 0.023, palette.woodDark, 1);
-  structure.lineBetween(center.x - r * 0.11, center.y + r * 0.28, center.x - r * 0.11, center.y - r * 0.49);
-  structure.lineBetween(center.x + r * 0.11, center.y + r * 0.28, center.x + r * 0.11, center.y - r * 0.49);
+
+  const drawArchedOpening = (
+    openingX: number,
+    openingBottomY: number,
+    width: number,
+    height: number,
+    includeDoor: boolean
+  ): void => {
+    const radius = width * 0.5;
+    const springY = openingBottomY - height + radius;
+    structure.fillStyle(0x101314, 0.98);
+    structure.fillCircle(openingX, springY, radius);
+    structure.fillRect(openingX - radius, springY, width, openingBottomY - springY);
+    if (includeDoor) {
+      structure.fillStyle(shadeColor(palette.woodDark, -0.08), 1);
+      structure.fillCircle(openingX, springY + r * 0.008, radius * 0.82);
+      structure.fillRect(openingX - radius * 0.82, springY, radius * 1.64, openingBottomY - springY);
+      for (let plank = -2; plank <= 2; plank += 1) {
+        const plankX = openingX + plank * width * 0.145;
+        structure.lineStyle(Math.max(1.1, r * 0.0027), plank % 2 ? palette.wood : palette.woodLight, 0.56);
+        structure.lineBetween(plankX, springY - radius * 0.72, plankX, openingBottomY - r * 0.012);
+      }
+      structure.lineStyle(Math.max(2, r * 0.004), 0x26282a, 0.9);
+      structure.lineBetween(openingX - radius * 0.78, springY + height * 0.26, openingX + radius * 0.78, springY + height * 0.26);
+      structure.lineBetween(openingX - radius * 0.78, springY + height * 0.57, openingX + radius * 0.78, springY + height * 0.57);
+      structure.fillStyle(0xd5b86f, 0.9);
+      structure.fillCircle(openingX + radius * 0.48, openingBottomY - height * 0.36, Math.max(2.5, r * 0.005));
+    } else {
+      structure.lineStyle(Math.max(1.5, r * 0.003), palette.stoneLight, 0.28);
+      structure.lineBetween(openingX, springY - radius * 0.76, openingX, openingBottomY - r * 0.012);
+      structure.lineBetween(openingX - radius * 0.72, springY + radius * 0.22, openingX + radius * 0.72, springY + radius * 0.22);
+    }
+    const voussoirCount = 9;
+    for (let stoneIndex = 0; stoneIndex < voussoirCount; stoneIndex += 1) {
+      const angle = Math.PI + stoneIndex / (voussoirCount - 1) * Math.PI;
+      const stoneX = openingX + Math.cos(angle) * radius * 1.08;
+      const stoneY = springY + Math.sin(angle) * radius * 1.08;
+      structure.fillStyle(mixColor(palette.stone, palette.stoneLight, 0.2 + stoneIndex % 3 * 0.08), 1);
+      structure.fillRoundedRect(stoneX - width * 0.075, stoneY - height * 0.035, width * 0.15, height * 0.07, 3);
+      structure.lineStyle(Math.max(0.8, r * 0.0018), palette.stoneDark, 0.62);
+      structure.strokeRoundedRect(stoneX - width * 0.075, stoneY - height * 0.035, width * 0.15, height * 0.07, 3);
+    }
+  };
+
   if (plan.entrance) {
-    structure.fillStyle(0x12100d, 0.94);
-    structure.fillRoundedRect(plan.entrance.worldX - r * 0.1, plan.entrance.worldY - r * 0.17, r * 0.2, r * 0.24, r * 0.035);
-    structure.lineStyle(Math.max(2, r * 0.012), palette.woodLight, 0.56);
-    structure.strokeRoundedRect(plan.entrance.worldX - r * 0.1, plan.entrance.worldY - r * 0.17, r * 0.2, r * 0.24, r * 0.035);
+    const visibleEntrance = landmarkEntranceVisualPosition(plan.entrance);
+    const doorWidth = r * 0.18;
+    const doorHeight = r * 0.3;
+    drawArchedOpening(visibleEntrance.worldX, baseY, doorWidth, doorHeight, true);
+    // A worn threshold bridges the authored interaction point to the visible doorway.
+    structure.fillStyle(mixColor(palette.stone, palette.soilLight, 0.18), 1);
+    structure.fillRoundedRect(center.x - doorWidth * 0.68, baseY - r * 0.006, doorWidth * 1.36, r * 0.035, 4);
   }
-  const roofTop = platformCenter.y - r * 0.43;
-  const roof = [
-    { x: platformCenter.x - r * 0.63, y: platformCenter.y - r * 0.08 },
-    { x: platformCenter.x, y: roofTop },
-    { x: platformCenter.x + r * 0.63, y: platformCenter.y - r * 0.08 },
-    { x: platformCenter.x + r * 0.5, y: platformCenter.y + r * 0.17 },
-    { x: platformCenter.x - r * 0.5, y: platformCenter.y + r * 0.17 }
-  ];
-  fillPolygon(foreground, roof, shadeColor(palette.woodDark, -0.12), 1);
-  fillPolygon(foreground, [roof[0], roof[1], roof[4]], mixColor(palette.wood, palette.moss, 0.22), 0.98);
-  fillPolygon(foreground, [roof[1], roof[2], roof[3], roof[4]], mixColor(palette.wood, palette.stone, 0.18), 0.98);
-  foreground.lineStyle(Math.max(2, r * 0.012), palette.woodLight, 0.45);
-  for (let seam = 1; seam < 6; seam += 1) {
-    const amount = seam / 6;
-    foreground.lineBetween(platformCenter.x, roofTop, platformCenter.x - r * 0.57 * amount, platformCenter.y - r * 0.08 + r * 0.22 * amount);
-    foreground.lineBetween(platformCenter.x, roofTop, platformCenter.x + r * 0.57 * amount, platformCenter.y - r * 0.08 + r * 0.22 * amount);
+  drawArchedOpening(center.x, topY + towerHeight * 0.38, r * 0.105, r * 0.175, false);
+  [-1, 1].forEach((side, index) => {
+    const slitX = center.x + side * bodyWidth * 0.29;
+    const slitY = topY + towerHeight * (0.58 + index * 0.08);
+    structure.fillStyle(0x15191a, 0.9);
+    structure.fillRoundedRect(slitX - r * 0.013, slitY, r * 0.026, r * 0.11, r * 0.009);
+    structure.lineStyle(Math.max(1, r * 0.002), palette.stoneLight, 0.28);
+    structure.strokeRoundedRect(slitX - r * 0.013, slitY, r * 0.026, r * 0.11, r * 0.009);
+  });
+
+  // A projecting timber ring and stone corbels support the defensive crown.
+  const crownBeamY = topY + r * 0.055;
+  structure.fillStyle(palette.woodDark, 1);
+  structure.fillRect(bodyLeft - r * 0.045, crownBeamY, bodyWidth + r * 0.09, r * 0.038);
+  structure.fillStyle(mixColor(palette.wood, palette.woodLight, 0.2), 1);
+  structure.fillRect(bodyLeft - r * 0.035, crownBeamY + r * 0.006, bodyWidth + r * 0.07, r * 0.013);
+  for (let corbel = 0; corbel < 9; corbel += 1) {
+    const x = bodyLeft - r * 0.018 + corbel / 8 * (bodyWidth + r * 0.036);
+    fillPolygon(structure, [
+      { x: x - r * 0.018, y: crownBeamY + r * 0.03 },
+      { x: x + r * 0.018, y: crownBeamY + r * 0.03 },
+      { x: x + r * 0.01, y: crownBeamY + r * 0.09 }
+    ], corbel % 2 ? palette.wood : palette.woodDark, 0.96);
   }
+
+  // Biome-specific age belongs to the structure: snow piles on ledges, arid towers collect sand,
+  // and wet/temperate towers carry moss, lichen, and descending vines.
+  if (landmark.biome === Biome.Snow) {
+    structure.fillStyle(0xe8f4f3, 0.94);
+    structure.fillRoundedRect(bodyLeft - r * 0.046, crownBeamY - r * 0.008, bodyWidth + r * 0.092, r * 0.024, r * 0.01);
+    structure.fillStyle(0xd8e8e9, 0.86);
+    structure.fillEllipse(bodyLeft + bodyWidth * 0.15, baseY + r * 0.035, bodyWidth * 0.42, r * 0.085);
+    structure.fillEllipse(bodyRight - bodyWidth * 0.12, baseY + r * 0.03, bodyWidth * 0.34, r * 0.07);
+  } else if (landmark.biome === Biome.Desert) {
+    structure.fillStyle(mixColor(palette.soil, palette.soilLight, 0.36), 0.88);
+    structure.fillEllipse(bodyLeft + bodyWidth * 0.12, baseY + r * 0.045, bodyWidth * 0.44, r * 0.09);
+    structure.fillEllipse(bodyRight - bodyWidth * 0.16, baseY + r * 0.04, bodyWidth * 0.3, r * 0.07);
+  } else {
+    const wetBiome = landmark.biome === Biome.Forest || landmark.biome === Biome.Swamp;
+    const vineCount = wetBiome ? 5 : 3;
+    for (let vine = 0; vine < vineCount; vine += 1) {
+      const vineX = bodyLeft + bodyWidth * (0.12 + detailRandom(seed, landmark, vine, 0xe540) * 0.76);
+      const vineTop = topY + towerHeight * (0.12 + detailRandom(seed, landmark, vine, 0xe541) * 0.28);
+      const vineLength = towerHeight * (0.14 + detailRandom(seed, landmark, vine, 0xe542) * (wetBiome ? 0.28 : 0.14));
+      structure.lineStyle(Math.max(1.5, r * 0.0032), palette.moss, wetBiome ? 0.86 : 0.62);
+      const vinePoints: Point[] = [];
+      for (let knot = 0; knot < 8; knot += 1) {
+        const progress = knot / 7;
+        vinePoints.push({
+          x: vineX + Math.sin(progress * Math.PI * 3 + vine) * r * 0.012,
+          y: vineTop + progress * vineLength
+        });
+      }
+      strokePolyline(structure, vinePoints, palette.moss, Math.max(1.5, r * 0.003), wetBiome ? 0.9 : 0.68);
+      vinePoints.forEach((point, knot) => {
+        if (knot % 2 === 0) {
+          structure.fillStyle(knot % 4 === 0 ? palette.mossLight : palette.moss, 0.82);
+          structure.fillEllipse(point.x + (knot % 3 - 1) * r * 0.008, point.y, r * 0.018, r * 0.009);
+        }
+      });
+    }
+    const groundGrass = mixColor(palette.moss, 0x25452d, 0.48);
+    for (let blade = 0; blade < 34; blade += 1) {
+      const side = blade % 2 === 0 ? -1 : 1;
+      const amount = Math.floor(blade / 2) / 16;
+      const bladeX = center.x + side * bodyWidth * (0.35 + amount * 0.28);
+      const bladeY = baseY + r * (0.035 + detailRandom(seed, landmark, blade, 0xe543) * 0.018);
+      structure.lineStyle(1.2 + blade % 3 * 0.25, groundGrass, 0.9);
+      structure.lineBetween(bladeX, bladeY, bladeX - side * r * 0.012, bladeY - r * (0.018 + blade % 5 * 0.004));
+    }
+  }
+
+  // The crown is a shallow top-down stone deck with projecting battlements, not a detached roof.
+  const deckLeft = bodyLeft - r * 0.075;
+  const deckRight = bodyRight + r * 0.075;
+  const deckBackY = topY - bodyDepth * 0.24;
+  const deckFrontY = topY + bodyDepth * 0.16;
+  fillPolygon(foreground, [
+    { x: deckLeft + r * 0.04, y: deckBackY },
+    { x: deckRight - r * 0.04, y: deckBackY },
+    { x: deckRight, y: deckFrontY },
+    { x: deckLeft, y: deckFrontY }
+  ], mixColor(palette.stoneDark, palette.stone, 0.42), 1);
+  strokePolyline(foreground, [
+    { x: deckLeft + r * 0.04, y: deckBackY },
+    { x: deckRight - r * 0.04, y: deckBackY },
+    { x: deckRight, y: deckFrontY },
+    { x: deckLeft, y: deckFrontY }
+  ], palette.stoneDark, Math.max(2, r * 0.004), 0.88, true);
+  foreground.fillStyle(shadeColor(facadeStone, -0.04), 1);
+  foreground.fillRect(deckLeft, topY - r * 0.012, deckRight - deckLeft, r * 0.085);
+  foreground.lineStyle(Math.max(1.5, r * 0.003), palette.stoneLight, 0.3);
+  foreground.lineBetween(deckLeft + r * 0.02, topY + r * 0.002, deckRight - r * 0.02, topY + r * 0.002);
+  const merlonCount = 6;
+  for (let merlon = 0; merlon < merlonCount; merlon += 1) {
+    const amount = merlon / (merlonCount - 1);
+    const width = r * (0.075 + detailRandom(seed, landmark, merlon, 0xe550) * 0.014);
+    const x = deckLeft + amount * (deckRight - deckLeft) - width * 0.5;
+    const height = r * (0.11 + detailRandom(seed, landmark, merlon, 0xe551) * 0.025);
+    foreground.fillStyle(shadeColor(mixColor(palette.stone, palette.stoneLight, merlon % 2 * 0.12), merlon % 3 * 0.025), 1);
+    foreground.fillRoundedRect(x, topY - height, width, height + r * 0.018, Math.min(5, r * 0.008));
+    foreground.lineStyle(Math.max(1.2, r * 0.0025), palette.stoneDark, 0.76);
+    foreground.strokeRoundedRect(x, topY - height, width, height + r * 0.018, Math.min(5, r * 0.008));
+    if (landmark.biome === Biome.Snow) {
+      foreground.fillStyle(0xf0f7f5, 0.95);
+      foreground.fillRoundedRect(x - r * 0.003, topY - height - r * 0.009, width + r * 0.006, r * 0.018, r * 0.006);
+    }
+  }
+  [-1, 1].forEach((side) => {
+    for (let sideMerlon = 0; sideMerlon < 3; sideMerlon += 1) {
+      const y = deckBackY + sideMerlon / 2 * (deckFrontY - deckBackY) * 0.72;
+      const x = side < 0 ? deckLeft + r * 0.015 : deckRight - r * 0.07;
+      foreground.fillStyle(side < 0 ? palette.stone : shadeColor(palette.stone, -0.1), 1);
+      foreground.fillRoundedRect(x, y - r * 0.065, r * 0.055, r * 0.075, 3);
+    }
+  });
+  // Seeded telescope/lens mounting gives the tower a readable exploration purpose.
+  const lensX = center.x + r * (0.1 + towerVariant * 0.08);
+  const lensY = deckBackY + bodyDepth * 0.2;
+  foreground.lineStyle(r * 0.018, palette.woodDark, 1);
+  foreground.lineBetween(lensX - r * 0.045, lensY + r * 0.07, lensX, lensY);
+  foreground.lineBetween(lensX + r * 0.045, lensY + r * 0.07, lensX, lensY);
+  foreground.lineStyle(r * 0.024, mixColor(palette.wood, palette.stoneDark, 0.35), 1);
+  foreground.lineBetween(lensX - r * 0.07, lensY, lensX + r * 0.085, lensY - r * 0.035);
+  foreground.fillStyle(0xb9e5e8, 0.9);
+  foreground.fillCircle(lensX + r * 0.085, lensY - r * 0.035, r * 0.018);
 };
 
 const drawStaticVisual = (
@@ -2507,11 +2772,22 @@ const drawAnimatedVisual = (
     }
   } else if (landmark.type === LandmarkType.Watchtower) {
     const center = centerFor(landmark);
-    const lensY = center.y - r * 1.18;
+    const towerWalls = plan.components.filter((part) => (
+      part.role === 'tower-foundation' && part.shape.kind === 'oriented-box'
+    ));
+    const baseY = Math.max(...towerWalls.map((part) => {
+      if (part.shape.kind !== 'oriented-box') return 0;
+      return shapeCenterWorld(landmark, part.shape).y + part.shape.height * 0.5;
+    }));
+    const topY = baseY - Math.max(...towerWalls.map((part) => part.height));
+    const bodyDepth = r * 0.47;
+    const towerVariant = plan.components.find((part) => part.role === 'tower-platform')?.variant ?? 0.5;
+    const lensX = center.x + r * (0.1 + towerVariant * 0.08) + r * 0.085;
+    const lensY = topY - bodyDepth * 0.04 - r * 0.035;
     accent.fillStyle(0xf3db8a, 0.34 + pulse * 0.42);
-    accent.fillCircle(center.x + r * 0.2, lensY, 3.2 + pulse * 1.4);
+    accent.fillCircle(lensX, lensY, 3.2 + pulse * 1.4);
     accent.lineStyle(2, 0xf5df9a, 0.08 + pulse * 0.11);
-    accent.lineBetween(center.x + r * 0.2, lensY, center.x + r * (0.8 + pulse * 0.2), lensY + r * 0.2);
+    accent.lineBetween(lensX, lensY, lensX + r * (0.58 + pulse * 0.2), lensY + r * 0.2);
   }
   plan.materials.forEach((node) => {
     if (node.glowStrength <= 0 || state.isLandmarkMaterialHarvested(node.id)) {
@@ -2538,7 +2814,11 @@ const createVisual = (
     shadow: scene.add.graphics().setDepth(LANDMARK_SHADOW_DEPTH),
     structure: scene.add.graphics().setDepth(LANDMARK_STRUCTURE_DEPTH),
     accent: scene.add.graphics().setDepth(
-      landmark.type === LandmarkType.GiantAncientTree ? LANDMARK_TREE_ANIMATION_FRONT_DEPTH : LANDMARK_ACCENT_DEPTH
+      landmark.type === LandmarkType.GiantAncientTree
+        ? LANDMARK_TREE_ANIMATION_FRONT_DEPTH
+        : landmark.type === LandmarkType.Watchtower
+          ? LANDMARK_FOREGROUND_DEPTH + 0.1
+          : LANDMARK_ACCENT_DEPTH
     ),
     door: scene.add.graphics().setDepth(LANDMARK_DOOR_DEPTH),
     foreground: scene.add.graphics().setDepth(
@@ -2628,6 +2908,12 @@ export class LandmarkManager {
         visual.structure.setDepth(
           stoneCircleOccludesWorldPoint(visual.plan, playerWorldX, playerWorldY)
             ? LANDMARK_STONE_BEHIND_DEPTH
+            : LANDMARK_STRUCTURE_DEPTH
+        );
+      } else if (visual.landmark.type === LandmarkType.Watchtower) {
+        visual.structure.setDepth(
+          watchtowerOccludesWorldPoint(visual.plan, playerWorldX, playerWorldY)
+            ? LANDMARK_TOWER_BEHIND_DEPTH
             : LANDMARK_STRUCTURE_DEPTH
         );
       }

@@ -111,15 +111,16 @@ export interface LandmarkEntranceVisualPosition {
   readonly worldY: number;
 }
 
-// Interaction is measured from the walkable ground in front of an entrance, but the ancient
-// tree's circular door is carved higher into its trunk. UI markers and the renderer share this
-// visible position so the prompt ring never drifts below the artwork.
+// Interaction is measured from walkable ground in front of an entrance. Doors carved into tall
+// landmark facades are higher, so UI markers and renderers share their authored visible position.
 export const landmarkEntranceVisualPosition = (
   entrance: LandmarkEntrance
 ): LandmarkEntranceVisualPosition => ({
   worldX: entrance.worldX,
   worldY: entrance.landmark.type === LandmarkType.GiantAncientTree
     ? entrance.worldY - entrance.landmark.footprintRadiusTiles * WORLD_TILE_SIZE * 0.78 * 0.105
+    : entrance.landmark.type === LandmarkType.Watchtower
+      ? entrance.worldY - entrance.landmark.footprintRadiusTiles * WORLD_TILE_SIZE * 0.205
     : entrance.worldY
 });
 
@@ -527,24 +528,75 @@ const towerPlan = (seed: string, landmark: ProceduralLandmark): Omit<LandmarkSur
   const components: LandmarkSurfaceComponent[] = [];
   const shapes: LandmarkSurfaceShape[] = [];
   const details: LandmarkGroundDetail[] = [];
-  const halfWidth = r * (0.31 + planRandom(planSeed, 50, 0) * 0.05);
-  const back = box(0, -halfWidth, halfWidth * 1.9, r * 0.12, 0);
-  const left = box(-halfWidth, 0, r * 0.13, halfWidth * 1.9, 0);
-  const right = box(halfWidth, 0, r * 0.13, halfWidth * 1.9, 0);
-  [back, left, right].forEach((shape, index) => {
+  // Counter-rotation keeps the facade and doorway screen-south while the landmark still retains
+  // its seeded rotation for detail variation and identity.
+  const halfWidth = r * (0.3 + planRandom(planSeed, 50, 0) * 0.035);
+  const halfDepth = r * (0.225 + planRandom(planSeed, 50, 1) * 0.025);
+  const wallThickness = r * 0.105;
+  const doorHalfWidth = r * (0.085 + planRandom(planSeed, 50, 2) * 0.012);
+  const screenAlignedBox = (
+    screenX: number,
+    screenY: number,
+    width: number,
+    height: number
+  ): LandmarkOrientedBoxShape => {
+    const local = rotateLocal(screenX, screenY, -landmark.rotation);
+    return box(local.x, local.y, width, height, -landmark.rotation);
+  };
+  const frontSegmentWidth = halfWidth - doorHalfWidth;
+  const wallShapes = [
+    screenAlignedBox(0, -halfDepth + wallThickness * 0.5, halfWidth * 2, wallThickness),
+    screenAlignedBox(-halfWidth + wallThickness * 0.5, 0, wallThickness, halfDepth * 2),
+    screenAlignedBox(halfWidth - wallThickness * 0.5, 0, wallThickness, halfDepth * 2),
+    screenAlignedBox(-doorHalfWidth - frontSegmentWidth * 0.5, halfDepth - wallThickness * 0.5, frontSegmentWidth, wallThickness),
+    screenAlignedBox(doorHalfWidth + frontSegmentWidth * 0.5, halfDepth - wallThickness * 0.5, frontSegmentWidth, wallThickness)
+  ];
+  wallShapes.forEach((shape, index) => {
     shapes.push(shape);
-    components.push(component(landmark, 'tower-foundation', index, shape, r * 0.16, 0, landmark.rotation, 1, planRandom(planSeed, 50, index, 1), index));
+    components.push(component(
+      landmark,
+      'tower-foundation',
+      index,
+      shape,
+      r * (0.82 + planRandom(planSeed, 50, index, 3) * 0.12),
+      0,
+      0,
+      1,
+      planRandom(planSeed, 50, index, 4),
+      index
+    ));
   });
   [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sideX, sideY], index) => {
-    // Front legs sit outside the central doorway, keeping a full-width approach open.
-    const shape = circle(sideX * halfWidth, sideY * halfWidth, r * 0.085);
+    const screenX = sideX * (halfWidth - wallThickness * 0.08);
+    const screenY = sideY * (halfDepth - wallThickness * 0.08);
+    const local = rotateLocal(screenX, screenY, -landmark.rotation);
+    const shape = circle(local.x, local.y, r * (0.075 + planRandom(planSeed, 51, index, 0) * 0.012));
     shapes.push(shape);
-    components.push(component(landmark, 'tower-leg', index, shape, r * (0.82 + planRandom(planSeed, 51, index) * 0.22), sideX * 0.035, landmark.rotation, 1, planRandom(planSeed, 51, index, 1), sideY));
+    components.push(component(
+      landmark,
+      'tower-leg',
+      index,
+      shape,
+      r * (0.2 + planRandom(planSeed, 51, index, 1) * 0.06),
+      sideX * 0.012,
+      0,
+      1,
+      planRandom(planSeed, 51, index, 2),
+      screenY
+    ));
   });
-  components.push(component(landmark, 'tower-platform', 0, box(0, -r * 0.18, r * 0.92, r * 0.54, 0), r * 0.2, 0, landmark.rotation, 1, planRandom(planSeed, 52, 0), 100));
-  details.push(groundDetail(landmark, 'foundation-track', 0, 0, 0, r * 1.05, r * 0.9, 0, 0.19, planRandom(planSeed, 53, 0)));
-  details.push(groundDetail(landmark, 'approach-path', 0, 0, r * 0.58, r * 0.72, r * 0.16, Math.PI / 2, 0.23, planRandom(planSeed, 53, 1)));
-  return { components, structuralShapes: shapes, groundDetails: details, entrance: createEntrance(landmark, 0, halfWidth * 0.92, Math.PI / 2) };
+  const platformShape = screenAlignedBox(0, -r * 0.02, halfWidth * 2.22, halfDepth * 2.22);
+  components.push(component(landmark, 'tower-platform', 0, platformShape, r * 0.18, 0, 0, 1, planRandom(planSeed, 52, 0), 100));
+  details.push(groundDetail(landmark, 'foundation-track', 0, 0, r * 0.015, r * 0.88, r * 0.68, 0, 0.24, planRandom(planSeed, 53, 0)));
+  details.push(groundDetail(landmark, 'approach-path', 0, 0, r * 0.53, r * 0.68, r * 0.17, Math.PI / 2, 0.25, planRandom(planSeed, 53, 1)));
+  const entranceScreenY = halfDepth + r * 0.1;
+  const entranceLocal = rotateLocal(0, entranceScreenY, -landmark.rotation);
+  return {
+    components,
+    structuralShapes: shapes,
+    groundDetails: details,
+    entrance: createEntrance(landmark, entranceLocal.x, entranceLocal.y, Math.PI / 2 - landmark.rotation)
+  };
 };
 
 const distanceToSegmentSquared = (
@@ -884,6 +936,48 @@ export const stoneCircleOccludesWorldPoint = (
       && worldY <= groundLineY + WORLD_TILE_SIZE * 0.06
       && worldY >= visualTopY - WORLD_TILE_SIZE * 0.12;
   });
+};
+
+export const watchtowerOccludesWorldPoint = (
+  plan: LandmarkSurfacePlan,
+  worldX: number,
+  worldY: number
+): boolean => {
+  if (plan.landmark.type !== LandmarkType.Watchtower) {
+    return false;
+  }
+  const landmarkCenter = centerWorld(plan.landmark);
+  const walls = plan.components.filter((part) => (
+    part.role === 'tower-foundation' && part.shape.kind === 'oriented-box'
+  ));
+  if (walls.length === 0) {
+    return false;
+  }
+  let left = Number.POSITIVE_INFINITY;
+  let right = Number.NEGATIVE_INFINITY;
+  let groundLineY = Number.NEGATIVE_INFINITY;
+  let visualTopY = Number.POSITIVE_INFINITY;
+  walls.forEach((part) => {
+    if (part.shape.kind !== 'oriented-box') return;
+    const rotatedCenter = rotateLocal(part.shape.x, part.shape.y, plan.landmark.rotation);
+    const centerX = landmarkCenter.x + rotatedCenter.x;
+    const centerY = landmarkCenter.y + rotatedCenter.y;
+    const worldRotation = part.shape.rotation + plan.landmark.rotation;
+    const screenWidth = Math.abs(Math.cos(worldRotation)) * part.shape.width
+      + Math.abs(Math.sin(worldRotation)) * part.shape.height;
+    const screenDepth = Math.abs(Math.sin(worldRotation)) * part.shape.width
+      + Math.abs(Math.cos(worldRotation)) * part.shape.height;
+    left = Math.min(left, centerX - screenWidth * 0.5);
+    right = Math.max(right, centerX + screenWidth * 0.5);
+    groundLineY = Math.max(groundLineY, centerY + screenDepth * 0.5);
+    visualTopY = Math.min(visualTopY, centerY + screenDepth * 0.5 - part.height);
+  });
+  // The player's feet control depth. The southern doorway and approach remain in front, while
+  // the continuous masonry body hides an avatar crossing behind the tower.
+  return worldX >= left - WORLD_TILE_SIZE * 0.12
+    && worldX <= right + WORLD_TILE_SIZE * 0.12
+    && worldY <= groundLineY + WORLD_TILE_SIZE * 0.04
+    && worldY >= visualTopY - WORLD_TILE_SIZE * 0.12;
 };
 
 export const landmarkPlanBlocksFeatureTile = (

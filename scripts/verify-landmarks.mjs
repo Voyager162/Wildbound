@@ -53,6 +53,7 @@ import {
   landmarkPlanBlocksGroundGrassTile,
   landmarkStructureContainsWorldPoint,
   stoneCircleOccludesWorldPoint,
+  watchtowerOccludesWorldPoint,
   type LandmarkSurfacePlan
 } from '../../src/world/landmarks/landmarkSurfaceGenerator';
 
@@ -363,7 +364,7 @@ assert.ok(
   'The ancient-tree entrance marker must be raised from the ground interaction point onto the carved door'
 );
 plans
-  .filter((plan) => plan.entrance && plan.landmark.type !== LandmarkType.GiantAncientTree)
+  .filter((plan) => plan.entrance && plan.landmark.type === LandmarkType.Waterfall)
   .forEach((plan) => {
     const entrance = plan.entrance!;
     assert.deepEqual(
@@ -372,6 +373,18 @@ plans
       plan.landmark.type + ' entrance marker must remain on its authored entrance position'
     );
   });
+const watchtowerPlan = plans.find((plan) => plan.landmark.type === LandmarkType.Watchtower)!;
+const watchtowerEntrance = watchtowerPlan.entrance!;
+const watchtowerEntranceVisual = landmarkEntranceVisualPosition(watchtowerEntrance);
+assert.ok(
+  Math.abs(watchtowerEntranceVisual.worldX - watchtowerEntrance.worldX) < 0.001
+    && watchtowerEntranceVisual.worldY < watchtowerEntrance.worldY,
+  'The watchtower entrance marker must sit on the visible arched door instead of its ground interaction point'
+);
+assert.ok(
+  Math.abs(watchtowerEntrance.facingAngle - Math.PI / 2) < 0.001,
+  'The watchtower doorway must face world south regardless of landmark rotation'
+);
 assert.ok(
   Math.abs(ancientTreeEntrance.facingAngle - Math.PI / 2) < 0.001,
   'The ancient-tree doorway must face world south regardless of landmark rotation'
@@ -445,6 +458,51 @@ for (let offsetY = -1.35; offsetY <= 0.55; offsetY += 0.19) {
     );
   }
 }
+
+const watchtowerWalls = watchtowerPlan.components.filter((component) => component.role === 'tower-foundation');
+const watchtowerButtresses = watchtowerPlan.components.filter((component) => component.role === 'tower-leg');
+assert.equal(watchtowerWalls.length, 5, 'Watchtowers must use a solid U-shaped masonry wall plan with a doorway gap');
+assert.equal(watchtowerButtresses.length, 4, 'Watchtowers must retain four seeded corner buttresses');
+assert.equal(
+  watchtowerPlan.components.filter((component) => component.role === 'tower-platform').length,
+  1,
+  'Watchtowers must expose one integrated battlement crown'
+);
+assert.ok(
+  watchtowerWalls.every((component) => component.shape.kind === 'oriented-box'),
+  'Watchtower masonry walls must use clean connected oriented boxes'
+);
+assert.equal(
+  landmarkStructureContainsWorldPoint(
+    watchtowerPlan,
+    watchtowerEntrance.worldX,
+    watchtowerEntrance.worldY,
+    WORLD_TILE_SIZE * 0.06
+  ),
+  false,
+  'The watchtower door lane must remain open and enterable'
+);
+const watchtowerCenterX = (watchtowerPlan.landmark.centerTileX + 0.5) * WORLD_TILE_SIZE;
+const watchtowerCenterY = (watchtowerPlan.landmark.centerTileY + 0.5) * WORLD_TILE_SIZE;
+assert.equal(
+  watchtowerOccludesWorldPoint(watchtowerPlan, watchtowerCenterX, watchtowerCenterY),
+  true,
+  'A player crossing behind the watchtower masonry must be occluded'
+);
+assert.equal(
+  watchtowerOccludesWorldPoint(watchtowerPlan, watchtowerEntrance.worldX, watchtowerEntrance.worldY),
+  false,
+  'A player standing at the watchtower door must remain visible in front'
+);
+assert.equal(
+  watchtowerOccludesWorldPoint(
+    watchtowerPlan,
+    watchtowerCenterX + watchtowerPlan.landmark.footprintRadiusTiles * WORLD_TILE_SIZE,
+    watchtowerCenterY
+  ),
+  false,
+  'Watchtower occlusion must end beyond the masonry silhouette'
+);
 
 const stonePlan = plans.find((plan) => plan.landmark.type === LandmarkType.StoneCircle)!;
 const stoneCenterWorldX = (stonePlan.landmark.centerTileX + 0.5) * WORLD_TILE_SIZE;
