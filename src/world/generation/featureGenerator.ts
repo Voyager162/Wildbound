@@ -44,8 +44,8 @@ export const FEATURE_DENSITIES = {
 } as const;
 
 // A landmark's macro reservation is intentionally broad enough for cave separation and streamed
-// art. Natural features only respect its actual structures and material clearances, allowing
-// grass, rocks, and trees to continue through open courtyards and the center of a stone circle.
+// art. Natural features respect actual structures and material clearances; stone circles expand
+// that margin around every monolith so wide tree art cannot reach across a buried stone base.
 const landmarkPlanCache = new Map<string, LandmarkSurfacePlan>();
 const LANDMARK_FEATURE_PLAN_CACHE_LIMIT = 256;
 

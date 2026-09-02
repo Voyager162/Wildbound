@@ -3,7 +3,7 @@ import { LandmarkType, type ProceduralLandmark } from '../landmarkConfig';
 import { randomAtTile } from '../generation/noise';
 import { WORLD_TILE_SIZE } from '../worldConfig';
 
-export const LANDMARK_SURFACE_GENERATION_VERSION = 4;
+export const LANDMARK_SURFACE_GENERATION_VERSION = 5;
 
 export type LandmarkComponentRole =
   | 'ancient-trunk'
@@ -13,6 +13,7 @@ export type LandmarkComponentRole =
   | 'crater-rim'
   | 'impact-core'
   | 'stone-block'
+  | 'rune-altar'
   | 'skeleton-spine'
   | 'skeleton-rib'
   | 'skeleton-skull'
@@ -177,7 +178,7 @@ const MATERIALS_BY_LANDMARK: Partial<Record<LandmarkType, readonly MaterialDefin
     { resource: GLOWING_FRAGMENTS, style: 'glowing-shard-bed', glowStrength: 0.92 }
   ],
   [LandmarkType.StoneCircle]: [
-    { resource: RUNE_STONE, style: 'rune-slab', glowStrength: 0.34 },
+    { resource: RUNE_STONE, style: 'rune-slab', glowStrength: 0.96 },
     { resource: ANCIENT_FRAGMENTS, style: 'fragment-cache', glowStrength: 0.04 },
     { resource: RELIC_MATERIALS, style: 'relic-inlay', glowStrength: 0.48 }
   ],
@@ -431,23 +432,23 @@ const stoneCirclePlan = (seed: string, landmark: ProceduralLandmark): Omit<Landm
   const components: LandmarkSurfaceComponent[] = [];
   const shapes: LandmarkSurfaceShape[] = [];
   const details: LandmarkGroundDetail[] = [];
-  const count = 11 + Math.floor(planRandom(planSeed, 30, 0) * 6);
-  const ringScale = 0.66 + (planRandom(planSeed, 30, 1) - 0.5) * 0.12;
+  const count = 14 + Math.floor(planRandom(planSeed, 30, 0) * 4);
+  const ringScale = 0.79 + (planRandom(planSeed, 30, 1) - 0.5) * 0.055;
   const gapIndex = Math.floor(planRandom(planSeed, 30, 2) * count);
   for (let index = 0; index < count; index += 1) {
-    if (index === gapIndex || (count > 14 && index === (gapIndex + 1) % count)) {
+    if (index === gapIndex) {
       continue;
     }
     const angle = landmark.rotation + index / count * Math.PI * 2
-      + (planRandom(planSeed, 30, index, 3) - 0.5) * 0.19;
-    const distance = r * (ringScale + (planRandom(planSeed, 30, index, 4) - 0.5) * 0.11);
-    const local = rotateLocal(Math.cos(angle) * distance, Math.sin(angle) * distance * 0.62, -landmark.rotation);
-    const blockRotation = angle + Math.PI / 2 + (planRandom(planSeed, 30, index, 5) - 0.5) * 0.26;
+      + (planRandom(planSeed, 30, index, 3) - 0.5) * 0.045;
+    const distance = r * (ringScale + (planRandom(planSeed, 30, index, 4) - 0.5) * 0.035);
+    const local = rotateLocal(Math.cos(angle) * distance, Math.sin(angle) * distance * 0.7, -landmark.rotation);
+    const blockRotation = angle + Math.PI / 2 + (planRandom(planSeed, 30, index, 5) - 0.5) * 0.075;
     const shape = box(
       local.x,
       local.y,
-      r * (0.13 + planRandom(planSeed, 30, index, 6) * 0.055),
-      r * (0.1 + planRandom(planSeed, 30, index, 7) * 0.045),
+      r * (0.105 + planRandom(planSeed, 30, index, 6) * 0.032),
+      r * (0.082 + planRandom(planSeed, 30, index, 7) * 0.025),
       blockRotation - landmark.rotation
     );
     shapes.push(shape);
@@ -456,19 +457,35 @@ const stoneCirclePlan = (seed: string, landmark: ProceduralLandmark): Omit<Landm
       'stone-block',
       index,
       shape,
-      r * (0.24 + planRandom(planSeed, 30, index, 8) * 0.24),
-      (planRandom(planSeed, 30, index, 9) - 0.5) * 0.18,
+      r * (0.34 + planRandom(planSeed, 30, index, 8) * 0.17),
+      (planRandom(planSeed, 30, index, 9) - 0.5) * 0.025,
       blockRotation,
-      0.88 + planRandom(planSeed, 30, index, 10) * 0.25,
+      0.94 + planRandom(planSeed, 30, index, 10) * 0.12,
       planRandom(planSeed, 30, index, 11),
       local.y
     ));
   }
-  for (let index = 0; index < 9; index += 1) {
-    const angle = landmark.rotation + index / 9 * Math.PI * 2 + planRandom(planSeed, 31, index) * 0.22;
-    details.push(groundDetail(landmark, 'rune-line', index, 0, 0, r * (0.24 + planRandom(planSeed, 31, index, 1) * 0.29), r * 0.012, angle, 0.13, planRandom(planSeed, 31, index, 2)));
+  const altarRotation = (planRandom(planSeed, 31, 0) - 0.5) * 0.18;
+  const altar = box(0, 0, r * 0.135, r * 0.095, altarRotation);
+  shapes.push(altar);
+  components.push(component(
+    landmark,
+    'rune-altar',
+    0,
+    altar,
+    r * 0.045,
+    0,
+    landmark.rotation + altarRotation,
+    1,
+    planRandom(planSeed, 31, 1),
+    0
+  ));
+  for (let index = 0; index < 6; index += 1) {
+    const angle = landmark.rotation + index / 6 * Math.PI * 2 + (planRandom(planSeed, 31, index, 2) - 0.5) * 0.08;
+    details.push(groundDetail(landmark, 'rune-line', index, 0, 0, r * (0.32 + planRandom(planSeed, 31, index, 3) * 0.2), r * 0.006, angle, 0.1, planRandom(planSeed, 31, index, 4)));
   }
-  // Deliberately no ground disk: base terrain, layer grass, and ordinary features remain visible.
+  // Deliberately no ground disk: the ring remains native biome terrain outside the exact stone
+  // and altar clearances, while authored grass at each buried base integrates the monuments.
   return { components, structuralShapes: shapes, groundDetails: details, entrance: null };
 };
 
@@ -592,12 +609,29 @@ const materialLocation = (
 ): LandmarkMaterialNode | null => {
   const planSeed = planSeedFor(seed, landmark);
   const r = landmark.footprintRadiusTiles * WORLD_TILE_SIZE;
-  // Preserve the exact center tile as ordinary biome terrain in every stone circle. Even after
-  // the ellipse's vertical compression, this radius stays beyond the largest material clearance
-  // plus feature-tile padding for the smallest generated circle.
-  const minimumRadius = landmark.type === LandmarkType.StoneCircle ? r * 0.22 : r * 0.16;
+  const center = centerWorld(landmark);
+  if (landmark.type === LandmarkType.StoneCircle && definition.resource === RUNE_STONE) {
+    return {
+      id: `${landmark.id}:surface-material:rune-stone:${index}`,
+      landmarkId: landmark.id,
+      landmarkType: landmark.type,
+      resource: definition.resource,
+      worldX: center.x,
+      worldY: center.y - r * 0.045,
+      tileX: landmark.centerTileX,
+      tileY: Math.floor((center.y - r * 0.045) / WORLD_TILE_SIZE),
+      scale: 1.12,
+      rotation: landmark.rotation + (planRandom(planSeed, 31, 0) - 0.5) * 0.18,
+      style: definition.style,
+      variant: planRandom(planSeed, 90 + index, 2),
+      yieldAmount: 1,
+      glowStrength: definition.glowStrength,
+      clearanceRadiusPixels: r * 0.085
+    };
+  }
+  const minimumRadius = landmark.type === LandmarkType.StoneCircle ? r * 0.92 : r * 0.16;
   const maximumRadius = landmark.type === LandmarkType.StoneCircle
-    ? r * 0.46
+    ? r * 0.98
     : landmark.type === LandmarkType.GiantSkeleton
       ? r * 0.72
       : r * 0.62;
@@ -606,7 +640,6 @@ const materialLocation = (
     : landmark.type === LandmarkType.GiantSkeleton
       ? 76
       : 82;
-  const center = centerWorld(landmark);
   const candidateClearance = (candidate: { readonly x: number; readonly y: number }): number => {
     if (shapes.some((shape) => landmarkSurfaceShapeContainsLocalPoint(shape, candidate.x, candidate.y, 34))) {
       return Number.NEGATIVE_INFINITY;
@@ -727,9 +760,14 @@ export const createLandmarkSurfacePlan = (
     }
   });
   const planSeed = planSeedFor(seed, landmark);
-  const extraCount = definitions.length === 0 ? 0 : 2 + Math.floor(planRandom(planSeed, 101, 0) * 4);
+  const extraCount = definitions.length === 0 || landmark.type === LandmarkType.StoneCircle
+    ? 0
+    : 2 + Math.floor(planRandom(planSeed, 101, 0) * 4);
+  const extraDefinitions = landmark.type === LandmarkType.StoneCircle
+    ? definitions.filter((definition) => definition.resource !== RUNE_STONE)
+    : definitions;
   for (let extra = 0; extra < extraCount; extra += 1) {
-    const definition = definitions[Math.floor(planRandom(planSeed, 102, extra) * definitions.length)]!;
+    const definition = extraDefinitions[Math.floor(planRandom(planSeed, 102, extra) * extraDefinitions.length)]!;
     const material = materialLocation(
       seed,
       landmark,
@@ -764,6 +802,42 @@ export const landmarkStructureContainsWorldPoint = (
 
 export const landmarkCollisionContainsWorldPoint = landmarkStructureContainsWorldPoint;
 
+export interface LandmarkCollisionFreePoint {
+  readonly worldX: number;
+  readonly worldY: number;
+}
+
+// Save files may place a player inside geometry introduced by a later visual generation version.
+// Search concentric rings in a fixed order so recovery is deterministic and always chooses the
+// nearest sampled open point instead of leaving movement trapped inside collision.
+export const findNearestLandmarkCollisionFreeWorldPoint = (
+  plans: readonly LandmarkSurfacePlan[],
+  worldX: number,
+  worldY: number,
+  paddingPixels = 23,
+  maximumRadiusPixels = WORLD_TILE_SIZE * 24
+): LandmarkCollisionFreePoint | null => {
+  const isBlocked = (candidateX: number, candidateY: number): boolean => plans.some((plan) => (
+    landmarkCollisionContainsWorldPoint(plan, candidateX, candidateY, paddingPixels)
+  ));
+  if (!isBlocked(worldX, worldY)) {
+    return { worldX, worldY };
+  }
+  const radialStep = WORLD_TILE_SIZE * 0.5;
+  const sampleCount = 32;
+  for (let radius = radialStep; radius <= maximumRadiusPixels; radius += radialStep) {
+    for (let sample = 0; sample < sampleCount; sample += 1) {
+      const angle = Math.PI / 2 + sample / sampleCount * Math.PI * 2;
+      const candidateX = worldX + Math.cos(angle) * radius;
+      const candidateY = worldY + Math.sin(angle) * radius;
+      if (!isBlocked(candidateX, candidateY)) {
+        return { worldX: candidateX, worldY: candidateY };
+      }
+    }
+  }
+  return null;
+};
+
 export const ancientTreeOccludesWorldPoint = (
   landmark: ProceduralLandmark,
   worldX: number,
@@ -797,7 +871,20 @@ export const landmarkPlanBlocksFeatureTile = (
       return true;
     }
   }
-  if (landmarkStructureContainsWorldPoint(plan, worldX, worldY, WORLD_TILE_SIZE * 0.58)) {
+  if (plan.landmark.type === LandmarkType.StoneCircle) {
+    const center = centerWorld(plan.landmark);
+    const radius = plan.landmark.footprintRadiusTiles * WORLD_TILE_SIZE;
+    const local = rotateLocal(worldX - center.x, worldY - center.y, -plan.landmark.rotation);
+    const normalizedX = local.x / (radius * 0.86);
+    const normalizedY = local.y / (radius * 0.64);
+    if (normalizedX * normalizedX + normalizedY * normalizedY <= 1) {
+      return true;
+    }
+  }
+  const structurePadding = plan.landmark.type === LandmarkType.StoneCircle
+    ? WORLD_TILE_SIZE * 2.2
+    : WORLD_TILE_SIZE * 0.58;
+  if (landmarkStructureContainsWorldPoint(plan, worldX, worldY, structurePadding)) {
     return true;
   }
   return plan.materials.some((material) => (

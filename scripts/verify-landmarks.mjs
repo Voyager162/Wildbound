@@ -27,6 +27,11 @@ import {
   ancientTreeFeatureRegrowthDelayMs
 } from '../../src/world/landmarks/ancientTreeConfig';
 import {
+  STONE_CIRCLE_RUNE_REGROWTH_MAX_DAYS,
+  STONE_CIRCLE_RUNE_REGROWTH_MIN_DAYS,
+  stoneCircleRuneRegrowthDelayMs
+} from '../../src/world/landmarks/stoneCircleConfig';
+import {
   LANDMARK_DEFINITIONS,
   LandmarkType,
   type ProceduralLandmark
@@ -39,6 +44,7 @@ import {
 import {
   createLandmarkSurfacePlan,
   ancientTreeOccludesWorldPoint,
+  findNearestLandmarkCollisionFreeWorldPoint,
   findLandmarkEntrance,
   findLandmarkEntranceNearWorldPoint,
   landmarkEntranceVisualPosition,
@@ -322,6 +328,9 @@ plans.forEach((plan) => {
     allSurfaceMaterialIds.add(material.id);
     assert.ok(Number.isFinite(material.worldX) && Number.isFinite(material.worldY), 'Surface material coordinates must be finite');
     assert.ok(material.yieldAmount >= 1 && material.yieldAmount <= 3, 'Surface material yield is outside its authored range');
+    const isCentralStoneCircleRune = plan.landmark.type === LandmarkType.StoneCircle
+      && material.resource === ResourceType.RuneStone
+      && material.style === 'rune-slab';
     assert.equal(
       landmarkStructureContainsWorldPoint(
         plan,
@@ -329,8 +338,8 @@ plans.forEach((plan) => {
         material.worldY,
         Math.min(32, material.clearanceRadiusPixels)
       ),
-      false,
-      material.id + ' clearance area collides with a landmark structure'
+      isCentralStoneCircleRune,
+      material.id + ' clearance does not match its authored structural host'
     );
   });
 });
@@ -439,17 +448,46 @@ const stoneCenterWorldX = (stonePlan.landmark.centerTileX + 0.5) * WORLD_TILE_SI
 const stoneCenterWorldY = (stonePlan.landmark.centerTileY + 0.5) * WORLD_TILE_SIZE;
 assert.equal(
   landmarkStructureContainsWorldPoint(stonePlan, stoneCenterWorldX, stoneCenterWorldY),
-  false,
-  'The stone-circle center must remain structurally open'
+  true,
+  'The stone-circle center must contain the ancient rune altar'
 );
 assert.equal(
   landmarkPlanBlocksFeatureTile(stonePlan, stonePlan.landmark.centerTileX, stonePlan.landmark.centerTileY),
-  false,
-  'The stone-circle center must not be blanket-blocked from ordinary features or layered grass'
+  true,
+  'The rune altar must keep ordinary features and layered grass out of its center'
 );
 const stoneBlocks = stonePlan.components.filter((component) => component.role === 'stone-block');
-assert.ok(stoneBlocks.length >= 9, 'Stone circles must use a substantial ring of blocks');
+assert.ok(stoneBlocks.length >= 13, 'Stone circles must use a substantial expanded ring of blocks');
 assert.ok(stoneBlocks.every((component) => component.shape.kind === 'oriented-box'), 'Stone-circle stones must be protruding square blocks');
+for (let firstIndex = 0; firstIndex < stoneBlocks.length; firstIndex += 1) {
+  const first = stoneBlocks[firstIndex]!;
+  assert.equal(first.shape.kind, 'oriented-box');
+  assert.ok(Math.abs(first.lean) <= 0.013, 'Stone-circle monolith lean must remain clean and restrained');
+  const rotatedStoneX = first.shape.x * Math.cos(stonePlan.landmark.rotation)
+    - first.shape.y * Math.sin(stonePlan.landmark.rotation);
+  const rotatedStoneY = first.shape.x * Math.sin(stonePlan.landmark.rotation)
+    + first.shape.y * Math.cos(stonePlan.landmark.rotation);
+  assert.equal(
+    landmarkPlanBlocksFeatureTile(
+      stonePlan,
+      Math.floor((stoneCenterWorldX + rotatedStoneX) / WORLD_TILE_SIZE),
+      Math.floor((stoneCenterWorldY + rotatedStoneY) / WORLD_TILE_SIZE)
+    ),
+    true,
+    'Every monolith must suppress overlapping terrain features'
+  );
+  for (let secondIndex = firstIndex + 1; secondIndex < stoneBlocks.length; secondIndex += 1) {
+    const second = stoneBlocks[secondIndex]!;
+    assert.equal(second.shape.kind, 'oriented-box');
+    const separation = Math.hypot(first.shape.x - second.shape.x, first.shape.y - second.shape.y);
+    const firstRadius: number = Math.hypot(first.shape.width, first.shape.height) * 0.5;
+    const secondRadius: number = Math.hypot(second.shape.width, second.shape.height) * 0.5;
+    assert.ok(
+      separation > firstRadius + secondRadius + WORLD_TILE_SIZE * 0.4,
+      'Stone-circle monolith footprints must not overlap'
+    );
+  }
+}
 assert.ok(
   new Set(stoneBlocks.map((component) => {
     const shape = component.shape;
@@ -457,6 +495,48 @@ assert.ok(
     return [round(shape.width), round(shape.height), round(shape.rotation), round(component.height), round(component.lean)].join(':');
   })).size >= Math.ceil(stoneBlocks.length * 0.7),
   'Stone-circle blocks must vary in dimensions, angle, height, and lean'
+);
+const runeAltars = stonePlan.components.filter((component) => component.role === 'rune-altar');
+assert.equal(runeAltars.length, 1, 'A stone circle must have exactly one central ancient altar');
+const centralRunes = stonePlan.materials.filter((material) => material.resource === ResourceType.RuneStone);
+assert.equal(centralRunes.length, 1, 'A stone circle must have exactly one takeable central rune');
+const centralRune = centralRunes[0]!;
+assert.equal(centralRune.style, 'rune-slab');
+assert.equal(centralRune.yieldAmount, 1, 'Taking the altar rune must yield exactly one item');
+assert.ok(centralRune.glowStrength >= 0.9, 'The central rune must have a strong purple glow');
+assert.ok(Math.abs(centralRune.worldX - stoneCenterWorldX) < 0.001, 'The takeable rune must be centered on its altar');
+assert.ok(
+  centralRune.worldY < stoneCenterWorldY
+    && centralRune.worldY > stoneCenterWorldY - stonePlan.landmark.footprintRadiusTiles * WORLD_TILE_SIZE * 0.15,
+  'The takeable rune must sit on the raised top face of its altar'
+);
+stonePlan.materials.filter((material) => material.resource !== ResourceType.RuneStone).forEach((material) => {
+  const offsetX = material.worldX - stoneCenterWorldX;
+  const offsetY = material.worldY - stoneCenterWorldY;
+  const localX = offsetX * Math.cos(-stonePlan.landmark.rotation) - offsetY * Math.sin(-stonePlan.landmark.rotation);
+  const localY = offsetX * Math.sin(-stonePlan.landmark.rotation) + offsetY * Math.cos(-stonePlan.landmark.rotation);
+  const radius = stonePlan.landmark.footprintRadiusTiles * WORLD_TILE_SIZE;
+  assert.ok(
+    (localX / (radius * 0.86)) ** 2 + (localY / (radius * 0.64)) ** 2 > 1,
+    'Only the purple rune may generate inside the stone circle'
+  );
+});
+const pushedFromAltar = findNearestLandmarkCollisionFreeWorldPoint(
+  [stonePlan],
+  stoneCenterWorldX,
+  stoneCenterWorldY,
+  23
+);
+assert.ok(pushedFromAltar, 'A player loaded inside the rune altar must have a recovery point');
+assert.equal(
+  landmarkStructureContainsWorldPoint(stonePlan, pushedFromAltar.worldX, pushedFromAltar.worldY, 23),
+  false,
+  'The recovered player point must be outside solid landmark collision'
+);
+assert.deepEqual(
+  findNearestLandmarkCollisionFreeWorldPoint([stonePlan], stoneCenterWorldX, stoneCenterWorldY, 23),
+  pushedFromAltar,
+  'Landmark collision recovery must be deterministic'
 );
 const alternateStonePlan = createLandmarkSurfacePlan('surface-verification-seed-alternate', fixtureFor(LandmarkType.StoneCircle));
 assert.notDeepEqual(surfaceSignature(alternateStonePlan), surfaceSignature(stonePlan), 'Stone-circle geometry must vary with the seed');
@@ -467,13 +547,13 @@ for (let index = 0; index < 64; index += 1) {
   const centerY = (stressLandmark.centerTileY + 0.5) * WORLD_TILE_SIZE;
   assert.equal(
     landmarkStructureContainsWorldPoint(stressPlan, centerX, centerY),
-    false,
-    'Stone-circle stress sample ' + index + ' structurally blocks its center'
+    true,
+    'Stone-circle stress sample ' + index + ' is missing its central altar'
   );
   assert.equal(
     landmarkPlanBlocksFeatureTile(stressPlan, stressLandmark.centerTileX, stressLandmark.centerTileY),
-    false,
-    'Stone-circle stress sample ' + index + ' blanket-blocks its center terrain'
+    true,
+    'Stone-circle stress sample ' + index + ' does not protect its central altar'
   );
 }
 
@@ -685,6 +765,38 @@ assert.deepEqual(
 assert.equal(restoredRegrowthSession.isLandmarkMaterialHarvested(regrowingTreeMaterialId), false);
 assert.equal(restoredRegrowthSession.toSaveData().landmarkMaterialRegrowth?.length, 0);
 
+const stoneRuneMaterialId = centralRune.id;
+const runeRegrowthDelayMs = stoneCircleRuneRegrowthDelayMs(
+  'surface-verification-seed',
+  stoneRuneMaterialId,
+  harvestedAtWorldAgeMs
+);
+assert.equal(
+  stoneCircleRuneRegrowthDelayMs('surface-verification-seed', stoneRuneMaterialId, harvestedAtWorldAgeMs),
+  runeRegrowthDelayMs,
+  'Stone-circle rune regrowth delay must be deterministic'
+);
+assert.ok(
+  runeRegrowthDelayMs >= STONE_CIRCLE_RUNE_REGROWTH_MIN_DAYS * DAY_NIGHT_CYCLE_DURATION_MS
+    && runeRegrowthDelayMs <= STONE_CIRCLE_RUNE_REGROWTH_MAX_DAYS * DAY_NIGHT_CYCLE_DURATION_MS,
+  'Stone-circle rune regrowth must remain between two and three in-game days'
+);
+assert.ok(
+  new Set(Array.from({ length: 24 }, (_, index) => stoneCircleRuneRegrowthDelayMs(
+    'surface-verification-seed',
+    stoneRuneMaterialId,
+    harvestedAtWorldAgeMs + index * 181
+  ))).size > 1,
+  'Stone-circle rune return times must vary between harvests'
+);
+const runeRegrowthSession = new SessionWorldState();
+assert.equal(runeRegrowthSession.harvestLandmarkMaterial(stoneRuneMaterialId, runeRegrowthDelayMs), true);
+const restoredRuneRegrowthSession = new SessionWorldState();
+restoredRuneRegrowthSession.restore(runeRegrowthSession.toSaveData());
+assert.deepEqual(restoredRuneRegrowthSession.advanceWorldAge(runeRegrowthDelayMs - 1), []);
+assert.deepEqual(restoredRuneRegrowthSession.advanceWorldAge(1), [stoneRuneMaterialId]);
+assert.equal(restoredRuneRegrowthSession.isLandmarkMaterialHarvested(stoneRuneMaterialId), false);
+
 const legacyTreeRegrowthSession = new SessionWorldState();
 legacyTreeRegrowthSession.restore({
   harvestedFeatureKeys: [],
@@ -750,7 +862,7 @@ assert.equal(
 const totalGenerationMs = firstGenerationMs + surfaceGenerationMs + interiorGenerationMs;
 assert.ok(totalGenerationMs < 12_000, 'Combined landmark generation verification exceeded the 12 second budget');
 
-console.log('Landmark verification passed: 6 surface landmarks, 3 enterable interiors, 20 rare materials, and deterministic tree regrowth.');
+console.log('Landmark verification passed: 6 surface landmarks, 3 enterable interiors, rare materials, and deterministic landmark regrowth.');
 console.log('World scan: ' + generatedLandmarks.length + ' landmarks in ' + firstGenerationMs.toFixed(1) + ' ms.');
 console.log('Surface plans: ' + surfaceGenerationMs.toFixed(1) + ' ms; interiors: ' + interiorGenerationMs.toFixed(1) + ' ms.');
 console.log('Determinism, variation, F3 nearest lookup, entrances, reachability, collision, save compatibility, and state round trips passed.');

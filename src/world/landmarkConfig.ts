@@ -126,9 +126,9 @@ export const LANDMARK_DEFINITIONS = [
     label: 'Stone Circle',
     validBiomes: [Biome.Plains, Biome.Forest, Biome.Hills, Biome.Snow],
     selectionWeight: 0.82,
-    footprintRadiusTiles: 17,
-    visualRadiusTiles: 28,
-    reservationPaddingTiles: 6,
+    footprintRadiusTiles: 23,
+    visualRadiusTiles: 35,
+    reservationPaddingTiles: 7,
     mapColor: 0xb6b9b2
   },
   {

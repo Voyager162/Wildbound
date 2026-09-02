@@ -537,6 +537,10 @@ export class ChunkManager {
     return this.landmarkManager.isStructureAtWorldPoint(worldX, worldY);
   }
 
+  findNearestOpenLandmarkWorldPoint(worldX: number, worldY: number): { readonly x: number; readonly y: number } | null {
+    return this.landmarkManager.findNearestOpenWorldPoint(worldX, worldY);
+  }
+
   findNearbyFeature(
     worldX: number,
     worldY: number,

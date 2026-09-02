@@ -24,6 +24,13 @@ import {
   GROUND_GRASS_SIZE_SCALE
 } from '../worldVisualConfig';
 import { CHUNK_SIZE_TILES, WORLD_TILE_SIZE } from '../worldConfig';
+import { landmarksIntersectingTiles } from './landmarkGenerator';
+import { LandmarkType, type ProceduralLandmark } from '../landmarkConfig';
+import {
+  createLandmarkSurfacePlan,
+  landmarkPlanBlocksFeatureTile,
+  type LandmarkSurfacePlan
+} from '../landmarks/landmarkSurfaceGenerator';
 
 export interface GroundGrassCandidate {
   readonly localTileX: number;
@@ -36,6 +43,34 @@ export interface GroundGrassCandidate {
   readonly framePhase: number;
   readonly alpha: number;
 }
+
+const stoneCirclePlanCache = new Map<string, LandmarkSurfacePlan>();
+const STONE_CIRCLE_GRASS_PLAN_CACHE_LIMIT = 96;
+
+const stoneCircleSurfacePlanFor = (seed: string, landmark: ProceduralLandmark): LandmarkSurfacePlan => {
+  const key = `${seed.length}:${seed}:${landmark.id}`;
+  const cached = stoneCirclePlanCache.get(key);
+  if (cached) {
+    stoneCirclePlanCache.delete(key);
+    stoneCirclePlanCache.set(key, cached);
+    return cached;
+  }
+  const plan = createLandmarkSurfacePlan(seed, landmark);
+  stoneCirclePlanCache.set(key, plan);
+  while (stoneCirclePlanCache.size > STONE_CIRCLE_GRASS_PLAN_CACHE_LIMIT) {
+    const oldest = stoneCirclePlanCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    stoneCirclePlanCache.delete(oldest);
+  }
+  return plan;
+};
+
+const stoneCircleBlocksGroundGrass = (seed: string, tileX: number, tileY: number): boolean => (
+  landmarksIntersectingTiles(seed, tileX, tileY, tileX, tileY).some((landmark) => (
+    landmark.type === LandmarkType.StoneCircle
+      && landmarkPlanBlocksFeatureTile(stoneCircleSurfacePlanFor(seed, landmark), tileX, tileY)
+  ))
+);
 
 const colorChannels = (color: number): readonly [number, number, number] => [
   (color >> 16) & 0xff,
@@ -156,6 +191,11 @@ export const generateChunkGroundGrassCandidates = (
       const density = groundGrassDensity(surface, edgeFade);
       const placement = randomAtTile(seed, worldTileX, worldTileY, 0x6d42aeb9);
       if (density === 0 || placement > density) {
+        continue;
+      }
+      // Stone circles author their own base sprouts. Suppress the generic swaying layer only in
+      // the expanded physical clearances, leaving native biome grass throughout the open ring.
+      if (stoneCircleBlocksGroundGrass(seed, worldTileX, worldTileY)) {
         continue;
       }
       const height = (GROUND_GRASS_BASE_HEIGHT_PIXELS

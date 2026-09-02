@@ -71,6 +71,7 @@ import {
   type LandmarkMaterialNode
 } from '../world/landmarks/landmarkSurfaceGenerator';
 import { ancientTreeFeatureRegrowthDelayMs } from '../world/landmarks/ancientTreeConfig';
+import { stoneCircleRuneRegrowthDelayMs } from '../world/landmarks/stoneCircleConfig';
 import {
   generateLandmarkInterior,
   isLandmarkInteriorType,
@@ -746,6 +747,11 @@ export class AdventureScene extends Phaser.Scene {
     this.updateSurfaceSwimAudio(delta, isMoving);
     this.updateSurfaceFootsteps(delta, isMoving);
     this.chunkManager.update(this.player.x, this.player.y, time);
+    if (this.resolvePlayerLandmarkOverlap(time)) {
+      isMoving = false;
+      playerVelocityX = 0;
+      playerVelocityY = 0;
+    }
     this.chunkManager.updateFoliage(time);
     this.chunkManager.updateWaterAnimation(time);
     this.chunkManager.updateSwampWaterDecorations(
@@ -782,7 +788,7 @@ export class AdventureScene extends Phaser.Scene {
     let savedGame: SaveGameData | null = null;
     let savedActiveCave: SaveGameData['activeCave'] | undefined;
     let savedActiveLandmarkInterior: SaveGameData['activeLandmarkInterior'] | undefined;
-    let migratedAncientTreeRegrowth = false;
+    let migratedLandmarkRegrowth = false;
 
     await this.loadGameSettings();
 
@@ -815,10 +821,21 @@ export class AdventureScene extends Phaser.Scene {
         if (!materialId.includes(ancientTreeIdMarker) || !materialId.includes(':interior-material:')) {
           return;
         }
-        migratedAncientTreeRegrowth = this.sessionWorldState.scheduleLandmarkMaterialRegrowth(
+        migratedLandmarkRegrowth = this.sessionWorldState.scheduleLandmarkMaterialRegrowth(
           materialId,
           ancientTreeFeatureRegrowthDelayMs(this.worldSeed, materialId, this.sessionWorldState.worldAgeMs)
-        ) || migratedAncientTreeRegrowth;
+        ) || migratedLandmarkRegrowth;
+      });
+      const stoneCircleIdMarker = `:${LandmarkType.StoneCircle}:`;
+      this.sessionWorldState.getHarvestedLandmarkMaterialIds().forEach((materialId) => {
+        if (!materialId.includes(stoneCircleIdMarker)
+          || !materialId.includes(':surface-material:rune-stone:')) {
+          return;
+        }
+        migratedLandmarkRegrowth = this.sessionWorldState.scheduleLandmarkMaterialRegrowth(
+          materialId,
+          stoneCircleRuneRegrowthDelayMs(this.worldSeed, materialId, this.sessionWorldState.worldAgeMs)
+        ) || migratedLandmarkRegrowth;
       });
       savedActiveCave = savedGame.activeCave;
       savedActiveLandmarkInterior = savedGame.activeLandmarkInterior;
@@ -915,7 +932,7 @@ export class AdventureScene extends Phaser.Scene {
     this.updateNightAmbientLighting(this.time.now);
     this.updateDebugText();
 
-    if (!savedGame || !hadSavedWorldTime || DAY_NIGHT_START_HOUR_OVERRIDE !== null || migratedAncientTreeRegrowth) {
+    if (!savedGame || !hadSavedWorldTime || DAY_NIGHT_START_HOUR_OVERRIDE !== null || migratedLandmarkRegrowth) {
       this.markSaveDirty();
     }
   }
@@ -1091,6 +1108,26 @@ export class AdventureScene extends Phaser.Scene {
       this.player.setPosition(resolvedX, resolvedY);
     }
     return moved;
+  }
+
+  private resolvePlayerLandmarkOverlap(time: number): boolean {
+    if (this.activeCave || this.activeLandmarkInterior
+      || !this.chunkManager.isLandmarkStructureAtWorldPoint(this.player.x, this.player.y)) {
+      return false;
+    }
+    const safe = this.chunkManager.findNearestOpenLandmarkWorldPoint(this.player.x, this.player.y);
+    if (!safe || !this.chunkManager.canEnterPosition(safe.x, safe.y, time)) {
+      return false;
+    }
+    this.player.setPosition(safe.x, safe.y);
+    this.playerAvatar.setPosition(safe.x, safe.y);
+    this.currentTopography = this.chunkManager.getTopographyAt(safe.x, safe.y);
+    this.terrainSurface = this.currentTopography.surface;
+    this.footprintTrail.clear();
+    this.updateSwimmingState(true);
+    this.showWorldFeedback(safe.x, safe.y - 28, 'Moved outside solid landmark');
+    this.markSaveDirty();
+    return true;
   }
 
   private configureControlKeys(): void {
@@ -1509,6 +1546,9 @@ export class AdventureScene extends Phaser.Scene {
       return;
     }
 
+    if ((event.code === 'KeyE' || event.key.toLowerCase() === 'e') && this.takeNearbyStoneCircleRune()) {
+      return;
+    }
     if ((event.code === 'KeyE' || event.key.toLowerCase() === 'e') && this.nearbyLandmarkEntrance) {
       void this.beginLandmarkEntranceSequence(this.nearbyLandmarkEntrance);
       return;
@@ -2267,6 +2307,14 @@ export class AdventureScene extends Phaser.Scene {
     const regrownMaterialIds = this.sessionWorldState.advanceWorldAge(delta);
     if (regrownMaterialIds.length > 0) {
       this.markSaveDirty();
+      regrownMaterialIds.forEach((materialId) => {
+        if (materialId.includes(':surface-material:')) {
+          this.chunkManager.refreshLandmarkMaterial(materialId);
+        }
+      });
+      if (!this.activeLandmarkInterior && !this.activeCave) {
+        this.updateLandmarkEntranceInteraction(true);
+      }
       const interior = this.activeLandmarkInterior;
       if (interior?.landmark.type === LandmarkType.GiantAncientTree) {
         const regrownIds = new Set(regrownMaterialIds);
@@ -3118,7 +3166,42 @@ export class AdventureScene extends Phaser.Scene {
         .setRadius(31)
         .setPosition(material.worldX, material.worldY)
         .setVisible(true);
+      if (material.landmarkType === LandmarkType.StoneCircle
+        && material.resource === ResourceType.RuneStone
+        && material.style === 'rune-slab') {
+        this.drawLandmarkHint('Press E to take rune', material.worldX, material.worldY - 58, 0xc78aff);
+      }
     }
+  }
+
+  private takeNearbyStoneCircleRune(): boolean {
+    const target = this.surfaceLandmarkMaterialTarget;
+    if (!target
+      || target.landmarkType !== LandmarkType.StoneCircle
+      || target.resource !== ResourceType.RuneStone
+      || target.style !== 'rune-slab') {
+      return false;
+    }
+    if (!this.inventory.canAdd(target.resource, 1)) {
+      this.showWorldFeedback(this.player.x, this.player.y - 28, 'Inventory full');
+      return true;
+    }
+    const regrowthDelayMs = stoneCircleRuneRegrowthDelayMs(
+      this.worldSeed,
+      target.id,
+      this.sessionWorldState.worldAgeMs
+    );
+    if (!this.sessionWorldState.harvestLandmarkMaterial(target.id, regrowthDelayMs)) {
+      this.updateLandmarkEntranceInteraction(true);
+      return true;
+    }
+    this.inventory.add(target.resource, 1);
+    this.showWorldFeedback(this.player.x, this.player.y - 28, '+ 1 Ancient Rune');
+    this.handleInventoryChanged();
+    this.surfaceLandmarkMaterialTarget = null;
+    this.chunkManager.refreshLandmarkMaterial(target.id);
+    this.updateLandmarkEntranceInteraction(true);
+    return true;
   }
 
   private drawLandmarkHint(label: string, worldX: number, worldY: number, color: number): void {
@@ -4268,6 +4351,13 @@ export class AdventureScene extends Phaser.Scene {
     const target = insideInterior
       ? this.interiorLandmarkMaterialTarget
       : this.surfaceLandmarkMaterialTarget;
+    if (!insideInterior
+      && this.surfaceLandmarkMaterialTarget?.landmarkType === LandmarkType.StoneCircle
+      && this.surfaceLandmarkMaterialTarget.resource === ResourceType.RuneStone
+      && this.surfaceLandmarkMaterialTarget.style === 'rune-slab') {
+      this.cancelHarvesting();
+      return;
+    }
     if (this.drinkingPotion) {
       this.cancelHarvesting(false);
       return;

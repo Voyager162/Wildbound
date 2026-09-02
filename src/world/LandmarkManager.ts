@@ -7,6 +7,7 @@ import { LandmarkType, type ProceduralLandmark } from './landmarkConfig';
 import {
   ancientTreeOccludesWorldPoint,
   createLandmarkSurfacePlan,
+  findNearestLandmarkCollisionFreeWorldPoint,
   landmarkEntranceVisualPosition,
   landmarkCollisionContainsWorldPoint,
   type LandmarkEntrance,
@@ -407,7 +408,7 @@ const materialColor = (resource: string, palette: LandmarkPalette): number => {
     case 'starstone': return 0x8589ff;
     case 'meteor iron': return 0xb96b55;
     case 'glowing fragments': return 0xff9d4d;
-    case 'rune stone': return 0x69c9bc;
+    case 'rune stone': return 0xb56cff;
     case 'ancient fragments': return mixColor(palette.stoneLight, 0xcaaa72, 0.42);
     case 'relic materials': return 0xe6c85f;
     case 'bone fragments': return palette.bone;
@@ -427,6 +428,31 @@ const drawMaterialNode = (
   index: number
 ): void => {
   const radius = 24 * node.scale;
+  if (node.style === 'rune-slab') {
+    if (harvested) {
+      graphics.fillStyle(0x241c2d, 0.4);
+      graphics.fillEllipse(node.worldX, node.worldY + 2, radius * 0.96, radius * 0.52);
+      graphics.lineStyle(Math.max(1.1, radius * 0.045), 0x675474, 0.38);
+      graphics.strokeEllipse(node.worldX, node.worldY + 1, radius * 0.72, radius * 0.36);
+      return;
+    }
+    const runeColor = materialColor(String(node.resource), palette);
+    graphics.fillStyle(0x7c36c9, 0.14);
+    graphics.fillEllipse(node.worldX, node.worldY + 2, radius * 2.15, radius * 1.22);
+    graphics.lineStyle(Math.max(5, radius * 0.2), 0x351247, 0.92);
+    graphics.strokeCircle(node.worldX, node.worldY, radius * 0.48);
+    graphics.lineBetween(node.worldX, node.worldY - radius * 0.43, node.worldX, node.worldY + radius * 0.42);
+    graphics.lineBetween(node.worldX, node.worldY - radius * 0.06, node.worldX - radius * 0.34, node.worldY + radius * 0.29);
+    graphics.lineBetween(node.worldX, node.worldY - radius * 0.06, node.worldX + radius * 0.34, node.worldY + radius * 0.29);
+    graphics.lineStyle(Math.max(2.3, radius * 0.09), runeColor, 1);
+    graphics.strokeCircle(node.worldX, node.worldY, radius * 0.48);
+    graphics.lineBetween(node.worldX, node.worldY - radius * 0.43, node.worldX, node.worldY + radius * 0.42);
+    graphics.lineBetween(node.worldX, node.worldY - radius * 0.06, node.worldX - radius * 0.34, node.worldY + radius * 0.29);
+    graphics.lineBetween(node.worldX, node.worldY - radius * 0.06, node.worldX + radius * 0.34, node.worldY + radius * 0.29);
+    graphics.fillStyle(0xf1d8ff, 0.96);
+    graphics.fillCircle(node.worldX, node.worldY - radius * 0.43, Math.max(2, radius * 0.075));
+    return;
+  }
   const host = irregularRing(seed, landmark, node.worldX, node.worldY + 3, radius * 1.35, radius * 0.82, 10, 0x8a10 + index, node.rotation);
   fillPolygon(graphics, host, harvested ? palette.soilDark : mixColor(palette.stoneDark, palette.soil, 0.22), harvested ? 0.66 : 0.94);
   if (harvested) {
@@ -452,7 +478,7 @@ const drawMaterialNode = (
     graphics.lineStyle(Math.max(1.1, radius * 0.055), color, 0.94);
     graphics.lineBetween(centerX - Math.cos(angle) * length * 0.42, centerY - Math.sin(angle) * length * 0.25, centerX + Math.cos(angle) * length * 0.42, centerY + Math.sin(angle) * length * 0.25);
   }
-  if (node.style === 'rune-slab' || node.style === 'relic-inlay' || node.style === 'fossil-impression') {
+  if (node.style === 'relic-inlay' || node.style === 'fossil-impression') {
     graphics.lineStyle(Math.max(1.5, radius * 0.065), color, 0.82);
     graphics.strokeCircle(node.worldX, node.worldY, radius * 0.36);
     graphics.lineBetween(node.worldX - radius * 0.3, node.worldY, node.worldX + radius * 0.3, node.worldY);
@@ -1687,32 +1713,243 @@ const drawCrater = (seed: string, visual: LandmarkVisual, palette: LandmarkPalet
 };
 
 const drawStoneCircle = (seed: string, visual: LandmarkVisual, palette: LandmarkPalette): void => {
-  const { landmark, plan, structure, shadow, foreground } = visual;
+  const { landmark, plan, structure, shadow } = visual;
   const blocks = plan.components
     .filter((part) => part.role === 'stone-block' && part.shape.kind === 'oriented-box')
     .sort((first, second) => first.order - second.order);
-  blocks.forEach((part) => {
+  blocks.forEach((part, blockIndex) => {
     const shape = part.shape as LandmarkOrientedBoxShape;
     const center = shapeCenterWorld(landmark, shape);
+    const worldRotation = shape.rotation + landmark.rotation;
+    const screenWidth = Math.abs(Math.cos(worldRotation)) * shape.width
+      + Math.abs(Math.sin(worldRotation)) * shape.height;
+    const screenDepth = Math.abs(Math.sin(worldRotation)) * shape.width
+      + Math.abs(Math.cos(worldRotation)) * shape.height;
+    const bottomY = center.y + screenDepth * 0.13;
+    const topY = center.y - part.height;
+    const segmentCount = 5 + Math.floor(part.variant * 3);
+    const segmentHeight = (bottomY - topY) / segmentCount;
+    const baseStone = mixColor(palette.stone, palette.moss, part.variant * 0.08);
+    const topStone = mixColor(palette.stoneLight, palette.mossLight, part.variant * 0.05);
+
+    // A compressed earth socket is drawn before the monument, then dirt clods and grass overlap
+    // its lowest course later. That overlap makes the base read as buried rather than pasted on.
+    shadow.fillStyle(mixColor(palette.soilDark, palette.moss, 0.13), 0.5);
+    shadow.fillEllipse(center.x, bottomY + 4, screenWidth * 1.5, screenDepth * 0.86);
     shadow.fillStyle(0x142019, 0.28);
-    shadow.fillEllipse(center.x + part.lean * part.height, center.y + shape.height * 0.28, shape.width * 1.5, shape.height * 0.82);
-    drawPrism(structure, landmark, shape, part.height, part.lean, palette.stoneDark, mixColor(palette.stone, palette.moss, part.variant * 0.18), mixColor(palette.stoneLight, palette.mossLight, part.variant * 0.12));
-    const top = { x: center.x + part.lean * part.height, y: center.y - part.height };
-    structure.lineStyle(Math.max(1.3, shape.width * 0.035), part.variant > 0.58 ? palette.mossLight : palette.stoneDark, 0.62);
-    structure.lineBetween(top.x - shape.width * 0.18, top.y + part.height * 0.16, top.x + shape.width * 0.07, top.y + part.height * 0.47);
-    structure.lineBetween(top.x + shape.width * 0.08, top.y + part.height * 0.48, top.x - shape.width * 0.04, top.y + part.height * 0.72);
-    if (shape.y > 0) {
-      const bottom = boxCornersWorld(landmark, shape);
-      const topFace = bottom.map((point) => ({ x: point.x + part.lean * part.height, y: point.y - part.height }));
-      fillPolygon(foreground, [bottom[2], bottom[3], topFace[3], topFace[2]], shadeColor(palette.stone, -0.19), 0.95);
-      strokePolyline(foreground, [topFace[2], topFace[3]], palette.stoneLight, Math.max(1, shape.width * 0.018), 0.35);
+    shadow.fillEllipse(center.x + 13, bottomY + 10, screenWidth * 1.48, screenDepth * 0.64);
+
+    for (let segment = 0; segment < segmentCount; segment += 1) {
+      const segmentBottom = bottomY - segment * segmentHeight;
+      const segmentTop = segmentBottom - segmentHeight + 2.4;
+      const segmentRandom = detailRandom(seed, landmark, blockIndex * 17 + segment, 0xc430);
+      const widthScale = 0.84 + segmentRandom * 0.13 - segment / segmentCount * 0.025;
+      const segmentWidth = screenWidth * widthScale;
+      const offsetX = (detailRandom(seed, landmark, blockIndex * 17 + segment, 0xc431) - 0.5)
+        * screenWidth * 0.075;
+      const left = center.x + offsetX - segmentWidth * 0.5;
+      const right = center.x + offsetX + segmentWidth * 0.5;
+      const bevel = Math.min(7, segmentWidth * (0.045 + segmentRandom * 0.025));
+      const course: Point[] = [
+        { x: left + bevel, y: segmentTop },
+        { x: right - bevel * 0.7, y: segmentTop },
+        { x: right, y: segmentTop + bevel * 0.85 },
+        { x: right - bevel * 0.28, y: segmentBottom - bevel * 0.32 },
+        { x: right - bevel, y: segmentBottom },
+        { x: left + bevel * 0.45, y: segmentBottom },
+        { x: left, y: segmentBottom - bevel * 0.72 },
+        { x: left, y: segmentTop + bevel * 0.7 }
+      ];
+      fillPolygon(structure, course, shadeColor(palette.stoneDark, -0.16), 1);
+      const inset = Math.max(1.5, screenWidth * 0.018);
+      const face: Point[] = [
+        { x: left + bevel + inset, y: segmentTop + inset },
+        { x: right - bevel - inset * 0.45, y: segmentTop + inset },
+        { x: right - inset, y: segmentTop + bevel },
+        { x: right - bevel * 0.55, y: segmentBottom - inset },
+        { x: left + bevel * 0.65, y: segmentBottom - inset },
+        { x: left + inset, y: segmentBottom - bevel }
+      ];
+      const courseTone = (segmentRandom - 0.5) * 0.18 + (segment % 2 === 0 ? 0.025 : -0.02);
+      const faceColor = shadeColor(mixColor(baseStone, topStone, 0.12 + segmentRandom * 0.22), courseTone);
+      fillPolygon(structure, face, faceColor, 1);
+
+      // Stable left highlight and right occlusion establish one consistent light direction. No
+      // rotational side polygons are emitted, so a course can never expose an impossible face.
+      fillPolygon(structure, [face[0]!, face[5]!, face[4]!, {
+        x: face[4]!.x + segmentWidth * 0.11,
+        y: face[4]!.y
+      }, {
+        x: face[0]!.x + segmentWidth * 0.08,
+        y: face[0]!.y
+      }], topStone, 0.15);
+      fillPolygon(structure, [face[1]!, face[2]!, face[3]!, {
+        x: face[3]!.x - segmentWidth * 0.13,
+        y: face[3]!.y
+      }, {
+        x: face[1]!.x - segmentWidth * 0.1,
+        y: face[1]!.y
+      }], palette.stoneDark, 0.22);
+
+      const strataCount = 2 + (segment % 2);
+      for (let grain = 0; grain < strataCount; grain += 1) {
+        const grainY = segmentTop + segmentHeight * (0.3 + grain * 0.2)
+          + (detailRandom(seed, landmark, blockIndex * 97 + segment * 5 + grain, 0xc432) - 0.5) * 3;
+        const grainStart = left + bevel + detailRandom(seed, landmark, blockIndex * 97 + segment * 5 + grain, 0xc433) * segmentWidth * 0.2;
+        const grainLength = segmentWidth * (0.22 + detailRandom(seed, landmark, blockIndex * 97 + segment * 5 + grain, 0xc434) * 0.38);
+        structure.lineStyle(Math.max(0.8, screenWidth * 0.009), grain % 2 ? topStone : palette.stoneDark, grain % 2 ? 0.25 : 0.38);
+        structure.lineBetween(grainStart, grainY, Math.min(right - bevel, grainStart + grainLength), grainY + (grain % 2 ? -1 : 1));
+      }
+
+      if ((segment + blockIndex) % 3 === 0) {
+        const crackX = center.x + offsetX + (segmentRandom - 0.5) * segmentWidth * 0.34;
+        const crackY = segmentTop + segmentHeight * 0.18;
+        structure.lineStyle(Math.max(1.1, screenWidth * 0.014), shadeColor(palette.stoneDark, -0.22), 0.72);
+        structure.lineBetween(crackX, crackY, crackX + (segment % 2 ? -4 : 5), crackY + segmentHeight * 0.25);
+        structure.lineBetween(crackX + (segment % 2 ? -4 : 5), crackY + segmentHeight * 0.25, crackX + (segment % 2 ? 3 : -2), crackY + segmentHeight * 0.48);
+      }
+
+      if ((segment * 5 + blockIndex) % 7 === 0) {
+        const chipSide = segment % 2 === 0 ? -1 : 1;
+        const chipX = chipSide < 0 ? left + 1 : right - 1;
+        const chipY = segmentTop + segmentHeight * (0.35 + segmentRandom * 0.28);
+        structure.fillStyle(shadeColor(palette.stoneDark, -0.2), 0.82);
+        structure.fillTriangle(
+          chipX,
+          chipY,
+          chipX - chipSide * Math.min(8, segmentWidth * 0.08),
+          chipY + Math.min(6, segmentHeight * 0.2),
+          chipX,
+          chipY + Math.min(12, segmentHeight * 0.34)
+        );
+      }
+
+      if ((segment + blockIndex * 2) % 5 === 0) {
+        const mossStartX = left + bevel + segmentWidth * (0.12 + segmentRandom * 0.22);
+        const mossWidth = segmentWidth * (0.16 + segmentRandom * 0.17);
+        structure.lineStyle(Math.max(1.5, screenWidth * 0.018), mixColor(palette.moss, 0x78934b, 0.42), 0.78);
+        structure.lineBetween(mossStartX, segmentBottom - 1.5, mossStartX + mossWidth, segmentBottom - 1.5);
+        for (let tuft = 0; tuft < 3; tuft += 1) {
+          structure.fillStyle(tuft === 1 ? palette.mossLight : mixColor(palette.moss, 0x6e8741, 0.34), 0.76);
+          structure.fillEllipse(
+            mossStartX + mossWidth * (0.18 + tuft * 0.31),
+            segmentBottom - 2 - (tuft % 2) * 2,
+            5 + tuft,
+            3.5 + tuft % 2 * 1.5
+          );
+        }
+      }
+    }
+
+    // The cap is the only explicit top face. Its shallow diamond is tuned for the overhead camera
+    // and sits directly on the stacked courses rather than projecting outward at a random angle.
+    const capWidth = screenWidth * 1.06;
+    const capDepth = Math.max(13, screenDepth * 0.34);
+    const capSkew = Math.sin(worldRotation) * capDepth * 0.18;
+    structure.fillStyle(palette.stoneDark, 0.95);
+    structure.fillRoundedRect(center.x - capWidth * 0.52, topY - 1, capWidth * 1.04, capDepth * 0.72, Math.min(6, capDepth * 0.2));
+    const cap: Point[] = [
+      { x: center.x - capWidth * 0.5 + capSkew, y: topY + capDepth * 0.16 },
+      { x: center.x - capWidth * 0.38, y: topY - capDepth * 0.42 },
+      { x: center.x + capWidth * 0.38, y: topY - capDepth * 0.42 },
+      { x: center.x + capWidth * 0.5 + capSkew, y: topY + capDepth * 0.16 },
+      { x: center.x + capWidth * 0.37, y: topY + capDepth * 0.38 },
+      { x: center.x - capWidth * 0.4, y: topY + capDepth * 0.38 }
+    ];
+    fillPolygon(structure, cap, mixColor(topStone, baseStone, 0.24), 1);
+    strokePolyline(structure, cap, shadeColor(palette.stoneDark, -0.1), Math.max(1.5, screenWidth * 0.018), 0.88, true);
+    structure.lineStyle(Math.max(1, screenWidth * 0.011), topStone, 0.42);
+    structure.lineBetween(cap[1]!.x + capWidth * 0.08, cap[1]!.y + 2, cap[2]!.x - capWidth * 0.11, cap[2]!.y + 2);
+    structure.lineStyle(Math.max(1, screenWidth * 0.012), palette.stoneDark, 0.58);
+    structure.lineBetween(center.x - capWidth * 0.2, topY - capDepth * 0.24, center.x - capWidth * 0.07, topY + capDepth * 0.02);
+    structure.lineBetween(center.x - capWidth * 0.07, topY + capDepth * 0.02, center.x + capWidth * 0.04, topY - capDepth * 0.1);
+
+    for (let fleck = 0; fleck < 8; fleck += 1) {
+      const fleckX = center.x + (detailRandom(seed, landmark, blockIndex * 19 + fleck, 0xc435) - 0.5) * screenWidth * 0.68;
+      const fleckY = topY + (detailRandom(seed, landmark, blockIndex * 19 + fleck, 0xc436) - 0.5) * capDepth * 0.4;
+      structure.fillStyle(fleck % 3 === 0 ? topStone : palette.stoneDark, fleck % 3 === 0 ? 0.42 : 0.34);
+      structure.fillCircle(fleckX, fleckY, 0.8 + (fleck % 3) * 0.45);
+    }
+
+    const grassColor = mixColor(palette.mossLight, 0x91b85a, 0.58);
+    structure.fillStyle(mixColor(palette.soilDark, palette.soil, 0.32), 0.74);
+    for (let clod = 0; clod < 9; clod += 1) {
+      const amount = clod / 8 - 0.5;
+      const clodX = center.x + amount * screenWidth * 1.08;
+      const clodY = bottomY - 2 + Math.abs(amount) * 4;
+      structure.fillEllipse(clodX, clodY, 8 + (clod % 3) * 3, 5 + (clod % 2) * 2);
+    }
+    for (let blade = 0; blade < 18; blade += 1) {
+      const amount = (blade + 0.5) / 18 - 0.5;
+      const side = blade % 3 === 0 ? -1 : blade % 3 === 1 ? 1 : 0;
+      const bladeBaseX = center.x + amount * screenWidth * 1.32 + side * screenWidth * 0.16;
+      const bladeBaseY = bottomY + (blade % 4) * 1.8;
+      const bladeHeight = 7 + detailRandom(seed, landmark, blockIndex * 13 + blade, 0xc451) * 11;
+      structure.lineStyle(1.35 + (blade % 3) * 0.4, blade % 3 === 0 ? 0x9fc46b : grassColor, 0.94);
+      structure.lineBetween(bladeBaseX, bladeBaseY, bladeBaseX + (blade % 2 ? 4 : -4), bladeBaseY - bladeHeight);
+      if (blade % 4 === 0) {
+        structure.fillStyle(mixColor(palette.mossLight, 0xadc978, 0.55), 0.88);
+        structure.fillEllipse(bladeBaseX + (blade % 2 ? 3 : -3), bladeBaseY - bladeHeight * 0.65, 5.5, 3.2);
+      }
     }
   });
-  // The center is intentionally untouched: no opaque ground disk and no repeated central icon.
-  const center = centerFor(landmark);
-  structure.lineStyle(1.4, mixColor(palette.stoneLight, palette.mossLight, 0.45), 0.22);
-  for (let ring = 0; ring < 3; ring += 1) {
-    structure.strokeEllipse(center.x, center.y, 92 + ring * 39, 52 + ring * 22);
+
+  const altar = plan.components.find((part) => part.role === 'rune-altar' && part.shape.kind === 'oriented-box');
+  if (altar?.shape.kind === 'oriented-box') {
+    const shape = altar.shape;
+    const center = shapeCenterWorld(landmark, shape);
+    const altarWidth = shape.width;
+    const altarDepth = shape.height;
+    const topY = center.y - altar.height;
+    shadow.fillStyle(palette.soilDark, 0.46);
+    shadow.fillEllipse(center.x, center.y + altarDepth * 0.24, altarWidth * 1.38, altarDepth * 1.18);
+    structure.fillStyle(shadeColor(palette.stoneDark, -0.13), 1);
+    structure.fillRoundedRect(center.x - altarWidth * 0.48, topY, altarWidth * 0.96, altar.height + altarDepth * 0.24, 8);
+    structure.fillStyle(mixColor(palette.stone, palette.soil, 0.1), 1);
+    structure.fillRoundedRect(center.x - altarWidth * 0.43, topY + 4, altarWidth * 0.86, altar.height + altarDepth * 0.13, 6);
+    const altarTop = irregularRing(
+      seed,
+      landmark,
+      center.x,
+      topY,
+      altarWidth * 0.48,
+      altarDepth * 0.5,
+      12,
+      0xc460,
+      altar.rotation
+    );
+    fillPolygon(structure, altarTop, mixColor(palette.stoneLight, 0x8b7894, 0.18), 1);
+    strokePolyline(structure, altarTop, palette.stoneDark, Math.max(1.4, altarWidth * 0.018), 0.86, true);
+    const innerAltar = irregularRing(
+      seed,
+      landmark,
+      center.x,
+      topY,
+      altarWidth * 0.34,
+      altarDepth * 0.32,
+      10,
+      0xc465,
+      altar.rotation
+    );
+    strokePolyline(structure, innerAltar, mixColor(palette.stoneDark, 0x60466f, 0.34), Math.max(1.2, altarWidth * 0.014), 0.72, true);
+    structure.lineStyle(Math.max(1, altarWidth * 0.012), palette.stoneDark, 0.48);
+    for (let seam = 0; seam < 7; seam += 1) {
+      const offset = (detailRandom(seed, landmark, seam, 0xc461) - 0.5) * altarWidth * 0.58;
+      const length = altarWidth * (0.035 + detailRandom(seed, landmark, seam, 0xc462) * 0.07);
+      structure.lineBetween(center.x + offset - length, topY + (seam % 3 - 1) * 4, center.x + offset + length, topY + (seam % 3 - 1) * 4 + 1);
+    }
+    structure.fillStyle(palette.soilDark, 0.58);
+    for (let clod = 0; clod < 7; clod += 1) {
+      const amount = clod / 6 - 0.5;
+      structure.fillEllipse(center.x + amount * altarWidth * 1.04, center.y + altarDepth * 0.16, 7 + clod % 3 * 2, 5 + clod % 2 * 2);
+    }
+    for (let blade = 0; blade < 12; blade += 1) {
+      const side = blade % 2 === 0 ? -1 : 1;
+      const bladeX = center.x + side * altarWidth * (0.4 + detailRandom(seed, landmark, blade, 0xc463) * 0.18);
+      const bladeY = center.y + altarDepth * (0.08 + detailRandom(seed, landmark, blade, 0xc464) * 0.18);
+      structure.lineStyle(1.25 + blade % 3 * 0.3, blade % 4 === 0 ? 0xa3c673 : mixColor(palette.moss, 0x78984d, 0.46), 0.92);
+      structure.lineBetween(bladeX, bladeY, bladeX + side * (2 + blade % 3), bladeY - 7 - blade % 5 * 2);
+    }
   }
 };
 
@@ -2099,10 +2336,19 @@ const drawAnimatedVisual = (
       accent.fillCircle(center.x + Math.cos(phase) * distance, crownY + Math.sin(phase * 1.3) * treeScale * 0.33, 2 + (mote % 3));
     }
   } else if (landmark.type === LandmarkType.StoneCircle) {
-    const center = centerFor(landmark);
-    accent.lineStyle(2 + pulse * 1.2, mixColor(palette.mossLight, 0x8de3d5, 0.55), 0.1 + pulse * 0.22);
-    accent.strokeEllipse(center.x, center.y, r * 0.68, r * 0.38);
-    accent.strokeEllipse(center.x, center.y, r * 0.39, r * 0.21);
+    const rune = plan.materials.find((node) => node.style === 'rune-slab');
+    if (rune && !state.isLandmarkMaterialHarvested(rune.id)) {
+      accent.fillStyle(0x8d45e6, 0.07 + pulse * 0.1);
+      accent.fillEllipse(rune.worldX, rune.worldY + 3, r * (0.22 + pulse * 0.025), r * (0.12 + pulse * 0.015));
+      accent.lineStyle(1.5 + pulse * 1.4, 0xd8a8ff, 0.28 + pulse * 0.36);
+      accent.strokeEllipse(rune.worldX, rune.worldY + 2, r * 0.11, r * 0.057);
+      for (let mote = 0; mote < 7; mote += 1) {
+        const phase = time * (0.00055 + mote * 0.000025) + detailRandom(seed, landmark, mote, 0xc471) * Math.PI * 2;
+        const distance = r * (0.045 + detailRandom(seed, landmark, mote, 0xc472) * 0.055);
+        accent.fillStyle(mote % 2 === 0 ? 0xf0d7ff : 0xb970ff, 0.34 + pulse * 0.44);
+        accent.fillCircle(rune.worldX + Math.cos(phase) * distance, rune.worldY + Math.sin(phase * 1.3) * distance * 0.48, 1.5 + pulse * 1.2);
+      }
+    }
   } else if (landmark.type === LandmarkType.Watchtower) {
     const center = centerFor(landmark);
     const lensY = center.y - r * 1.18;
@@ -2287,14 +2533,15 @@ export class LandmarkManager {
 
   findNearbyMaterial(worldX: number, worldY: number, radiusPixels: number): LandmarkMaterialNode | null {
     let nearest: LandmarkMaterialNode | null = null;
-    let nearestDistanceSquared = radiusPixels * radiusPixels;
+    let nearestDistanceSquared = Number.POSITIVE_INFINITY;
     this.visuals.forEach((visual) => {
       visual.plan.materials.forEach((material) => {
         if (this.state.isLandmarkMaterialHarvested(material.id)) {
           return;
         }
+        const interactionRadius = Math.max(radiusPixels, material.clearanceRadiusPixels + 40);
         const distanceSquared = (material.worldX - worldX) ** 2 + (material.worldY - worldY) ** 2;
-        if (distanceSquared < nearestDistanceSquared) {
+        if (distanceSquared < interactionRadius * interactionRadius && distanceSquared < nearestDistanceSquared) {
           nearest = material;
           nearestDistanceSquared = distanceSquared;
         }
@@ -2320,6 +2567,16 @@ export class LandmarkManager {
       }
     }
     return false;
+  }
+
+  findNearestOpenWorldPoint(worldX: number, worldY: number, paddingPixels = 23): Point | null {
+    const point = findNearestLandmarkCollisionFreeWorldPoint(
+      Array.from(this.visuals.values(), (visual) => visual.plan),
+      worldX,
+      worldY,
+      paddingPixels
+    );
+    return point ? { x: point.worldX, y: point.worldY } : null;
   }
 
   destroy(): void {
