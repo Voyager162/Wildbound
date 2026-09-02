@@ -2019,16 +2019,22 @@ const drawStoneCircle = (seed: string, visual: LandmarkVisual, palette: Landmark
     }
     const grassColor = mixColor(palette.moss, 0x183d27, 0.62);
     for (let blade = 0; blade < 44; blade += 1) {
-      const amount = (blade + 0.5) / 44 - 0.5;
-      const side = blade % 3 === 0 ? -1 : blade % 3 === 1 ? 1 : 0;
-      const bladeBaseX = center.x + amount * screenWidth * 1.32 + side * screenWidth * 0.16;
-      const bladeBaseY = burialY + segmentHeight * (0.18 + (blade % 5) * 0.065);
+      // Grow paired tufts from the ground immediately outside the buried course. Anchoring every
+      // base at bottomY keeps the grass off the pillar face while the tips overlap its side edges.
+      const side = blade % 2 === 0 ? -1 : 1;
+      const cluster = Math.floor(blade / 2);
+      const spread = cluster / 21;
+      const edgeJitter = detailRandom(seed, landmark, blockIndex * 47 + blade, 0xc453);
+      const bladeBaseX = center.x + side * screenWidth * (0.4 + spread * 0.34)
+        + (edgeJitter - 0.5) * screenWidth * 0.11;
+      const bladeBaseY = bottomY + 1 + detailRandom(seed, landmark, blockIndex * 47 + blade, 0xc454) * 5
+        + spread * screenDepth * 0.08;
       const bladeHeight = 8 + detailRandom(seed, landmark, blockIndex * 41 + blade, 0xc451) * 15;
       structure.lineStyle(1.25 + (blade % 3) * 0.34, blade % 5 === 0 ? mixColor(grassColor, palette.mossLight, 0.22) : grassColor, 0.96);
-      structure.lineBetween(bladeBaseX, bladeBaseY, bladeBaseX + (blade % 2 ? 4 : -4), bladeBaseY - bladeHeight);
+      structure.lineBetween(bladeBaseX, bladeBaseY, bladeBaseX + side * (3 + edgeJitter * 4), bladeBaseY - bladeHeight);
       if (blade % 5 === 0) {
         structure.fillStyle(mixColor(grassColor, palette.mossLight, 0.18), 0.92);
-        structure.fillEllipse(bladeBaseX + (blade % 2 ? 3 : -3), bladeBaseY - bladeHeight * 0.65, 5.5, 3.2);
+        structure.fillEllipse(bladeBaseX + side * 3, bladeBaseY - bladeHeight * 0.65, 5.5, 3.2);
       }
     }
   });
