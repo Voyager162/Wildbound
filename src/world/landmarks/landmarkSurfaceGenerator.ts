@@ -432,7 +432,7 @@ const stoneCirclePlan = (seed: string, landmark: ProceduralLandmark): Omit<Landm
   const components: LandmarkSurfaceComponent[] = [];
   const shapes: LandmarkSurfaceShape[] = [];
   const details: LandmarkGroundDetail[] = [];
-  const count = 14 + Math.floor(planRandom(planSeed, 30, 0) * 4);
+  const count = 11 + Math.floor(planRandom(planSeed, 30, 0) * 3);
   const ringScale = 0.79 + (planRandom(planSeed, 30, 1) - 0.5) * 0.055;
   const gapIndex = Math.floor(planRandom(planSeed, 30, 2) * count);
   for (let index = 0; index < count; index += 1) {
@@ -447,8 +447,8 @@ const stoneCirclePlan = (seed: string, landmark: ProceduralLandmark): Omit<Landm
     const shape = box(
       local.x,
       local.y,
-      r * (0.105 + planRandom(planSeed, 30, index, 6) * 0.032),
-      r * (0.082 + planRandom(planSeed, 30, index, 7) * 0.025),
+      r * (0.118 + planRandom(planSeed, 30, index, 6) * 0.036),
+      r * (0.09 + planRandom(planSeed, 30, index, 7) * 0.028),
       blockRotation - landmark.rotation
     );
     shapes.push(shape);
@@ -457,7 +457,7 @@ const stoneCirclePlan = (seed: string, landmark: ProceduralLandmark): Omit<Landm
       'stone-block',
       index,
       shape,
-      r * (0.34 + planRandom(planSeed, 30, index, 8) * 0.17),
+      r * (0.205 + planRandom(planSeed, 30, index, 8) * 0.09),
       (planRandom(planSeed, 30, index, 9) - 0.5) * 0.025,
       blockRotation,
       0.94 + planRandom(planSeed, 30, index, 10) * 0.12,
@@ -890,6 +890,22 @@ export const landmarkPlanBlocksFeatureTile = (
   return plan.materials.some((material) => (
     Math.hypot(material.worldX - worldX, material.worldY - worldY)
       <= material.clearanceRadiusPixels + WORLD_TILE_SIZE * 0.54
+  ));
+};
+
+export const landmarkPlanBlocksGroundGrassTile = (
+  plan: LandmarkSurfacePlan,
+  tileX: number,
+  tileY: number
+): boolean => {
+  const worldX = (tileX + 0.5) * WORLD_TILE_SIZE;
+  const worldY = (tileY + 0.5) * WORLD_TILE_SIZE;
+  if (landmarkStructureContainsWorldPoint(plan, worldX, worldY, WORLD_TILE_SIZE * 0.18)) {
+    return true;
+  }
+  return plan.materials.some((material) => (
+    Math.hypot(material.worldX - worldX, material.worldY - worldY)
+      <= material.clearanceRadiusPixels + WORLD_TILE_SIZE * 0.18
   ));
 };
 

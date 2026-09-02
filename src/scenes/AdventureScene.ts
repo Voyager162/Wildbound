@@ -71,7 +71,10 @@ import {
   type LandmarkMaterialNode
 } from '../world/landmarks/landmarkSurfaceGenerator';
 import { ancientTreeFeatureRegrowthDelayMs } from '../world/landmarks/ancientTreeConfig';
-import { stoneCircleRuneRegrowthDelayMs } from '../world/landmarks/stoneCircleConfig';
+import {
+  STONE_CIRCLE_RUNE_RESTORE_MIGRATION_VERSION,
+  stoneCircleRuneRegrowthDelayMs
+} from '../world/landmarks/stoneCircleConfig';
 import {
   generateLandmarkInterior,
   isLandmarkInteriorType,
@@ -827,16 +830,29 @@ export class AdventureScene extends Phaser.Scene {
         ) || migratedLandmarkRegrowth;
       });
       const stoneCircleIdMarker = `:${LandmarkType.StoneCircle}:`;
-      this.sessionWorldState.getHarvestedLandmarkMaterialIds().forEach((materialId) => {
-        if (!materialId.includes(stoneCircleIdMarker)
-          || !materialId.includes(':surface-material:rune-stone:')) {
-          return;
-        }
-        migratedLandmarkRegrowth = this.sessionWorldState.scheduleLandmarkMaterialRegrowth(
-          materialId,
-          stoneCircleRuneRegrowthDelayMs(this.worldSeed, materialId, this.sessionWorldState.worldAgeMs)
+      const stoneCircleRuneMarker = ':surface-material:rune-stone:';
+      if (this.sessionWorldState.landmarkMaterialMigrationVersion
+        < STONE_CIRCLE_RUNE_RESTORE_MIGRATION_VERSION) {
+        this.sessionWorldState.getHarvestedLandmarkMaterialIds().forEach((materialId) => {
+          if (materialId.includes(stoneCircleIdMarker) && materialId.includes(stoneCircleRuneMarker)) {
+            migratedLandmarkRegrowth = this.sessionWorldState.restoreLandmarkMaterial(materialId)
+              || migratedLandmarkRegrowth;
+          }
+        });
+        migratedLandmarkRegrowth = this.sessionWorldState.setLandmarkMaterialMigrationVersion(
+          STONE_CIRCLE_RUNE_RESTORE_MIGRATION_VERSION
         ) || migratedLandmarkRegrowth;
-      });
+      } else {
+        this.sessionWorldState.getHarvestedLandmarkMaterialIds().forEach((materialId) => {
+          if (!materialId.includes(stoneCircleIdMarker) || !materialId.includes(stoneCircleRuneMarker)) {
+            return;
+          }
+          migratedLandmarkRegrowth = this.sessionWorldState.scheduleLandmarkMaterialRegrowth(
+            materialId,
+            stoneCircleRuneRegrowthDelayMs(this.worldSeed, materialId, this.sessionWorldState.worldAgeMs)
+          ) || migratedLandmarkRegrowth;
+        });
+      }
       savedActiveCave = savedGame.activeCave;
       savedActiveLandmarkInterior = savedGame.activeLandmarkInterior;
       this.player.setPosition(

@@ -27,6 +27,7 @@ import {
   ancientTreeFeatureRegrowthDelayMs
 } from '../../src/world/landmarks/ancientTreeConfig';
 import {
+  STONE_CIRCLE_RUNE_RESTORE_MIGRATION_VERSION,
   STONE_CIRCLE_RUNE_REGROWTH_MAX_DAYS,
   STONE_CIRCLE_RUNE_REGROWTH_MIN_DAYS,
   stoneCircleRuneRegrowthDelayMs
@@ -49,6 +50,7 @@ import {
   findLandmarkEntranceNearWorldPoint,
   landmarkEntranceVisualPosition,
   landmarkPlanBlocksFeatureTile,
+  landmarkPlanBlocksGroundGrassTile,
   landmarkStructureContainsWorldPoint,
   type LandmarkSurfacePlan
 } from '../../src/world/landmarks/landmarkSurfaceGenerator';
@@ -454,11 +456,18 @@ assert.equal(
 assert.equal(
   landmarkPlanBlocksFeatureTile(stonePlan, stonePlan.landmark.centerTileX, stonePlan.landmark.centerTileY),
   true,
-  'The rune altar must keep ordinary features and layered grass out of its center'
+  'The rune altar must keep ordinary harvestable features out of its center'
 );
 const stoneBlocks = stonePlan.components.filter((component) => component.role === 'stone-block');
-assert.ok(stoneBlocks.length >= 13, 'Stone circles must use a substantial expanded ring of blocks');
+assert.ok(
+  stoneBlocks.length >= 10 && stoneBlocks.length <= 12,
+  'Stone circles must use a substantial ring with slightly fewer monoliths'
+);
 assert.ok(stoneBlocks.every((component) => component.shape.kind === 'oriented-box'), 'Stone-circle stones must be protruding square blocks');
+assert.ok(
+  stoneBlocks.every((component) => component.height <= stonePlan.landmark.footprintRadiusTiles * WORLD_TILE_SIZE * 0.3),
+  'Stone-circle monoliths must remain broad and moderately tall instead of needle-like'
+);
 for (let firstIndex = 0; firstIndex < stoneBlocks.length; firstIndex += 1) {
   const first = stoneBlocks[firstIndex]!;
   assert.equal(first.shape.kind, 'oriented-box');
@@ -495,6 +504,26 @@ assert.ok(
     return [round(shape.width), round(shape.height), round(shape.rotation), round(component.height), round(component.lean)].join(':');
   })).size >= Math.ceil(stoneBlocks.length * 0.7),
   'Stone-circle blocks must vary in dimensions, angle, height, and lean'
+);
+let openLayerGrassTileFound = false;
+const stoneRadiusTiles = stonePlan.landmark.footprintRadiusTiles;
+for (let tileY = Math.floor(stonePlan.landmark.centerTileY - stoneRadiusTiles * 0.45);
+  tileY <= Math.ceil(stonePlan.landmark.centerTileY + stoneRadiusTiles * 0.45) && !openLayerGrassTileFound;
+  tileY += 1) {
+  for (let tileX = Math.floor(stonePlan.landmark.centerTileX - stoneRadiusTiles * 0.58);
+    tileX <= Math.ceil(stonePlan.landmark.centerTileX + stoneRadiusTiles * 0.58);
+    tileX += 1) {
+    if (landmarkPlanBlocksFeatureTile(stonePlan, tileX, tileY)
+      && !landmarkPlanBlocksGroundGrassTile(stonePlan, tileX, tileY)) {
+      openLayerGrassTileFound = true;
+      break;
+    }
+  }
+}
+assert.equal(
+  openLayerGrassTileFound,
+  true,
+  'Open ground inside the ring must keep harvestable features out while allowing biome layer grass'
 );
 const runeAltars = stonePlan.components.filter((component) => component.role === 'rune-altar');
 assert.equal(runeAltars.length, 1, 'A stone circle must have exactly one central ancient altar');
@@ -796,6 +825,29 @@ restoredRuneRegrowthSession.restore(runeRegrowthSession.toSaveData());
 assert.deepEqual(restoredRuneRegrowthSession.advanceWorldAge(runeRegrowthDelayMs - 1), []);
 assert.deepEqual(restoredRuneRegrowthSession.advanceWorldAge(1), [stoneRuneMaterialId]);
 assert.equal(restoredRuneRegrowthSession.isLandmarkMaterialHarvested(stoneRuneMaterialId), false);
+
+const runeRestoreMigrationSession = new SessionWorldState();
+assert.equal(runeRestoreMigrationSession.harvestLandmarkMaterial(stoneRuneMaterialId, runeRegrowthDelayMs), true);
+assert.equal(runeRestoreMigrationSession.restoreLandmarkMaterial(stoneRuneMaterialId), true);
+assert.equal(runeRestoreMigrationSession.isLandmarkMaterialHarvested(stoneRuneMaterialId), false);
+assert.equal(
+  runeRestoreMigrationSession.setLandmarkMaterialMigrationVersion(STONE_CIRCLE_RUNE_RESTORE_MIGRATION_VERSION),
+  true,
+  'The one-time rune restoration migration must record its version'
+);
+assert.equal(
+  runeRestoreMigrationSession.setLandmarkMaterialMigrationVersion(STONE_CIRCLE_RUNE_RESTORE_MIGRATION_VERSION),
+  false,
+  'The rune restoration migration must not apply twice'
+);
+const restoredRuneMigrationSession = new SessionWorldState();
+restoredRuneMigrationSession.restore(runeRestoreMigrationSession.toSaveData());
+assert.equal(
+  restoredRuneMigrationSession.landmarkMaterialMigrationVersion,
+  STONE_CIRCLE_RUNE_RESTORE_MIGRATION_VERSION,
+  'The one-time rune restoration marker must survive save/load'
+);
+assert.equal(restoredRuneMigrationSession.restoreLandmarkMaterial(stoneRuneMaterialId), false);
 
 const legacyTreeRegrowthSession = new SessionWorldState();
 legacyTreeRegrowthSession.restore({

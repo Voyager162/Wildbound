@@ -28,7 +28,7 @@ import { landmarksIntersectingTiles } from './landmarkGenerator';
 import { LandmarkType, type ProceduralLandmark } from '../landmarkConfig';
 import {
   createLandmarkSurfacePlan,
-  landmarkPlanBlocksFeatureTile,
+  landmarkPlanBlocksGroundGrassTile,
   type LandmarkSurfacePlan
 } from '../landmarks/landmarkSurfaceGenerator';
 
@@ -68,7 +68,7 @@ const stoneCircleSurfacePlanFor = (seed: string, landmark: ProceduralLandmark): 
 const stoneCircleBlocksGroundGrass = (seed: string, tileX: number, tileY: number): boolean => (
   landmarksIntersectingTiles(seed, tileX, tileY, tileX, tileY).some((landmark) => (
     landmark.type === LandmarkType.StoneCircle
-      && landmarkPlanBlocksFeatureTile(stoneCircleSurfacePlanFor(seed, landmark), tileX, tileY)
+      && landmarkPlanBlocksGroundGrassTile(stoneCircleSurfacePlanFor(seed, landmark), tileX, tileY)
   ))
 );
 

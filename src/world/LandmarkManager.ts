@@ -428,6 +428,9 @@ const drawMaterialNode = (
   index: number
 ): void => {
   const radius = 24 * node.scale;
+  if (harvested && landmark.type === LandmarkType.StoneCircle) {
+    return;
+  }
   if (node.style === 'rune-slab') {
     if (harvested) {
       graphics.fillStyle(0x241c2d, 0.4);
@@ -1727,7 +1730,7 @@ const drawStoneCircle = (seed: string, visual: LandmarkVisual, palette: Landmark
       + Math.abs(Math.cos(worldRotation)) * shape.height;
     const bottomY = center.y + screenDepth * 0.13;
     const topY = center.y - part.height;
-    const segmentCount = 5 + Math.floor(part.variant * 3);
+    const segmentCount = 3 + Math.floor(part.variant * 2);
     const segmentHeight = (bottomY - topY) / segmentCount;
     const baseStone = mixColor(palette.stone, palette.moss, part.variant * 0.08);
     const topStone = mixColor(palette.stoneLight, palette.mossLight, part.variant * 0.05);
@@ -1741,7 +1744,7 @@ const drawStoneCircle = (seed: string, visual: LandmarkVisual, palette: Landmark
 
     for (let segment = 0; segment < segmentCount; segment += 1) {
       const segmentBottom = bottomY - segment * segmentHeight;
-      const segmentTop = segmentBottom - segmentHeight + 2.4;
+      const segmentTop = segmentBottom - segmentHeight - 0.75;
       const segmentRandom = detailRandom(seed, landmark, blockIndex * 17 + segment, 0xc430);
       const widthScale = 0.84 + segmentRandom * 0.13 - segment / segmentCount * 0.025;
       const segmentWidth = screenWidth * widthScale;
@@ -1760,8 +1763,8 @@ const drawStoneCircle = (seed: string, visual: LandmarkVisual, palette: Landmark
         { x: left, y: segmentBottom - bevel * 0.72 },
         { x: left, y: segmentTop + bevel * 0.7 }
       ];
-      fillPolygon(structure, course, shadeColor(palette.stoneDark, -0.16), 1);
-      const inset = Math.max(1.5, screenWidth * 0.018);
+      fillPolygon(structure, course, shadeColor(baseStone, -0.16), 1);
+      const inset = Math.max(0.75, screenWidth * 0.01);
       const face: Point[] = [
         { x: left + bevel + inset, y: segmentTop + inset },
         { x: right - bevel - inset * 0.45, y: segmentTop + inset },
@@ -1841,13 +1844,148 @@ const drawStoneCircle = (seed: string, visual: LandmarkVisual, palette: Landmark
       }
     }
 
+    // Every pillar receives a seed-derived carved story panel. Motif type, proportions, side
+    // marks, and wear all vary, while the block index guarantees neighboring pillars do not show
+    // the exact same composition.
+    const motifType = (blockIndex + Math.floor(part.variant * 5)) % 8;
+    const motifX = center.x + (detailRandom(seed, landmark, blockIndex, 0xc438) - 0.5) * screenWidth * 0.12;
+    const motifY = topY + part.height * (0.45 + detailRandom(seed, landmark, blockIndex, 0xc439) * 0.08);
+    const motifScale = Math.min(screenWidth * 0.38, part.height * 0.16);
+    const carvingDark = mixColor(shadeColor(palette.stoneDark, -0.22), 0x33203f, 0.24);
+    const carvingLight = mixColor(topStone, 0xb2a4bb, 0.16);
+    const carveLine = Math.max(1.5, screenWidth * 0.019);
+    const carvedStroke = (points: readonly Point[], close = false): void => {
+      strokePolyline(structure, points.map((point) => ({ x: point.x + 1.2, y: point.y + 1.2 })), carvingLight, carveLine, 0.24, close);
+      strokePolyline(structure, points, carvingDark, carveLine, 0.78, close);
+    };
+    if (motifType === 0) {
+      structure.lineStyle(carveLine + 1.2, carvingLight, 0.22);
+      structure.strokeCircle(motifX + 1.2, motifY - motifScale * 0.62 + 1.2, motifScale * 0.2);
+      structure.lineStyle(carveLine, carvingDark, 0.8);
+      structure.strokeCircle(motifX, motifY - motifScale * 0.62, motifScale * 0.2);
+      carvedStroke([
+        { x: motifX, y: motifY - motifScale * 0.4 },
+        { x: motifX, y: motifY + motifScale * 0.38 },
+        { x: motifX - motifScale * 0.42, y: motifY - motifScale * 0.04 },
+        { x: motifX, y: motifY + motifScale * 0.12 },
+        { x: motifX + motifScale * 0.42, y: motifY - motifScale * 0.04 }
+      ]);
+      carvedStroke([
+        { x: motifX - motifScale * 0.34, y: motifY + motifScale * 0.72 },
+        { x: motifX, y: motifY + motifScale * 0.38 },
+        { x: motifX + motifScale * 0.34, y: motifY + motifScale * 0.72 }
+      ]);
+    } else if (motifType === 1) {
+      structure.lineStyle(carveLine + 1.2, carvingLight, 0.22);
+      structure.strokeCircle(motifX + 1.2, motifY + 1.2, motifScale * 0.46);
+      structure.lineStyle(carveLine, carvingDark, 0.8);
+      structure.strokeCircle(motifX, motifY, motifScale * 0.46);
+      for (let ray = 0; ray < 8; ray += 1) {
+        const angle = ray / 8 * Math.PI * 2;
+        carvedStroke([
+          { x: motifX + Math.cos(angle) * motifScale * 0.58, y: motifY + Math.sin(angle) * motifScale * 0.58 },
+          { x: motifX + Math.cos(angle) * motifScale * 0.82, y: motifY + Math.sin(angle) * motifScale * 0.82 }
+        ]);
+      }
+      structure.fillStyle(carvingDark, 0.74);
+      structure.fillCircle(motifX, motifY, motifScale * 0.12);
+    } else if (motifType === 2) {
+      carvedStroke([
+        { x: motifX - motifScale * 0.56, y: motifY - motifScale * 0.65 },
+        { x: motifX - motifScale * 0.26, y: motifY - motifScale * 0.18 },
+        { x: motifX, y: motifY + motifScale * 0.58 },
+        { x: motifX + motifScale * 0.26, y: motifY - motifScale * 0.18 },
+        { x: motifX + motifScale * 0.56, y: motifY - motifScale * 0.65 }
+      ]);
+      carvedStroke([
+        { x: motifX - motifScale * 0.38, y: motifY - motifScale * 0.42 },
+        { x: motifX - motifScale * 0.62, y: motifY - motifScale * 0.2 },
+        { x: motifX - motifScale * 0.44, y: motifY - motifScale * 0.02 }
+      ]);
+      carvedStroke([
+        { x: motifX + motifScale * 0.38, y: motifY - motifScale * 0.42 },
+        { x: motifX + motifScale * 0.62, y: motifY - motifScale * 0.2 },
+        { x: motifX + motifScale * 0.44, y: motifY - motifScale * 0.02 }
+      ]);
+    } else if (motifType === 3) {
+      const spiral: Point[] = [];
+      for (let turn = 0; turn < 18; turn += 1) {
+        const progress = turn / 17;
+        const angle = progress * Math.PI * 4.2;
+        spiral.push({
+          x: motifX + Math.cos(angle) * motifScale * 0.58 * progress,
+          y: motifY + Math.sin(angle) * motifScale * 0.58 * progress
+        });
+      }
+      carvedStroke(spiral);
+    } else if (motifType === 4) {
+      structure.lineStyle(carveLine + 1.2, carvingLight, 0.22);
+      structure.strokeEllipse(motifX + 1.2, motifY + 1.2, motifScale * 1.42, motifScale * 0.72);
+      structure.lineStyle(carveLine, carvingDark, 0.82);
+      structure.strokeEllipse(motifX, motifY, motifScale * 1.42, motifScale * 0.72);
+      structure.strokeCircle(motifX, motifY, motifScale * 0.22);
+      structure.fillStyle(carvingDark, 0.78);
+      structure.fillCircle(motifX, motifY, motifScale * 0.08);
+    } else if (motifType === 5) {
+      carvedStroke([
+        { x: motifX, y: motifY - motifScale * 0.75 },
+        { x: motifX + motifScale * 0.55, y: motifY - motifScale * 0.3 },
+        { x: motifX + motifScale * 0.38, y: motifY + motifScale * 0.62 },
+        { x: motifX, y: motifY + motifScale * 0.82 },
+        { x: motifX - motifScale * 0.38, y: motifY + motifScale * 0.62 },
+        { x: motifX - motifScale * 0.55, y: motifY - motifScale * 0.3 }
+      ], true);
+      structure.fillStyle(carvingDark, 0.78);
+      structure.fillEllipse(motifX - motifScale * 0.2, motifY - motifScale * 0.14, motifScale * 0.18, motifScale * 0.12);
+      structure.fillEllipse(motifX + motifScale * 0.2, motifY - motifScale * 0.14, motifScale * 0.18, motifScale * 0.12);
+      carvedStroke([{ x: motifX - motifScale * 0.24, y: motifY + motifScale * 0.37 }, { x: motifX, y: motifY + motifScale * 0.22 }, { x: motifX + motifScale * 0.24, y: motifY + motifScale * 0.37 }]);
+    } else if (motifType === 6) {
+      carvedStroke([
+        { x: motifX - motifScale * 0.62, y: motifY - motifScale * 0.65 },
+        { x: motifX + motifScale * 0.3, y: motifY - motifScale * 0.38 },
+        { x: motifX - motifScale * 0.28, y: motifY - motifScale * 0.02 },
+        { x: motifX + motifScale * 0.46, y: motifY + motifScale * 0.26 },
+        { x: motifX - motifScale * 0.48, y: motifY + motifScale * 0.72 }
+      ]);
+      structure.fillStyle(carvingDark, 0.76);
+      structure.fillCircle(motifX - motifScale * 0.62, motifY - motifScale * 0.65, motifScale * 0.12);
+    } else {
+      carvedStroke([{ x: motifX - motifScale * 0.62, y: motifY - motifScale * 0.58 }, { x: motifX, y: motifY }, { x: motifX - motifScale * 0.62, y: motifY + motifScale * 0.58 }]);
+      carvedStroke([{ x: motifX + motifScale * 0.62, y: motifY - motifScale * 0.58 }, { x: motifX, y: motifY }, { x: motifX + motifScale * 0.62, y: motifY + motifScale * 0.58 }]);
+      structure.lineStyle(carveLine, carvingDark, 0.78);
+      structure.strokeCircle(motifX, motifY, motifScale * 0.18);
+    }
+    const storyBandY = topY + part.height * (0.22 + detailRandom(seed, landmark, blockIndex, 0xc43b) * 0.05);
+    const storyDirection = blockIndex % 2 === 0 ? 1 : -1;
+    carvedStroke([
+      { x: center.x - motifScale * 0.58, y: storyBandY },
+      { x: center.x - motifScale * 0.22, y: storyBandY + motifScale * 0.18 * storyDirection },
+      { x: center.x + motifScale * 0.12, y: storyBandY - motifScale * 0.12 * storyDirection },
+      { x: center.x + motifScale * 0.56, y: storyBandY + motifScale * 0.08 * storyDirection }
+    ]);
+    const sideMarkCount = 1 + blockIndex % 4;
+    for (let mark = 0; mark < sideMarkCount; mark += 1) {
+      const markY = motifY - motifScale * 0.7 + mark * motifScale * 0.38;
+      carvedStroke([
+        { x: center.x - screenWidth * 0.34, y: markY },
+        { x: center.x - screenWidth * (0.24 + (mark % 2) * 0.035), y: markY + motifScale * 0.11 }
+      ]);
+    }
+
     // The cap is the only explicit top face. Its shallow diamond is tuned for the overhead camera
     // and sits directly on the stacked courses rather than projecting outward at a random angle.
-    const capWidth = screenWidth * 1.06;
-    const capDepth = Math.max(13, screenDepth * 0.34);
+    const capStyle = Math.floor(detailRandom(seed, landmark, blockIndex, 0xc43a) * 4);
+    const capWidth = screenWidth * (capStyle === 0 ? 1.15 : capStyle === 1 ? 1.05 : capStyle === 2 ? 0.98 : 1.1);
+    const capDepth = Math.max(12, screenDepth * (capStyle === 2 ? 0.29 : 0.36));
     const capSkew = Math.sin(worldRotation) * capDepth * 0.18;
     structure.fillStyle(palette.stoneDark, 0.95);
     structure.fillRoundedRect(center.x - capWidth * 0.52, topY - 1, capWidth * 1.04, capDepth * 0.72, Math.min(6, capDepth * 0.2));
+    if (capStyle === 0 || capStyle === 3) {
+      structure.fillStyle(shadeColor(baseStone, -0.08), 1);
+      structure.fillRoundedRect(center.x - capWidth * 0.48, topY + capDepth * 0.22, capWidth * 0.96, capDepth * 0.42, Math.min(5, capDepth * 0.18));
+      structure.lineStyle(Math.max(1, screenWidth * 0.012), palette.stoneDark, 0.62);
+      structure.lineBetween(center.x - capWidth * 0.42, topY + capDepth * 0.42, center.x + capWidth * 0.42, topY + capDepth * 0.42);
+    }
     const cap: Point[] = [
       { x: center.x - capWidth * 0.5 + capSkew, y: topY + capDepth * 0.16 },
       { x: center.x - capWidth * 0.38, y: topY - capDepth * 0.42 },
@@ -1871,24 +2009,25 @@ const drawStoneCircle = (seed: string, visual: LandmarkVisual, palette: Landmark
       structure.fillCircle(fleckX, fleckY, 0.8 + (fleck % 3) * 0.45);
     }
 
-    const grassColor = mixColor(palette.mossLight, 0x91b85a, 0.58);
-    structure.fillStyle(mixColor(palette.soilDark, palette.soil, 0.32), 0.74);
-    for (let clod = 0; clod < 9; clod += 1) {
-      const amount = clod / 8 - 0.5;
+    const burialY = bottomY - segmentHeight * 0.52;
+    structure.fillStyle(mixColor(palette.soilDark, palette.soil, 0.26), 0.9);
+    for (let clod = 0; clod < 23; clod += 1) {
+      const amount = clod / 22 - 0.5;
       const clodX = center.x + amount * screenWidth * 1.08;
-      const clodY = bottomY - 2 + Math.abs(amount) * 4;
-      structure.fillEllipse(clodX, clodY, 8 + (clod % 3) * 3, 5 + (clod % 2) * 2);
+      const clodY = burialY + detailRandom(seed, landmark, blockIndex * 23 + clod, 0xc452) * segmentHeight * 0.48;
+      structure.fillEllipse(clodX, clodY, 8 + (clod % 4) * 3, 6 + (clod % 3) * 2);
     }
-    for (let blade = 0; blade < 18; blade += 1) {
-      const amount = (blade + 0.5) / 18 - 0.5;
+    const grassColor = mixColor(palette.moss, 0x183d27, 0.62);
+    for (let blade = 0; blade < 44; blade += 1) {
+      const amount = (blade + 0.5) / 44 - 0.5;
       const side = blade % 3 === 0 ? -1 : blade % 3 === 1 ? 1 : 0;
       const bladeBaseX = center.x + amount * screenWidth * 1.32 + side * screenWidth * 0.16;
-      const bladeBaseY = bottomY + (blade % 4) * 1.8;
-      const bladeHeight = 7 + detailRandom(seed, landmark, blockIndex * 13 + blade, 0xc451) * 11;
-      structure.lineStyle(1.35 + (blade % 3) * 0.4, blade % 3 === 0 ? 0x9fc46b : grassColor, 0.94);
+      const bladeBaseY = burialY + segmentHeight * (0.18 + (blade % 5) * 0.065);
+      const bladeHeight = 8 + detailRandom(seed, landmark, blockIndex * 41 + blade, 0xc451) * 15;
+      structure.lineStyle(1.25 + (blade % 3) * 0.34, blade % 5 === 0 ? mixColor(grassColor, palette.mossLight, 0.22) : grassColor, 0.96);
       structure.lineBetween(bladeBaseX, bladeBaseY, bladeBaseX + (blade % 2 ? 4 : -4), bladeBaseY - bladeHeight);
-      if (blade % 4 === 0) {
-        structure.fillStyle(mixColor(palette.mossLight, 0xadc978, 0.55), 0.88);
+      if (blade % 5 === 0) {
+        structure.fillStyle(mixColor(grassColor, palette.mossLight, 0.18), 0.92);
         structure.fillEllipse(bladeBaseX + (blade % 2 ? 3 : -3), bladeBaseY - bladeHeight * 0.65, 5.5, 3.2);
       }
     }

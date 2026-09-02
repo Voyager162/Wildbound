@@ -2,6 +2,9 @@ import { DAY_NIGHT_CYCLE_DURATION_MS } from '../explorationConfig';
 
 export const STONE_CIRCLE_RUNE_REGROWTH_MIN_DAYS = 2;
 export const STONE_CIRCLE_RUNE_REGROWTH_MAX_DAYS = 3;
+// Save migration 1 restores a previously taken rune once so existing worlds can immediately
+// exercise the rebuilt altar. The persisted version prevents subsequent reloads from restoring it.
+export const STONE_CIRCLE_RUNE_RESTORE_MIGRATION_VERSION = 1;
 
 const hashString = (value: string): number => {
   let hash = 2166136261;
