@@ -82,9 +82,11 @@ import {
   landmarkInteriorWorldOrigin,
   landmarkInteriorWorldTilePosition,
   type LandmarkInteriorDecoration,
+  type LandmarkInteriorFloor,
   type LandmarkInteriorLayout,
   type LandmarkInteriorMaterialNode,
   type LandmarkInteriorRoom,
+  type LandmarkInteriorStair,
   type LandmarkInteriorType,
   type LandmarkInteriorWorldPoint
 } from '../world/landmarks/landmarkInteriorGenerator';
@@ -334,6 +336,7 @@ export class AdventureScene extends Phaser.Scene {
   private caveExitNearby = false;
   private caveExitTarget: CaveSurfaceExit | null = null;
   private landmarkInteriorExitNearby = false;
+  private landmarkInteriorStairTarget: LandmarkInteriorStair | null = null;
   private surfaceLandmarkMaterialTarget: LandmarkMaterialNode | null = null;
   private surfaceLandmarkHarvestMaterial: LandmarkMaterialNode | null = null;
   private interiorLandmarkMaterialTarget: LandmarkInteriorMaterialNode | null = null;
@@ -420,6 +423,7 @@ export class AdventureScene extends Phaser.Scene {
     this.caveTransitionInProgress = false;
     this.activeCave = null;
     this.activeLandmarkInterior = null;
+    this.landmarkInteriorStairTarget = null;
     this.nearbyLandmarkEntrance = null;
     this.surfaceLandmarkMaterialTarget = null;
     this.surfaceLandmarkHarvestMaterial = null;
@@ -924,7 +928,8 @@ export class AdventureScene extends Phaser.Scene {
         savedActiveLandmarkInterior.returnWorldX,
         savedActiveLandmarkInterior.returnWorldY,
         false,
-        true
+        true,
+        savedActiveLandmarkInterior.floorNumber ?? 1
       );
     }
     this.loadingOverlay.classList.add('is-hidden');
@@ -1529,16 +1534,30 @@ export class AdventureScene extends Phaser.Scene {
     }
 
     if (this.activeLandmarkInterior) {
-      if ((event.code === 'KeyE' || event.key.toLowerCase() === 'e') && this.landmarkInteriorExitNearby) {
+      const pressedE = event.code === 'KeyE' || event.key.toLowerCase() === 'e';
+      if (pressedE && this.landmarkInteriorStairTarget) {
+        void this.changeWatchtowerFloor(this.landmarkInteriorStairTarget);
+        return;
+      }
+      if (pressedE && this.takeWatchtowerMap()) {
+        return;
+      }
+      if (pressedE && this.landmarkInteriorExitNearby) {
         void this.exitLandmarkInterior();
         return;
       }
       if (this.matchesControl('pickUpItem', event) && this.pickupNearbyDrop()) {
         return;
       }
-      if (this.matchesControl('enterExitCave', event) && this.landmarkInteriorExitNearby) {
-        void this.exitLandmarkInterior();
-        return;
+      if (this.matchesControl('enterExitCave', event)) {
+        if (this.landmarkInteriorStairTarget) {
+          void this.changeWatchtowerFloor(this.landmarkInteriorStairTarget);
+          return;
+        }
+        if (this.landmarkInteriorExitNearby) {
+          void this.exitLandmarkInterior();
+          return;
+        }
       }
       if (this.matchesControl('openInventory', event)) {
         this.toggleInventory();
@@ -1632,9 +1651,18 @@ export class AdventureScene extends Phaser.Scene {
       if (this.matchesPointerControl('pickUpItem', pointer) && this.pickupNearbyDrop()) {
         return;
       }
-      if (this.matchesPointerControl('enterExitCave', pointer) && this.landmarkInteriorExitNearby) {
-        void this.exitLandmarkInterior();
+      if (this.matchesPointerControl('pickUpItem', pointer) && this.takeWatchtowerMap()) {
         return;
+      }
+      if (this.matchesPointerControl('enterExitCave', pointer)) {
+        if (this.landmarkInteriorStairTarget) {
+          void this.changeWatchtowerFloor(this.landmarkInteriorStairTarget);
+          return;
+        }
+        if (this.landmarkInteriorExitNearby) {
+          void this.exitLandmarkInterior();
+          return;
+        }
       }
       if (this.matchesPointerControl('openInventory', pointer)) {
         this.toggleInventory();
@@ -3346,7 +3374,8 @@ export class AdventureScene extends Phaser.Scene {
     returnWorldX: number,
     returnWorldY: number,
     markDirty = true,
-    continueExistingLoading = false
+    continueExistingLoading = false,
+    floorNumber: LandmarkInteriorFloor = 1
   ): Promise<void> {
     if (this.caveTransitionInProgress || !isLandmarkInteriorType(landmark.type)) {
       return;
@@ -3361,6 +3390,7 @@ export class AdventureScene extends Phaser.Scene {
     this.nearbyLandmarkEntrance = null;
     this.nearbyCaveEntrance = null;
     this.landmarkInteriorExitNearby = false;
+    this.landmarkInteriorStairTarget = null;
     this.surfaceLandmarkMaterialTarget = null;
     this.interactionHighlight.setVisible(false);
     this.hideLandmarkHint();
@@ -3370,8 +3400,8 @@ export class AdventureScene extends Phaser.Scene {
 
     try {
       await this.waitForTerrainLoadingPaint();
-      const layout = generateLandmarkInterior(this.worldSeed, landmark);
-      const origin = landmarkInteriorWorldOrigin(this.worldSeed, landmark);
+      const layout = generateLandmarkInterior(this.worldSeed, landmark, floorNumber);
+      const origin = landmarkInteriorWorldOrigin(this.worldSeed, landmark, floorNumber);
       this.updateLoadingProgress(58, 100, `Growing ${layout.themeLabel}`);
       await this.waitForTerrainLoadingPaint();
 
@@ -3393,7 +3423,9 @@ export class AdventureScene extends Phaser.Scene {
       this.cameras.main.centerOn(spawn.x, spawn.y);
       this.isSwimming = false;
       this.isSwimmingInSwampWater = false;
-      this.terrainSurface = layout.floorLabel;
+      this.terrainSurface = layout.themeId === 'watchtower'
+        ? `${layout.floorLabel} · floor ${layout.floorNumber}`
+        : layout.floorLabel;
       this.minimapOverlay.setVisible(false);
       this.drawActiveLandmarkInterior();
       this.lastLandmarkInteriorAccentFrame = Number.NEGATIVE_INFINITY;
@@ -3448,6 +3480,7 @@ export class AdventureScene extends Phaser.Scene {
 
       this.activeLandmarkInterior = null;
       this.landmarkInteriorExitNearby = false;
+      this.landmarkInteriorStairTarget = null;
       this.interiorLandmarkMaterialTarget = null;
       this.interiorLandmarkHarvestMaterial = null;
       this.landmarkInteriorGraphics.clear().setVisible(false);
@@ -3474,6 +3507,72 @@ export class AdventureScene extends Phaser.Scene {
       await this.finishTerrainLoading();
     } catch (error) {
       this.recoverFromTerrainLoadingFailure('leave the landmark', error);
+    }
+  }
+
+  private async changeWatchtowerFloor(stair: LandmarkInteriorStair): Promise<void> {
+    const previous = this.activeLandmarkInterior;
+    if (!previous || previous.landmark.type !== LandmarkType.Watchtower || this.caveTransitionInProgress) {
+      return;
+    }
+
+    this.caveTransitionInProgress = true;
+    this.worldReady = false;
+    this.cancelHarvesting();
+    this.landmarkInteriorStairTarget = null;
+    this.landmarkInteriorExitNearby = false;
+    this.interactionHighlight.setVisible(false);
+    this.hideLandmarkHint();
+    this.cameras.main.fadeOut(170, 13, 17, 18);
+    await new Promise<void>((resolve) => this.time.delayedCall(175, () => resolve()));
+
+    try {
+      const layout = generateLandmarkInterior(this.worldSeed, previous.landmark, stair.targetFloor);
+      const origin = landmarkInteriorWorldOrigin(this.worldSeed, previous.landmark, stair.targetFloor);
+      this.activeLandmarkInterior = {
+        landmark: previous.landmark,
+        layout,
+        origin,
+        materialBuckets: createLandmarkMaterialBuckets(layout.materialNodes),
+        returnWorldX: previous.returnWorldX,
+        returnWorldY: previous.returnWorldY
+      };
+
+      const arrivalStair = layout.stairs.find((candidate) => candidate.targetFloor === previous.layout.floorNumber);
+      const arrivalTile = arrivalStair ?? { tileX: layout.spawnTileX, tileY: layout.spawnTileY };
+      const arrival = landmarkInteriorWorldTilePosition(origin, arrivalTile.tileX, arrivalTile.tileY);
+      let arrivalX = arrival.x;
+      let arrivalY = arrival.y;
+      const room = layout.terrain.rooms[0];
+      if (arrivalStair && room) {
+        const stairTileX = arrivalStair.tileX + 0.5;
+        const stairTileY = arrivalStair.tileY + 0.5;
+        const deltaX = room.x - stairTileX;
+        const deltaY = room.y - stairTileY;
+        const length = Math.max(0.001, Math.hypot(deltaX, deltaY));
+        arrivalX += deltaX / length * WORLD_TILE_SIZE * 1.45;
+        arrivalY += deltaY / length * WORLD_TILE_SIZE * 1.45;
+      }
+      this.player.setPosition(arrivalX, arrivalY);
+      this.cameras.main.centerOn(arrivalX, arrivalY);
+      this.terrainSurface = `${layout.floorLabel} · floor ${layout.floorNumber}`;
+      this.drawActiveLandmarkInterior();
+      this.lastLandmarkInteriorAccentFrame = Number.NEGATIVE_INFINITY;
+      this.updateLandmarkInteriorAccents(this.time.now, true);
+      this.updateLandmarkInteriorInteraction(true);
+      this.updateDropInteraction(this.time.now, true);
+      this.updatePlayerAvatar(0, false);
+      this.markSaveDirty();
+      this.cameras.main.fadeIn(190, 13, 17, 18);
+    } catch (error) {
+      this.activeLandmarkInterior = previous;
+      this.drawActiveLandmarkInterior();
+      this.cameras.main.centerOn(this.player.x, this.player.y);
+      this.cameras.main.fadeIn(190, 13, 17, 18);
+      console.error('Wildbound could not change watchtower floors.', error);
+    } finally {
+      this.worldReady = true;
+      this.caveTransitionInProgress = false;
     }
   }
 
@@ -3575,11 +3674,19 @@ export class AdventureScene extends Phaser.Scene {
 
     if (layout.themeId === 'hollow-tree') {
       this.drawAncientTreeInteriorArchitecture(interior);
+    } else if (layout.themeId === 'watchtower') {
+      this.drawWatchtowerInteriorArchitecture(interior);
     }
     this.drawLandmarkInteriorFloorTexture(interior);
+    if (layout.themeId === 'watchtower' && layout.floorNumber === 3) {
+      this.drawWatchtowerCartographyFurniture(interior);
+    }
     layout.decorations.filter((decoration) => decoration.layer === 'floor')
       .forEach((decoration) => this.drawLandmarkInteriorDecoration(decoration, interior));
-    this.drawLandmarkInteriorExit(interior);
+    if (layout.exit) {
+      this.drawLandmarkInteriorExit(interior);
+    }
+    this.drawLandmarkInteriorStairs(interior);
     layout.decorations.filter((decoration) => decoration.layer === 'object')
       .forEach((decoration) => this.drawLandmarkInteriorDecoration(decoration, interior));
     layout.materialNodes.forEach((material) => {
@@ -3639,6 +3746,171 @@ export class AdventureScene extends Phaser.Scene {
     }
   }
 
+  private drawWatchtowerInteriorArchitecture(interior: ActiveLandmarkInterior): void {
+    const room = interior.layout.terrain.rooms[0];
+    if (!room) return;
+    const graphics = this.landmarkInteriorGraphics;
+    const palette = interior.layout.palette;
+    const centerX = interior.origin.x + room.x * WORLD_TILE_SIZE;
+    const centerY = interior.origin.y + room.y * WORLD_TILE_SIZE;
+
+    // Layered inner masonry preserves the existing stone-wall language while making the circular
+    // footprint read as a single tower shell instead of a painted floor floating in darkness.
+    [0.988, 0.971, 0.948].forEach((scale, index) => {
+      graphics.lineStyle(7 - index * 1.7, index === 1 ? palette.wallBase : palette.wallHighlight, 0.62 - index * 0.1);
+      graphics.strokePoints(this.landmarkInteriorRoomPoints(room, interior.origin, scale), true);
+    });
+    for (let stone = 0; stone < 44; stone += 1) {
+      const seeded = this.landmarkInteriorVisualRandom(interior, stone, interior.layout.floorNumber, 0x7a41);
+      const angle = stone / 44 * Math.PI * 2 + (seeded - 0.5) * 0.025;
+      const x = centerX + Math.cos(angle) * room.radiusX * WORLD_TILE_SIZE * 0.964;
+      const y = centerY + Math.sin(angle) * room.radiusY * WORLD_TILE_SIZE * 0.964;
+      graphics.fillStyle(stone % 3 === 0 ? palette.wallHighlight : palette.wallBase, 0.36 + seeded * 0.18);
+      graphics.fillEllipse(x, y, 19 + seeded * 12, 11 + (1 - seeded) * 7);
+      graphics.lineStyle(1, palette.wallShadow, 0.42);
+      graphics.strokeEllipse(x, y, 19 + seeded * 12, 11 + (1 - seeded) * 7);
+    }
+
+    // Structural joists remain beneath the detailed boards. Their restrained contrast gives the
+    // room believable construction without turning the floor into a radial icon.
+    for (let joist = 0; joist < 8; joist += 1) {
+      const angle = joist / 8 * Math.PI;
+      const reachX = Math.cos(angle) * room.radiusX * WORLD_TILE_SIZE * 0.82;
+      const reachY = Math.sin(angle) * room.radiusY * WORLD_TILE_SIZE * 0.82;
+      graphics.lineStyle(8, palette.wallShadow, 0.24);
+      graphics.lineBetween(centerX - reachX, centerY - reachY, centerX + reachX, centerY + reachY);
+      graphics.lineStyle(2, palette.floorDetail, 0.18);
+      graphics.lineBetween(centerX - reachX, centerY - reachY - 2, centerX + reachX, centerY + reachY - 2);
+    }
+
+    if (interior.layout.floorNumber === 3) {
+      graphics.lineStyle(3, palette.primaryAccent, 0.48);
+      graphics.strokeCircle(centerX, centerY, 78);
+      graphics.strokeCircle(centerX, centerY, 63);
+      for (let point = 0; point < 16; point += 1) {
+        const angle = point / 16 * Math.PI * 2;
+        const outerRadius = point % 2 ? 76 : 62;
+        graphics.lineBetween(
+          centerX + Math.cos(angle) * 25,
+          centerY + Math.sin(angle) * 25,
+          centerX + Math.cos(angle) * outerRadius,
+          centerY + Math.sin(angle) * outerRadius
+        );
+      }
+      graphics.fillStyle(palette.primaryAccent, 0.56);
+      graphics.fillCircle(centerX, centerY, 7);
+    }
+  }
+
+  private drawLandmarkInteriorStairs(interior: ActiveLandmarkInterior): void {
+    const graphics = this.landmarkInteriorGraphics;
+    const palette = interior.layout.palette;
+    interior.layout.stairs.forEach((stair) => {
+      const position = landmarkInteriorWorldTilePosition(interior.origin, stair.tileX, stair.tileY);
+      const pointsUp = stair.direction === 'up';
+      graphics.fillStyle(palette.wallShadow, 0.94);
+      graphics.fillEllipse(position.x, position.y + (pointsUp ? -2 : 5), 126, 82);
+      graphics.lineStyle(5, palette.wallBase, 0.98);
+      graphics.strokeEllipse(position.x, position.y + 2, 122, 78);
+      for (let step = 0; step < 7; step += 1) {
+        const progress = step / 6;
+        const width = 92 - progress * 36;
+        const y = position.y + (pointsUp ? 27 - step * 9 : -27 + step * 9);
+        graphics.fillStyle(step % 2 ? palette.floorAccent : palette.floorDetail, 0.98);
+        graphics.fillRoundedRect(position.x - width * 0.5, y - 5, width, 10, 2);
+        graphics.lineStyle(1.5, palette.wallShadow, 0.75);
+        graphics.lineBetween(position.x - width * 0.5 + 3, y + 4, position.x + width * 0.5 - 3, y + 4);
+        for (let grain = -1; grain <= 1; grain += 1) {
+          graphics.lineStyle(1, palette.floorBase, 0.34);
+          graphics.lineBetween(position.x - width * 0.37, y + grain * 2, position.x + width * 0.31, y + grain * 2);
+        }
+      }
+      graphics.lineStyle(5, palette.primaryAccent, 0.82);
+      graphics.lineBetween(position.x - 56, position.y - 32, position.x - 43, position.y + 34);
+      graphics.lineBetween(position.x + 56, position.y - 32, position.x + 43, position.y + 34);
+      for (let rail = -1; rail <= 1; rail += 2) {
+        graphics.fillStyle(palette.primaryAccent, 0.9);
+        graphics.fillCircle(position.x + rail * 54, position.y - 32, 5);
+      }
+    });
+  }
+
+  private drawWatchtowerCartographyFurniture(interior: ActiveLandmarkInterior): void {
+    const map = interior.layout.materialNodes.find((material) => material.resource === ResourceType.MapFragments);
+    const room = interior.layout.terrain.rooms[0];
+    if (!map || !room) return;
+    const graphics = this.landmarkInteriorGraphics;
+    const palette = interior.layout.palette;
+    const position = landmarkInteriorWorldTilePosition(interior.origin, map.tileX, map.tileY);
+    const scale = map.scale * 1.22;
+    const point = (x: number, y: number): CaveRenderPoint => this.rotatedInteriorPoint(
+      position.x, position.y, x * scale, y * scale, map.rotation
+    );
+    const shadow = [point(-52, -27), point(52, -27), point(46, 34), point(-46, 34)];
+    graphics.fillStyle(palette.wallShadow, 0.98);
+    graphics.fillPoints(shadow, true);
+    const tabletop = [point(-49, -32), point(49, -32), point(45, 24), point(-45, 24)];
+    graphics.fillStyle(palette.floorAccent, 1);
+    graphics.fillPoints(tabletop, true);
+    graphics.lineStyle(5 * scale, palette.primaryAccent, 0.9);
+    graphics.strokePoints(tabletop, true);
+    for (let board = -1; board <= 1; board += 1) {
+      const from = point(-43, board * 15 - 4);
+      const to = point(43, board * 15 - 4);
+      graphics.lineStyle(1.3 * scale, palette.wallShadow, 0.55);
+      graphics.lineBetween(from.x, from.y, to.x, to.y);
+    }
+    for (let leg = -1; leg <= 1; leg += 2) {
+      const top = point(leg * 34, 24);
+      const bottom = point(leg * 36, 43);
+      graphics.lineStyle(9 * scale, palette.wallShadow, 0.94);
+      graphics.lineBetween(top.x, top.y, bottom.x, bottom.y);
+      graphics.lineStyle(2 * scale, palette.floorDetail, 0.42);
+      graphics.lineBetween(top.x, top.y, bottom.x, bottom.y);
+    }
+
+    const centerX = interior.origin.x + room.x * WORLD_TILE_SIZE;
+    const centerY = interior.origin.y + room.y * WORLD_TILE_SIZE;
+    // Curved archive cabinets and rolled charts occupy the back wall without blocking the path
+    // between the arrival stair and drafting table.
+    for (let cabinet = -1; cabinet <= 1; cabinet += 1) {
+      const x = centerX + cabinet * 128;
+      const y = centerY - room.radiusY * WORLD_TILE_SIZE * 0.67 + Math.abs(cabinet) * 20;
+      graphics.fillStyle(palette.wallShadow, 0.94);
+      graphics.fillRoundedRect(x - 54, y - 24, 108, 48, 7);
+      graphics.fillStyle(palette.floorAccent, 0.96);
+      graphics.fillRoundedRect(x - 49, y - 20, 98, 39, 5);
+      graphics.lineStyle(2, palette.primaryAccent, 0.7);
+      graphics.strokeRoundedRect(x - 49, y - 20, 98, 39, 5);
+      for (let roll = 0; roll < 6; roll += 1) {
+        const rollX = x - 37 + roll * 15;
+        graphics.fillStyle(roll % 2 ? 0xd2c092 : 0x9d8a63, 0.92);
+        graphics.fillRoundedRect(rollX - 5, y - 12 + (roll % 3) * 3, 10, 25 - (roll % 3) * 3, 3);
+        graphics.fillStyle(palette.wallShadow, 0.65);
+        graphics.fillCircle(rollX, y - 10 + (roll % 3) * 3, 2.3);
+      }
+    }
+
+    const instrumentX = centerX + room.radiusX * WORLD_TILE_SIZE * 0.47;
+    const instrumentY = centerY - 10;
+    graphics.fillStyle(palette.wallShadow, 0.8);
+    graphics.fillEllipse(instrumentX, instrumentY + 18, 72, 34);
+    graphics.lineStyle(5, palette.primaryAccent, 0.88);
+    graphics.strokeCircle(instrumentX, instrumentY, 28);
+    graphics.strokeCircle(instrumentX, instrumentY, 17);
+    for (let spoke = 0; spoke < 8; spoke += 1) {
+      const angle = spoke / 8 * Math.PI * 2;
+      graphics.lineBetween(
+        instrumentX + Math.cos(angle) * 8,
+        instrumentY + Math.sin(angle) * 8,
+        instrumentX + Math.cos(angle) * 25,
+        instrumentY + Math.sin(angle) * 25
+      );
+    }
+    graphics.fillStyle(palette.glow, 0.52);
+    graphics.fillCircle(instrumentX, instrumentY, 7);
+  }
+
   private landmarkInteriorVisualRandom(
     interior: ActiveLandmarkInterior,
     tileX: number,
@@ -3665,21 +3937,37 @@ export class AdventureScene extends Phaser.Scene {
         const centerX = origin.x + (tileX + 0.5) * WORLD_TILE_SIZE;
         const centerY = origin.y + (tileY + 0.5) * WORLD_TILE_SIZE;
         if (layout.themeId === 'watchtower') {
-          const plankY = origin.y + tileY * WORLD_TILE_SIZE + 8 + (tileX % 3) * 3;
-          graphics.lineStyle(1.4, layout.palette.floorDetail, 0.25 + random * 0.22);
-          graphics.lineBetween(
-            origin.x + tileX * WORLD_TILE_SIZE + 3,
-            plankY,
-            origin.x + (tileX + 1) * WORLD_TILE_SIZE - 3,
-            plankY + (random - 0.5) * 3
-          );
-          graphics.lineStyle(1, layout.palette.wallShadow, 0.34);
-          graphics.lineBetween(
-            origin.x + tileX * WORLD_TILE_SIZE,
-            origin.y + (tileY + 1) * WORLD_TILE_SIZE - 3,
-            origin.x + (tileX + 1) * WORLD_TILE_SIZE,
-            origin.y + (tileY + 1) * WORLD_TILE_SIZE - 3
-          );
+          const left = origin.x + tileX * WORLD_TILE_SIZE;
+          const top = origin.y + tileY * WORLD_TILE_SIZE;
+          const boardColor = random > 0.58 ? layout.palette.floorAccent : layout.palette.floorBase;
+          graphics.fillStyle(boardColor, 0.24 + random * 0.12);
+          graphics.fillRect(left, top, WORLD_TILE_SIZE, WORLD_TILE_SIZE);
+          // Two long, staggered boards per tile keep seams continuous across tile boundaries.
+          [0, WORLD_TILE_SIZE * 0.5].forEach((offsetY, row) => {
+            graphics.lineStyle(2, layout.palette.wallShadow, 0.62);
+            graphics.lineBetween(left, top + offsetY, left + WORLD_TILE_SIZE, top + offsetY);
+            const jointAtLeft = (tileX + tileY + row) % 3 === 0;
+            if (jointAtLeft) {
+              graphics.lineStyle(1.6, layout.palette.wallShadow, 0.56);
+              graphics.lineBetween(left + 1, top + offsetY + 2, left + 1, top + offsetY + 14);
+            }
+            for (let grain = 0; grain < 3; grain += 1) {
+              const grainRandom = this.landmarkInteriorVisualRandom(
+                interior,
+                tileX * 7 + grain,
+                tileY * 5 + row,
+                0x5d21 + layout.floorNumber * 29
+              );
+              const grainY = top + offsetY + 4 + grain * 3.5 + grainRandom * 2;
+              const inset = 3 + grainRandom * 7;
+              graphics.lineStyle(0.8 + grainRandom * 0.7, layout.palette.floorDetail, 0.17 + grainRandom * 0.2);
+              graphics.lineBetween(left + inset, grainY, left + WORLD_TILE_SIZE - 3, grainY + (grainRandom - 0.5) * 2);
+            }
+          });
+          if (random > 0.72) {
+            graphics.fillStyle(layout.palette.primaryAccent, 0.48);
+            graphics.fillCircle(left + 4 + random * 22, top + 8 + (tileY % 2) * 16, 1.7);
+          }
         } else if (random > 0.43) {
           const angle = this.landmarkInteriorVisualRandom(interior, tileX, tileY, 0x73d1) * Math.PI * 2;
           const length = 5 + random * 12;
@@ -3960,7 +4248,9 @@ export class AdventureScene extends Phaser.Scene {
 
   private drawLandmarkInteriorExit(interior: ActiveLandmarkInterior): void {
     const { layout, origin } = interior;
-    const position = landmarkInteriorWorldTilePosition(origin, layout.exit.tileX, layout.exit.tileY);
+    const exit = layout.exit;
+    if (!exit) return;
+    const position = landmarkInteriorWorldTilePosition(origin, exit.tileX, exit.tileY);
     const graphics = this.landmarkInteriorGraphics;
     const palette = layout.palette;
     graphics.fillStyle(palette.wallShadow, 0.94);
@@ -4084,18 +4374,25 @@ export class AdventureScene extends Phaser.Scene {
         }
         break;
       case 'map-cache': {
-        const chest = [point(-27, -16), point(27, -16), point(24, 20), point(-24, 20)];
-        graphics.fillStyle(palette.wallBase, 0.98);
-        graphics.fillPoints(chest, true);
-        graphics.lineStyle(4, palette.primaryAccent, 0.88);
-        graphics.strokePoints(chest, true);
-        for (let map = -2; map <= 2; map += 1) {
-          const mapPoint = point(map * 9, -20 + Math.abs(map) * 3);
-          graphics.fillStyle(color, 0.92);
-          graphics.fillRoundedRect(mapPoint.x - 5 * scale, mapPoint.y - 11 * scale, 10 * scale, 22 * scale, 3 * scale);
-          graphics.lineStyle(1.2, palette.wallShadow, 0.62);
-          graphics.strokeCircle(mapPoint.x, mapPoint.y, 4 * scale);
-        }
+        const parchment = [point(-38, -23), point(35, -20), point(39, 17), point(-34, 20)];
+        graphics.fillStyle(color, 0.98);
+        graphics.fillPoints(parchment, true);
+        graphics.lineStyle(1.7 * scale, palette.wallShadow, 0.7);
+        graphics.strokePoints(parchment, true);
+        // Coastlines, routes, settlements, and a compass rose make this a readable hand-drawn
+        // map rather than a row of inventory icons.
+        const route = [point(-25, 7), point(-13, -7), point(1, 3), point(17, -10), point(27, -4)];
+        graphics.lineStyle(1.8 * scale, palette.wallBase, 0.76);
+        graphics.strokePoints(route, false);
+        [point(-13, -7), point(1, 3), point(17, -10)].forEach((settlement) => {
+          graphics.fillStyle(palette.primaryAccent, 0.92);
+          graphics.fillCircle(settlement.x, settlement.y, 2.8 * scale);
+        });
+        const compass = point(22, 8);
+        graphics.lineStyle(1.3 * scale, palette.wallBase, 0.8);
+        graphics.strokeCircle(compass.x, compass.y, 7 * scale);
+        graphics.lineBetween(compass.x, compass.y - 9 * scale, compass.x, compass.y + 9 * scale);
+        graphics.lineBetween(compass.x - 9 * scale, compass.y, compass.x + 9 * scale, compass.y);
         break;
       }
       case 'mechanical-salvage':
@@ -4135,6 +4432,10 @@ export class AdventureScene extends Phaser.Scene {
     material: LandmarkInteriorMaterialNode,
     interior: ActiveLandmarkInterior
   ): void {
+    if (material.resource === ResourceType.MapFragments
+      && interior.landmark.type === LandmarkType.Watchtower) {
+      return;
+    }
     const position = landmarkInteriorWorldTilePosition(interior.origin, material.tileX, material.tileY);
     const graphics = this.landmarkInteriorGraphics;
     graphics.fillStyle(interior.layout.palette.wallShadow, 0.52);
@@ -4198,9 +4499,18 @@ export class AdventureScene extends Phaser.Scene {
       }
     });
 
-    const exitPosition = landmarkInteriorWorldTilePosition(interior.origin, interior.layout.exit.tileX, interior.layout.exit.tileY);
-    graphics.fillStyle(palette.ambientLight, palette.ambientLightStrength * (0.045 + pulse * 0.025));
-    graphics.fillCircle(exitPosition.x, exitPosition.y, 76 + pulse * 9);
+    const exit = interior.layout.exit;
+    if (exit) {
+      const exitPosition = landmarkInteriorWorldTilePosition(interior.origin, exit.tileX, exit.tileY);
+      graphics.fillStyle(palette.ambientLight, palette.ambientLightStrength * (0.045 + pulse * 0.025));
+      graphics.fillCircle(exitPosition.x, exitPosition.y, 76 + pulse * 9);
+    }
+    interior.layout.stairs.forEach((stair, index) => {
+      const position = landmarkInteriorWorldTilePosition(interior.origin, stair.tileX, stair.tileY);
+      const stairPulse = 0.5 + Math.sin(time * 0.0018 + index * 2.1) * 0.5;
+      graphics.fillStyle(palette.ambientLight, 0.025 + stairPulse * 0.025);
+      graphics.fillEllipse(position.x, position.y, 118 + stairPulse * 7, 77 + stairPulse * 4);
+    });
   }
 
   private updateLandmarkInterior(time: number, delta: number): void {
@@ -4285,18 +4595,30 @@ export class AdventureScene extends Phaser.Scene {
     if (!interior) {
       return;
     }
-    const exitPosition = landmarkInteriorWorldTilePosition(
-      interior.origin,
-      interior.layout.exit.tileX,
-      interior.layout.exit.tileY
-    );
-    const exitRadius = interior.layout.exit.interactionRadiusTiles * WORLD_TILE_SIZE;
-    this.landmarkInteriorExitNearby = Phaser.Math.Distance.Squared(
+    const exit = interior.layout.exit;
+    const exitPosition = exit
+      ? landmarkInteriorWorldTilePosition(interior.origin, exit.tileX, exit.tileY)
+      : null;
+    const exitRadius = (exit?.interactionRadiusTiles ?? 0) * WORLD_TILE_SIZE;
+    this.landmarkInteriorExitNearby = Boolean(exitPosition && Phaser.Math.Distance.Squared(
       this.player.x,
       this.player.y,
       exitPosition.x,
       exitPosition.y
-    ) <= exitRadius * exitRadius;
+    ) <= exitRadius * exitRadius);
+
+    let nearestStair: LandmarkInteriorStair | null = null;
+    let nearestStairDistanceSquared = Number.POSITIVE_INFINITY;
+    interior.layout.stairs.forEach((stair) => {
+      const position = landmarkInteriorWorldTilePosition(interior.origin, stair.tileX, stair.tileY);
+      const distanceSquared = Phaser.Math.Distance.Squared(this.player.x, this.player.y, position.x, position.y);
+      const radius = stair.interactionRadiusTiles * WORLD_TILE_SIZE;
+      if (distanceSquared <= radius * radius && distanceSquared < nearestStairDistanceSquared) {
+        nearestStair = stair;
+        nearestStairDistanceSquared = distanceSquared;
+      }
+    });
+    this.landmarkInteriorStairTarget = nearestStair;
 
     let nearest: LandmarkInteriorMaterialNode | null = null;
     let nearestDistanceSquared = 88 * 88;
@@ -4321,7 +4643,18 @@ export class AdventureScene extends Phaser.Scene {
     }
     this.interiorLandmarkMaterialTarget = nearest;
 
-    if (this.landmarkInteriorExitNearby) {
+    if (nearestStair) {
+      const stair = nearestStair as LandmarkInteriorStair;
+      const position = landmarkInteriorWorldTilePosition(interior.origin, stair.tileX, stair.tileY);
+      this.interiorLandmarkMaterialTarget = null;
+      this.interactionHighlight.setRadius(48).setPosition(position.x, position.y).setVisible(true);
+      this.drawLandmarkHint(
+        stair.direction === 'up' ? 'Press E to ascend' : 'Press E to descend',
+        position.x,
+        position.y - 68,
+        interior.layout.palette.primaryAccent
+      );
+    } else if (this.landmarkInteriorExitNearby && exitPosition) {
       this.interiorLandmarkMaterialTarget = null;
       this.interactionHighlight.setRadius(43).setPosition(exitPosition.x, exitPosition.y).setVisible(true);
       this.drawLandmarkHint('Press E to exit', exitPosition.x, exitPosition.y - 61, interior.layout.palette.wallHighlight);
@@ -4329,7 +4662,11 @@ export class AdventureScene extends Phaser.Scene {
       const material = nearest as LandmarkInteriorMaterialNode;
       const position = landmarkInteriorWorldTilePosition(interior.origin, material.tileX, material.tileY);
       this.interactionHighlight.setRadius(34).setPosition(position.x, position.y).setVisible(true);
-      this.hideLandmarkHint();
+      if (material.resource === ResourceType.MapFragments && interior.layout.floorNumber === 3) {
+        this.drawLandmarkHint('Press E to take the map', position.x, position.y - 76, interior.layout.palette.primaryAccent);
+      } else {
+        this.hideLandmarkHint();
+      }
     } else {
       this.interactionHighlight.setVisible(false);
       this.hideLandmarkHint();
@@ -4363,6 +4700,30 @@ export class AdventureScene extends Phaser.Scene {
       default:
         return 1250;
     }
+  }
+
+  private takeWatchtowerMap(): boolean {
+    const interior = this.activeLandmarkInterior;
+    const material = this.interiorLandmarkMaterialTarget;
+    if (!interior || interior.landmark.type !== LandmarkType.Watchtower
+      || interior.layout.floorNumber !== 3 || material?.resource !== ResourceType.MapFragments) {
+      return false;
+    }
+    if (!this.inventory.canAdd(material.resource, material.yieldAmount)) {
+      this.showWorldFeedback(this.player.x, this.player.y - 28, 'Inventory full');
+      return true;
+    }
+    if (!this.sessionWorldState.harvestLandmarkMaterial(material.id)) {
+      this.updateLandmarkInteriorInteraction(true);
+      return true;
+    }
+    this.inventory.add(material.resource, material.yieldAmount);
+    this.showWorldFeedback(this.player.x, this.player.y - 28, '+ 1 Cartographer\'s Map');
+    this.handleInventoryChanged();
+    this.drawActiveLandmarkInterior();
+    this.updateLandmarkInteriorAccents(this.time.now, true);
+    this.updateLandmarkInteriorInteraction(true);
+    return true;
   }
 
   private updateLandmarkMaterialHarvesting(delta: number, insideInterior: boolean): void {
@@ -6183,7 +6544,10 @@ export class AdventureScene extends Phaser.Scene {
         centerTileX: this.activeLandmarkInterior.landmark.centerTileX,
         centerTileY: this.activeLandmarkInterior.landmark.centerTileY,
         returnWorldX: this.activeLandmarkInterior.returnWorldX,
-        returnWorldY: this.activeLandmarkInterior.returnWorldY
+        returnWorldY: this.activeLandmarkInterior.returnWorldY,
+        ...(this.activeLandmarkInterior.landmark.type === LandmarkType.Watchtower
+          ? { floorNumber: this.activeLandmarkInterior.layout.floorNumber }
+          : {})
       } : undefined
     };
 
@@ -6220,11 +6584,14 @@ export class AdventureScene extends Phaser.Scene {
         `Landmark    ${interior.landmark.label}`,
         `Location    ${interior.layout.themeLabel}`,
         `Interior    ${interior.layout.width} x ${interior.layout.height} tiles`,
+        `Tower floor ${interior.landmark.type === LandmarkType.Watchtower ? `${interior.layout.floorNumber} / 3` : 'single level'}`,
         `Tile        ${localTileX}, ${localTileY}`,
         `Floor       ${interior.layout.floorLabel}`,
         `Target      ${this.interiorLandmarkMaterialTarget
           ? resourceLabel(this.interiorLandmarkMaterialTarget.resource)
-          : this.landmarkInteriorExitNearby ? 'exit' : 'none'}`,
+          : this.landmarkInteriorStairTarget
+            ? `${this.landmarkInteriorStairTarget.direction} stairs`
+            : this.landmarkInteriorExitNearby ? 'exit' : 'none'}`,
         `Materials   ${remainingMaterials} remaining / ${interior.layout.materialNodes.length} generated`,
         `Harvested   ${this.sessionWorldState.harvestedLandmarkMaterialCount} landmark materials`,
         `Renderer    ${this.renderBackend}`,

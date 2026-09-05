@@ -28,6 +28,8 @@ export interface ActiveLandmarkInteriorSaveData {
   centerTileY: number;
   returnWorldX: number;
   returnWorldY: number;
+  // Optional for backward compatibility with single-floor landmark-interior saves.
+  floorNumber?: 1 | 2 | 3;
 }
 
 export interface ActivePotionSaveData {
@@ -75,7 +77,10 @@ const isActiveLandmarkInteriorSaveData = (value: unknown): value is ActiveLandma
     && Number.isSafeInteger(interior.centerTileX)
     && Number.isSafeInteger(interior.centerTileY)
     && Number.isFinite(interior.returnWorldX)
-    && Number.isFinite(interior.returnWorldY);
+    && Number.isFinite(interior.returnWorldY)
+    && (interior.floorNumber === undefined
+      || (interior.landmarkType === LandmarkType.Watchtower
+        && (interior.floorNumber === 1 || interior.floorNumber === 2 || interior.floorNumber === 3)));
 };
 
 export const isSaveGameData = (value: unknown): value is SaveGameData => {

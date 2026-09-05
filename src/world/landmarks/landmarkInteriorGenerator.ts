@@ -15,6 +15,8 @@ export type LandmarkInteriorThemeId = 'hollow-tree' | 'hidden-grotto' | 'watchto
 export type LandmarkInteriorRoomShape = 'ellipse' | 'rounded-rect';
 export type LandmarkInteriorDecorationLayer = 'floor' | 'object' | 'overhead';
 export type LandmarkInteriorExitFacing = 'north' | 'east' | 'south' | 'west';
+export type LandmarkInteriorFloor = 1 | 2 | 3;
+export type LandmarkInteriorStairDirection = 'up' | 'down';
 
 export type LandmarkInteriorMaterialStyle =
   | 'ancient-wood-knot'
@@ -165,6 +167,16 @@ export interface LandmarkInteriorExit {
   readonly interactionRadiusTiles: number;
 }
 
+export interface LandmarkInteriorStair {
+  readonly id: string;
+  readonly tileX: number;
+  readonly tileY: number;
+  readonly direction: LandmarkInteriorStairDirection;
+  readonly targetFloor: LandmarkInteriorFloor;
+  readonly label: string;
+  readonly interactionRadiusTiles: number;
+}
+
 export interface LandmarkInteriorLayout {
   readonly id: string;
   readonly generationVersion: number;
@@ -175,9 +187,11 @@ export interface LandmarkInteriorLayout {
   readonly floorLabel: string;
   readonly width: number;
   readonly height: number;
+  readonly floorNumber: LandmarkInteriorFloor;
   readonly spawnTileX: number;
   readonly spawnTileY: number;
-  readonly exit: LandmarkInteriorExit;
+  readonly exit: LandmarkInteriorExit | null;
+  readonly stairs: readonly LandmarkInteriorStair[];
   readonly terrain: LandmarkInteriorTerrain;
   readonly floorTiles: readonly (readonly boolean[])[];
   readonly materialNodes: readonly LandmarkInteriorMaterialNode[];
@@ -297,8 +311,13 @@ interface InteriorTemplate {
   readonly width: number;
   readonly height: number;
   readonly terrain: LandmarkInteriorTerrain;
-  readonly desiredExit: LandmarkInteriorPoint;
+  readonly desiredExit: LandmarkInteriorPoint | null;
   readonly desiredSpawn: LandmarkInteriorPoint;
+  readonly desiredStairs: readonly {
+    readonly direction: LandmarkInteriorStairDirection;
+    readonly targetFloor: LandmarkInteriorFloor;
+    readonly point: LandmarkInteriorPoint;
+  }[];
 }
 
 interface CandidateTile {
@@ -308,6 +327,13 @@ interface CandidateTile {
 
 const INTERIOR_WORLD_OFFSET = 20_000_013;
 const INTERIOR_WORLD_ORIGIN_STRIDE = 32_768;
+// Watchtower floors live in bounded, hashed lanes. The former landmark-coordinate multiplication
+// could place a tower hundreds of millions of pixels from (0, 0), beyond reliable WebGL sub-pixel
+// precision and visibly jittering the camera and avatar during otherwise smooth movement.
+const WATCHTOWER_WORLD_OFFSET = 500_003;
+const WATCHTOWER_WORLD_ORIGIN_STRIDE = 2_048;
+const WATCHTOWER_WORLD_LANE_MASK = 1_023;
+const WATCHTOWER_INTERIOR_GENERATION_VERSION = 3;
 const MAX_LANDMARK_ID_LENGTH = 200;
 const TWO_PI = Math.PI * 2;
 
@@ -430,7 +456,8 @@ const treeTemplate = (random: InteriorRandom): InteriorTemplate => {
     height,
     terrain: { rooms: [room], passages: [] },
     desiredExit: { x: centerX, y: centerY + room.radiusY * 0.9 },
-    desiredSpawn: { x: centerX, y: centerY + room.radiusY * 0.64 }
+    desiredSpawn: { x: centerX, y: centerY + room.radiusY * 0.64 },
+    desiredStairs: []
   };
 };
 
@@ -457,34 +484,52 @@ const waterfallTemplate = (random: InteriorRandom): InteriorTemplate => {
     height,
     terrain: { rooms, passages },
     desiredExit: { x: width * 0.49, y: height - 2.6 },
-    desiredSpawn: { x: width * 0.49, y: height - 7.4 }
+    desiredSpawn: { x: width * 0.49, y: height - 7.4 },
+    desiredStairs: []
   };
 };
 
-const watchtowerTemplate = (random: InteriorRandom): InteriorTemplate => {
-  const width = random.integer(37, 42);
-  const height = random.integer(42, 48);
-  const rooms = [
-    createRoom(random, 'tower-door', 'entry', 'rounded-rect', width * 0.50, height - 5, 4.8, 4.2, 0.025, 0.35),
-    createRoom(random, 'round-hall', 'round-hall', 'ellipse', width * 0.50, height * 0.61, 9.4, 8.4, 0.025, 0.3),
-    createRoom(random, 'map-archive', 'map-archive', 'rounded-rect', width * 0.25, height * 0.57, 6.1, 5.1, 0.025, 0.35),
-    createRoom(random, 'mechanism-bay', 'mechanism-bay', 'rounded-rect', width * 0.76, height * 0.56, 6.2, 5.3, 0.028, 0.35),
-    createRoom(random, 'lens-observatory', 'lens-observatory', 'ellipse', width * 0.50, height * 0.27, 8.1, 6.9, 0.022, 0.25),
-    createRoom(random, 'collapsed-study', 'collapsed-study', 'rounded-rect', width * 0.26, height * 0.25, 5.3, 4.4, 0.04, 0.55)
-  ];
-  const passages = [
-    createPassage(random, 'door-to-hall', rooms[0], rooms[1], 2.35, 0.04),
-    createPassage(random, 'hall-to-archive', rooms[1], rooms[2], 2.15, 0.04),
-    createPassage(random, 'hall-to-mechanism', rooms[1], rooms[3], 2.15, 0.04),
-    createPassage(random, 'hall-to-observatory', rooms[1], rooms[4], 2.35, 0.04),
-    createPassage(random, 'observatory-to-study', rooms[4], rooms[5], 1.95, 0.04)
-  ];
+const watchtowerTemplate = (
+  random: InteriorRandom,
+  floorNumber: LandmarkInteriorFloor
+): InteriorTemplate => {
+  const width = random.integer(34, 37);
+  const height = random.integer(34, 37);
+  const centerX = width * 0.5;
+  const centerY = height * 0.5;
+  const room = createRoom(
+    random,
+    `watchtower-floor-${floorNumber}`,
+    `tower-floor-${floorNumber}`,
+    'ellipse',
+    centerX,
+    centerY,
+    width * random.range(0.365, 0.385),
+    height * random.range(0.365, 0.385),
+    0.012,
+    0.08
+  );
+  const southStair = { x: centerX, y: centerY + room.radiusY * 0.61 };
+  const northStair = { x: centerX, y: centerY - room.radiusY * 0.61 };
+  const desiredStairs = floorNumber === 1
+    ? [{ direction: 'up' as const, targetFloor: 2 as const, point: northStair }]
+    : floorNumber === 2
+      ? [
+        { direction: 'down' as const, targetFloor: 1 as const, point: southStair },
+        { direction: 'up' as const, targetFloor: 3 as const, point: northStair }
+      ]
+      : [{ direction: 'down' as const, targetFloor: 2 as const, point: southStair }];
   return {
     width,
     height,
-    terrain: { rooms, passages },
-    desiredExit: { x: width * 0.50, y: height - 2.5 },
-    desiredSpawn: { x: width * 0.50, y: height - 7.1 }
+    terrain: { rooms: [room], passages: [] },
+    desiredExit: floorNumber === 1
+      ? { x: centerX, y: centerY + room.radiusY * 0.89 }
+      : null,
+    desiredSpawn: floorNumber === 1
+      ? { x: centerX, y: centerY + room.radiusY * 0.72 }
+      : { x: centerX, y: centerY + room.radiusY * 0.43 },
+    desiredStairs
   };
 };
 
@@ -843,17 +888,138 @@ const createDecorations = (
   return decorations;
 };
 
-const templateFor = (type: LandmarkInteriorType, random: InteriorRandom): InteriorTemplate => {
+const templateFor = (
+  type: LandmarkInteriorType,
+  random: InteriorRandom,
+  floorNumber: LandmarkInteriorFloor
+): InteriorTemplate => {
   switch (type) {
     case LandmarkType.GiantAncientTree: return treeTemplate(random);
     case LandmarkType.Waterfall: return waterfallTemplate(random);
-    case LandmarkType.Watchtower: return watchtowerTemplate(random);
+    case LandmarkType.Watchtower: return watchtowerTemplate(random, floorNumber);
   }
+};
+
+const closestUnusedCandidate = (
+  candidates: readonly CandidateTile[],
+  desired: LandmarkInteriorPoint,
+  usedTiles: Set<string>
+): CandidateTile => {
+  let best: CandidateTile | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  candidates.forEach((candidate) => {
+    const key = `${candidate.tileX},${candidate.tileY}`;
+    if (usedTiles.has(key)) return;
+    const distance = (candidate.tileX + 0.5 - desired.x) ** 2 + (candidate.tileY + 0.5 - desired.y) ** 2;
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  });
+  if (!best) throw new Error('Watchtower floor does not have enough open content positions.');
+  usedTiles.add(`${(best as CandidateTile).tileX},${(best as CandidateTile).tileY}`);
+  return best;
+};
+
+const createWatchtowerMaterialNodes = (
+  random: InteriorRandom,
+  landmarkId: string,
+  floorNumber: LandmarkInteriorFloor,
+  room: LandmarkInteriorRoom,
+  candidates: readonly CandidateTile[]
+): LandmarkInteriorMaterialNode[] => {
+  const usedTiles = new Set<string>();
+  const specs: readonly { resource: ResourceType; x: number; y: number; scale: number }[] = floorNumber === 1
+    ? [
+      { resource: ResourceType.MechanicalParts, x: room.x - room.radiusX * 0.43, y: room.y - 0.8, scale: 0.86 },
+      { resource: ResourceType.MechanicalParts, x: room.x + room.radiusX * 0.46, y: room.y + 1.6, scale: 0.74 }
+    ]
+    : floorNumber === 2
+      ? [
+        { resource: ResourceType.LensGlass, x: room.x - room.radiusX * 0.47, y: room.y + 0.5, scale: 0.78 },
+        { resource: ResourceType.MechanicalParts, x: room.x + room.radiusX * 0.45, y: room.y - 0.8, scale: 0.82 },
+        { resource: ResourceType.LensGlass, x: room.x + room.radiusX * 0.30, y: room.y + room.radiusY * 0.34, scale: 0.68 }
+      ]
+      : [
+        // The third-floor map is deliberately centred on the front half of the room, where the
+        // player can approach the cartography table without colliding with the return stair.
+        { resource: ResourceType.MapFragments, x: room.x, y: room.y + room.radiusY * 0.23, scale: 1.15 }
+      ];
+
+  return specs.map((spec, index) => {
+    const tile = closestUnusedCandidate(candidates, { x: spec.x, y: spec.y }, usedTiles);
+    return {
+      id: `${landmarkId}:interior-floor-${floorNumber}-material:${index}:${spec.resource.replaceAll(' ', '-')}`,
+      resource: spec.resource,
+      tileX: tile.tileX,
+      tileY: tile.tileY,
+      scale: spec.scale * random.range(0.94, 1.06),
+      rotation: random.range(-0.12, 0.12),
+      style: materialStyleFor(spec.resource),
+      variant: random.integer(0, 4),
+      yieldAmount: 1,
+      glowStrength: glowingMaterial(spec.resource) ? random.range(0.42, 0.72) : 0.08
+    };
+  });
+};
+
+const createWatchtowerDecorations = (
+  random: InteriorRandom,
+  landmarkId: string,
+  floorNumber: LandmarkInteriorFloor,
+  candidates: readonly CandidateTile[],
+  reservedTiles: ReadonlySet<string>
+): LandmarkInteriorDecoration[] => {
+  const kinds: readonly LandmarkInteriorDecorationKind[] = floorNumber === 3
+    ? [
+      'timber-beam', 'book-stack', 'faded-banner', 'lens-stand', 'book-stack',
+      'timber-beam', 'gear-train', 'book-stack', 'faded-banner', 'rubble'
+    ]
+    : [
+      'timber-beam', 'gear-train', 'book-stack', 'rubble', 'faded-banner',
+      'timber-beam', 'lens-stand', 'gear-train', 'book-stack', 'rubble'
+    ];
+  const available = candidates.filter((tile) => !reservedTiles.has(`${tile.tileX},${tile.tileY}`));
+  const usedTiles = new Set<string>();
+  const minimumX = Math.min(...available.map((tile) => tile.tileX));
+  const maximumX = Math.max(...available.map((tile) => tile.tileX));
+  const minimumY = Math.min(...available.map((tile) => tile.tileY));
+  const maximumY = Math.max(...available.map((tile) => tile.tileY));
+  const centerX = (minimumX + maximumX + 1) * 0.5;
+  const centerY = (minimumY + maximumY + 1) * 0.5;
+  const count = Math.min(26, 22 + random.integer(0, 4), available.length);
+  const decorations: LandmarkInteriorDecoration[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const desiredAngle = random.range(0, TWO_PI);
+    const desiredRadius = random.range(0.35, 0.86);
+    const candidate = closestUnusedCandidate(
+      available,
+      {
+        x: centerX + Math.cos(desiredAngle) * desiredRadius * (maximumX - minimumX) * 0.5,
+        y: centerY + Math.sin(desiredAngle) * desiredRadius * (maximumY - minimumY) * 0.5
+      },
+      usedTiles
+    );
+    const kind = kinds[(index + floorNumber * 3) % kinds.length];
+    decorations.push({
+      id: `${landmarkId}:interior-floor-${floorNumber}-decoration:${index}:${kind}`,
+      kind,
+      tileX: candidate.tileX,
+      tileY: candidate.tileY,
+      scale: random.range(0.62, kind === 'timber-beam' ? 1.02 : 0.92),
+      rotation: random.range(0, TWO_PI),
+      variant: random.integer(0, 5),
+      layer: decorationLayer(kind),
+      opacity: random.range(0.72, 0.96)
+    });
+  }
+  return decorations;
 };
 
 export const generateLandmarkInterior = (
   worldSeed: string,
-  landmark: LandmarkInteriorLandmark
+  landmark: LandmarkInteriorLandmark,
+  floorNumber: LandmarkInteriorFloor = 1
 ): LandmarkInteriorLayout => {
   if (typeof worldSeed !== 'string') {
     throw new TypeError('Landmark interior world seed must be a string.');
@@ -868,28 +1034,59 @@ export const generateLandmarkInterior = (
   if (!Number.isSafeInteger(landmark.centerTileX) || !Number.isSafeInteger(landmark.centerTileY)) {
     throw new TypeError('Landmark interior center coordinates must be safe integers.');
   }
+  if (![1, 2, 3].includes(floorNumber)
+    || (landmark.type !== LandmarkType.Watchtower && floorNumber !== 1)) {
+    throw new RangeError(`Landmark interior floor ${String(floorNumber)} is not valid for ${landmark.type}.`);
+  }
 
-  const generationKey = `${worldSeed}\u0000${landmark.id}\u0000${LANDMARK_INTERIOR_GENERATION_VERSION}`;
+  const version = landmark.type === LandmarkType.Watchtower
+    ? WATCHTOWER_INTERIOR_GENERATION_VERSION
+    : LANDMARK_INTERIOR_GENERATION_VERSION;
+  const generationKey = landmark.type === LandmarkType.Watchtower
+    ? `${worldSeed}\u0000${landmark.id}\u0000${version}\u0000floor-${floorNumber}`
+    : `${worldSeed}\u0000${landmark.id}\u0000${version}`;
   const random = new InteriorRandom(generationKey);
-  const template = templateFor(landmark.type, random);
+  const shellRandom = landmark.type === LandmarkType.Watchtower
+    ? new InteriorRandom(`${worldSeed}\u0000${landmark.id}\u0000watchtower-shell-v${version}`)
+    : random;
+  const template = templateFor(landmark.type, shellRandom, floorNumber);
   const theme = LANDMARK_INTERIOR_THEMES[landmark.type];
   const floorTiles = createFloorTiles(template.width, template.height, template.terrain);
-  const exitTile = nearestFloorTile(floorTiles, template.desiredExit);
+  const exitTile = template.desiredExit ? nearestFloorTile(floorTiles, template.desiredExit) : null;
   const spawnTile = nearestFloorTile(floorTiles, template.desiredSpawn);
-  const candidates = materialCandidates(floorTiles, template.terrain, exitTile, spawnTile);
-  const materialNodes = createMaterialNodes(random, landmark.id, theme, template.terrain, candidates);
-  const decorations = createDecorations(
-    random,
-    landmark.id,
-    theme,
-    template.terrain,
-    candidates,
-    materialNodes
-  );
+  const candidateExit = exitTile ?? spawnTile;
+  const baseCandidates = materialCandidates(floorTiles, template.terrain, candidateExit, spawnTile);
+  const stairs = template.desiredStairs.map((stair, index): LandmarkInteriorStair => {
+    const tile = nearestFloorTile(floorTiles, stair.point);
+    return {
+      id: `${landmark.id}:interior-floor-${floorNumber}-stair-${index}-${stair.direction}`,
+      tileX: tile.tileX,
+      tileY: tile.tileY,
+      direction: stair.direction,
+      targetFloor: stair.targetFloor,
+      label: stair.direction === 'up' ? 'Ascend the tower stairs' : 'Descend the tower stairs',
+      interactionRadiusTiles: 2.15
+    };
+  });
+  const candidates = baseCandidates.filter((candidate) => stairs.every((stair) => (
+    Math.hypot(candidate.tileX - stair.tileX, candidate.tileY - stair.tileY) >= 3.2
+  )));
+  const materialNodes = landmark.type === LandmarkType.Watchtower
+    ? createWatchtowerMaterialNodes(random, landmark.id, floorNumber, template.terrain.rooms[0], candidates)
+    : createMaterialNodes(random, landmark.id, theme, template.terrain, candidates);
+  const reservedTiles = new Set([
+    ...stairs.map((stair) => `${stair.tileX},${stair.tileY}`),
+    ...materialNodes.map((material) => `${material.tileX},${material.tileY}`)
+  ]);
+  const decorations = landmark.type === LandmarkType.Watchtower
+    ? createWatchtowerDecorations(random, landmark.id, floorNumber, candidates, reservedTiles)
+    : createDecorations(random, landmark.id, theme, template.terrain, candidates, materialNodes);
 
   return {
-    id: `${landmark.id}:interior:v${LANDMARK_INTERIOR_GENERATION_VERSION}`,
-    generationVersion: LANDMARK_INTERIOR_GENERATION_VERSION,
+    id: landmark.type === LandmarkType.Watchtower
+      ? `${landmark.id}:interior:v${version}:floor-${floorNumber}`
+      : `${landmark.id}:interior:v${version}`,
+    generationVersion: version,
     landmarkId: landmark.id,
     landmarkType: landmark.type,
     themeId: theme.id,
@@ -897,16 +1094,18 @@ export const generateLandmarkInterior = (
     floorLabel: theme.floorLabel,
     width: template.width,
     height: template.height,
+    floorNumber,
     spawnTileX: spawnTile.tileX,
     spawnTileY: spawnTile.tileY,
-    exit: {
+    exit: exitTile ? {
       id: `${landmark.id}:interior-exit`,
       tileX: exitTile.tileX,
       tileY: exitTile.tileY,
       facing: 'south',
       label: theme.exitLabel,
       interactionRadiusTiles: 2.4
-    },
+    } : null,
+    stairs,
     terrain: template.terrain,
     floorTiles,
     materialNodes,
@@ -917,10 +1116,26 @@ export const generateLandmarkInterior = (
 
 export const landmarkInteriorWorldOrigin = (
   worldSeed: string,
-  landmark: LandmarkInteriorLandmark
+  landmark: LandmarkInteriorLandmark,
+  floorNumber: LandmarkInteriorFloor = 1
 ): LandmarkInteriorWorldPoint => {
   if (!Number.isSafeInteger(landmark.centerTileX) || !Number.isSafeInteger(landmark.centerTileY)) {
     throw new TypeError('Landmark interior center coordinates must be safe integers.');
+  }
+  if (![1, 2, 3].includes(floorNumber)
+    || (landmark.type !== LandmarkType.Watchtower && floorNumber !== 1)) {
+    throw new RangeError(`Landmark interior origin floor ${String(floorNumber)} is not valid for ${landmark.type}.`);
+  }
+  if (landmark.type === LandmarkType.Watchtower) {
+    const laneHash = hashString(
+      `${worldSeed}\u0000${landmark.id}\u0000origin-v${WATCHTOWER_INTERIOR_GENERATION_VERSION}\u0000floor-${floorNumber}`
+    );
+    const laneX = laneHash & WATCHTOWER_WORLD_LANE_MASK;
+    const laneY = (laneHash >>> 10) & WATCHTOWER_WORLD_LANE_MASK;
+    return {
+      x: WATCHTOWER_WORLD_OFFSET + laneX * WATCHTOWER_WORLD_ORIGIN_STRIDE,
+      y: WATCHTOWER_WORLD_OFFSET + laneY * WATCHTOWER_WORLD_ORIGIN_STRIDE
+    };
   }
   const laneHash = hashString(`${worldSeed}\u0000${landmark.id}\u0000origin-v${LANDMARK_INTERIOR_GENERATION_VERSION}`);
   const laneX = laneHash & 31;

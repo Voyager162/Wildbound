@@ -752,8 +752,10 @@ const reachableFloorKeys = (layout: LandmarkInteriorLayout): Set<string> => {
 const interiorSignature = (layout: LandmarkInteriorLayout): unknown => ({
   width: layout.width,
   height: layout.height,
+  floorNumber: layout.floorNumber,
   spawn: [layout.spawnTileX, layout.spawnTileY],
-  exit: [layout.exit.tileX, layout.exit.tileY, layout.exit.facing],
+  exit: layout.exit ? [layout.exit.tileX, layout.exit.tileY, layout.exit.facing] : null,
+  stairs: layout.stairs,
   terrain: layout.terrain,
   materialNodes: layout.materialNodes.map((node) => ({
     resource: node.resource,
@@ -783,10 +785,20 @@ EXPECTED_ENTERABLE_TYPES.forEach((type) => {
   const first = generateLandmarkInterior('interior-verification-seed', landmark);
   const second = generateLandmarkInterior('interior-verification-seed', landmark);
   assert.deepEqual(second, first, type + ' interior must regenerate identically');
+  const layouts = type === LandmarkType.Watchtower
+    ? [first, generateLandmarkInterior('interior-verification-seed', landmark, 2), generateLandmarkInterior('interior-verification-seed', landmark, 3)]
+    : [first];
+  layouts.forEach((layout) => {
+    assert.deepEqual(
+      generateLandmarkInterior('interior-verification-seed', landmark, layout.floorNumber),
+      layout,
+      type + ' floor ' + layout.floorNumber + ' must regenerate identically'
+    );
+  });
   assert.equal(first.landmarkType, type);
   assert.equal(first.themeId, LANDMARK_INTERIOR_THEMES[type].id);
   assertExactValues(
-    first.materialNodes.map((material) => material.resource),
+    layouts.flatMap((layout) => layout.materialNodes.map((material) => material.resource)),
     EXPECTED_INTERIOR_MATERIALS.get(type)!,
     type + ' interior materials are incorrect'
   );
@@ -795,7 +807,9 @@ EXPECTED_ENTERABLE_TYPES.forEach((type) => {
     EXPECTED_INTERIOR_MATERIALS.get(type)!,
     type + ' theme material contract is incorrect'
   );
-  assert.ok(first.decorations.length >= 20, type + ' interior must include dense environmental decoration');
+  layouts.forEach((layout) => {
+    assert.ok(layout.decorations.length >= 20, type + ' interior floor must include dense environmental decoration');
+  });
   if (type === LandmarkType.GiantAncientTree) {
     assert.equal(first.terrain.rooms.length, 1, 'Ancient tree interior must be a single room');
     assert.equal(first.terrain.passages.length, 0, 'Ancient tree interior must not generate corridors');
@@ -813,19 +827,36 @@ EXPECTED_ENTERABLE_TYPES.forEach((type) => {
       'Heartwood must not generate in the ancient tree interior'
     );
   }
-  assert.ok(first.floorTiles[first.spawnTileY]?.[first.spawnTileX], type + ' spawn must be on a floor tile');
-  assert.ok(first.floorTiles[first.exit.tileY]?.[first.exit.tileX], type + ' exit must be on a floor tile');
-  assert.ok(landmarkInteriorContainsPoint(first, first.spawnTileX + 0.5, first.spawnTileY + 0.5), type + ' spawn is outside terrain');
-  assert.ok(landmarkInteriorContainsPoint(first, first.exit.tileX + 0.5, first.exit.tileY + 0.5), type + ' exit is outside terrain');
-
-  const reachable = reachableFloorKeys(first);
-  assert.ok(reachable.has(first.exit.tileX + ',' + first.exit.tileY), type + ' exit must be reachable from spawn');
-  first.materialNodes.forEach((material) => {
-    assert.ok(!allInteriorMaterialIds.has(material.id), 'Interior material IDs must be globally unique');
-    allInteriorMaterialIds.add(material.id);
-    assert.ok(landmarkInteriorContainsPoint(first, material.tileX + 0.5, material.tileY + 0.5, -0.45), material.id + ' is outside navigable terrain');
-    assert.ok(reachable.has(material.tileX + ',' + material.tileY), material.id + ' is not reachable from spawn');
+  layouts.forEach((layout) => {
+    assert.ok(layout.floorTiles[layout.spawnTileY]?.[layout.spawnTileX], type + ' spawn must be on a floor tile');
+    assert.ok(landmarkInteriorContainsPoint(layout, layout.spawnTileX + 0.5, layout.spawnTileY + 0.5), type + ' spawn is outside terrain');
+    const reachable = reachableFloorKeys(layout);
+    if (layout.exit) {
+      assert.ok(layout.floorTiles[layout.exit.tileY]?.[layout.exit.tileX], type + ' exit must be on a floor tile');
+      assert.ok(landmarkInteriorContainsPoint(layout, layout.exit.tileX + 0.5, layout.exit.tileY + 0.5), type + ' exit is outside terrain');
+      assert.ok(reachable.has(layout.exit.tileX + ',' + layout.exit.tileY), type + ' exit must be reachable from spawn');
+    }
+    layout.stairs.forEach((stair) => {
+      assert.ok(reachable.has(stair.tileX + ',' + stair.tileY), stair.id + ' must be reachable from spawn');
+      assert.ok(landmarkInteriorContainsPoint(layout, stair.tileX + 0.5, stair.tileY + 0.5, -0.45), stair.id + ' is outside navigable terrain');
+    });
+    layout.materialNodes.forEach((material) => {
+      assert.ok(!allInteriorMaterialIds.has(material.id), 'Interior material IDs must be globally unique');
+      allInteriorMaterialIds.add(material.id);
+      assert.ok(landmarkInteriorContainsPoint(layout, material.tileX + 0.5, material.tileY + 0.5, -0.45), material.id + ' is outside navigable terrain');
+      assert.ok(reachable.has(material.tileX + ',' + material.tileY), material.id + ' is not reachable from spawn');
+    });
   });
+
+  if (type === LandmarkType.Watchtower) {
+    assert.deepEqual(layouts.map((layout) => layout.floorNumber), [1, 2, 3], 'Watchtower must generate exactly three floors');
+    assert.ok(layouts.every((layout) => layout.terrain.rooms.length === 1 && layout.terrain.passages.length === 0), 'Every watchtower floor must be one circular room');
+    assert.ok(layouts[0].exit, 'Watchtower floor one must retain the wilderness exit');
+    assert.equal(layouts[1].exit, null, 'Watchtower floor two must not have a wilderness exit');
+    assert.equal(layouts[2].exit, null, 'Watchtower floor three must not have a wilderness exit');
+    assert.deepEqual(layouts.map((layout) => layout.stairs.length), [1, 2, 1], 'Watchtower floors must have a complete up/down stair chain');
+    assert.equal(layouts[2].materialNodes.filter((node) => node.resource === ResourceType.MapFragments).length, 1, 'Cartography floor must have one map pickup');
+  }
 
   const origin = landmarkInteriorWorldOrigin('interior-verification-seed', landmark);
   assert.deepEqual(landmarkInteriorWorldOrigin('interior-verification-seed', landmark), origin, 'Interior origin must be deterministic');
@@ -834,6 +865,13 @@ EXPECTED_ENTERABLE_TYPES.forEach((type) => {
     landmarkInteriorContainsWorldPoint(first, origin, spawnWorld.x, spawnWorld.y),
     type + ' world-space spawn mapping is not inside its interior'
   );
+  if (type === LandmarkType.Watchtower) {
+    const floorOrigins = layouts.map((layout) => landmarkInteriorWorldOrigin('interior-verification-seed', landmark, layout.floorNumber));
+    assert.equal(new Set(floorOrigins.map((value) => value.x + ',' + value.y)).size, 3, 'Watchtower floors must occupy distinct world-space lanes');
+    floorOrigins.forEach((value) => {
+      assert.ok(Math.abs(value.x) < 8_000_000 && Math.abs(value.y) < 8_000_000, 'Watchtower origin must stay within smooth WebGL precision range');
+    });
+  }
 
   const alternateIdLandmark = fixtureFor(type, 'alternate-interior-id');
   const alternateIdLayout = generateLandmarkInterior('interior-verification-seed', alternateIdLandmark);
@@ -1017,6 +1055,35 @@ const activeLandmarkSave = {
   }
 };
 assert.equal(isSaveGameData(activeLandmarkSave), true, 'A valid active landmark interior save must be accepted');
+const activeWatchtowerFloorSave = {
+  ...legacySave,
+  activeLandmarkInterior: {
+    landmarkId: fixtureFor(LandmarkType.Watchtower).id,
+    landmarkType: LandmarkType.Watchtower,
+    centerTileX: fixtureFor(LandmarkType.Watchtower).centerTileX,
+    centerTileY: fixtureFor(LandmarkType.Watchtower).centerTileY,
+    returnWorldX: 400.5,
+    returnWorldY: -800.25,
+    floorNumber: 3
+  }
+};
+assert.equal(isSaveGameData(activeWatchtowerFloorSave), true, 'A watchtower save must preserve floors one through three');
+assert.equal(
+  isSaveGameData({
+    ...activeWatchtowerFloorSave,
+    activeLandmarkInterior: { ...activeWatchtowerFloorSave.activeLandmarkInterior, floorNumber: 4 }
+  }),
+  false,
+  'A watchtower save must reject an unknown floor'
+);
+assert.equal(
+  isSaveGameData({
+    ...activeLandmarkSave,
+    activeLandmarkInterior: { ...activeLandmarkSave.activeLandmarkInterior, floorNumber: 2 }
+  }),
+  false,
+  'Single-room landmark interiors must reject watchtower floor state'
+);
 assert.equal(
   isSaveGameData({
     ...activeLandmarkSave,
