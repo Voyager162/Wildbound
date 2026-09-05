@@ -1357,13 +1357,20 @@ export class AdventureScene extends Phaser.Scene {
     });
   }
 
-  private async finishTerrainLoading(): Promise<void> {
+  private async finishTerrainLoading(unlockWorld = true): Promise<void> {
     this.updateLoadingProgress(100, 100);
     await this.waitForTerrainLoadingPaint();
-    this.worldReady = true;
-    this.updateAmbientAudio();
     this.loadingOverlay.setAttribute('aria-busy', 'false');
     this.loadingOverlay.classList.add('is-hidden');
+    if (!unlockWorld) {
+      return;
+    }
+    this.completeTerrainTransition();
+  }
+
+  private completeTerrainTransition(): void {
+    this.worldReady = true;
+    this.updateAmbientAudio();
     this.caveTransitionInProgress = false;
   }
 
@@ -3298,6 +3305,288 @@ export class AdventureScene extends Phaser.Scene {
     });
   }
 
+  private tweenPlayerForTransition(
+    worldX: number,
+    worldY: number,
+    duration: number,
+    facingX: number,
+    facingY: number,
+    options: {
+      readonly fromAlpha?: number;
+      readonly toAlpha?: number;
+      readonly fromScale?: number;
+      readonly toScale?: number;
+      readonly onUpdate?: (progress: number) => void;
+    } = {}
+  ): Promise<void> {
+    this.updateFacing(facingX, facingY);
+    this.lastAvatarState = '';
+    const fromAlpha = options.fromAlpha ?? this.playerAvatar.alpha;
+    const toAlpha = options.toAlpha ?? fromAlpha;
+    const fromScale = options.fromScale ?? this.playerAvatar.scaleX;
+    const toScale = options.toScale ?? fromScale;
+    this.playerAvatar.setAlpha(fromAlpha).setScale(fromScale);
+    return new Promise((resolve) => {
+      this.tweens.add({
+        targets: this.player,
+        x: worldX,
+        y: worldY,
+        duration,
+        ease: 'Sine.easeInOut',
+        onUpdate: (tween) => {
+          const progress = Phaser.Math.Clamp(tween.progress, 0, 1);
+          this.playerAvatar
+            .setPosition(this.player.x, this.player.y)
+            .setAlpha(Phaser.Math.Linear(fromAlpha, toAlpha, progress))
+            .setScale(Phaser.Math.Linear(fromScale, toScale, progress));
+          this.drawPlayerAvatar(Math.floor(progress * Math.max(2, duration / 105)) % 2);
+          options.onUpdate?.(progress);
+        },
+        onComplete: () => {
+          this.player.setPosition(worldX, worldY);
+          this.playerAvatar
+            .setPosition(worldX, worldY)
+            .setAlpha(toAlpha)
+            .setScale(toScale);
+          this.drawPlayerAvatar(0);
+          options.onUpdate?.(1);
+          resolve();
+        }
+      });
+    });
+  }
+
+  private restoreTransitionAvatar(): void {
+    this.playerAvatar
+      .setPosition(this.player.x, this.player.y)
+      .setAlpha(1)
+      .setScale(PLAYER_AVATAR_SCALE)
+      .setRotation(0);
+    this.lastAvatarState = '';
+    this.updatePlayerAvatar(0, false);
+  }
+
+  private drawInteriorDoorTransition(
+    graphics: Phaser.GameObjects.Graphics,
+    interior: ActiveLandmarkInterior,
+    worldX: number,
+    worldY: number,
+    progress: number
+  ): void {
+    const palette = interior.layout.palette;
+    const eased = Phaser.Math.Easing.Sine.InOut(progress);
+    graphics.clear();
+    graphics.fillStyle(0x020302, 0.22 + eased * 0.74);
+    graphics.fillEllipse(worldX, worldY + 1, 62 + eased * 38, 68 + eased * 28);
+    if (interior.landmark.type === LandmarkType.GiantAncientTree) {
+      // The root door swings toward the viewer around its left hinge. Successively compressed
+      // growth rings sell its thickness while the dark hollow remains fixed in the trunk.
+      const leafWidth = Math.max(4, 72 * (1 - eased * 0.88));
+      const leafX = worldX + eased * 43;
+      graphics.fillStyle(palette.floorAccent, 0.98);
+      graphics.fillEllipse(leafX, worldY - 3, leafWidth, 72);
+      graphics.lineStyle(3.5, palette.secondaryAccent, 0.84);
+      graphics.strokeEllipse(leafX, worldY - 3, leafWidth, 72);
+      for (let ring = 0; ring < 3; ring += 1) {
+        graphics.lineStyle(1.2, palette.wallHighlight, 0.3);
+        graphics.strokeEllipse(leafX, worldY - 3, Math.max(2, leafWidth - 12 - ring * 9), 57 - ring * 13);
+      }
+      graphics.fillStyle(palette.wallShadow, 0.95);
+      graphics.fillCircle(worldX - 35, worldY - 3, 4.5);
+    } else {
+      // The tower's weighty plank door turns edge-on, with iron bands retaining their thickness.
+      const leafWidth = Math.max(5, 76 * (1 - eased * 0.9));
+      const leafX = worldX + eased * 45;
+      graphics.fillStyle(palette.floorAccent, 1);
+      graphics.fillRoundedRect(leafX - leafWidth * 0.5, worldY - 40, leafWidth, 78, 6);
+      graphics.lineStyle(3.5, palette.primaryAccent, 0.9);
+      graphics.strokeRoundedRect(leafX - leafWidth * 0.5, worldY - 40, leafWidth, 78, 6);
+      [-18, 14].forEach((offset) => {
+        graphics.lineStyle(4, palette.wallShadow, 0.92);
+        graphics.lineBetween(leafX - leafWidth * 0.46, worldY + offset, leafX + leafWidth * 0.46, worldY + offset);
+      });
+    }
+    for (let mote = 0; mote < 7; mote += 1) {
+      const angle = mote * 2.17 + progress * (mote % 2 ? 1.3 : -1.1);
+      const radius = 24 + mote * 5 + eased * 16;
+      graphics.fillStyle(palette.ambientLight, (1 - progress) * 0.16 + 0.05);
+      graphics.fillCircle(worldX + Math.cos(angle) * radius, worldY + Math.sin(angle) * radius * 0.62, 1.5 + mote % 3);
+    }
+  }
+
+  private async animateLandmarkInteriorDeparture(interior: ActiveLandmarkInterior): Promise<void> {
+    const exit = interior.layout.exit;
+    if (!exit || (
+      interior.landmark.type !== LandmarkType.GiantAncientTree
+      && interior.landmark.type !== LandmarkType.Watchtower
+    )) {
+      return;
+    }
+    const position = landmarkInteriorWorldTilePosition(interior.origin, exit.tileX, exit.tileY);
+    const graphics = this.add.graphics().setDepth(12.6);
+    try {
+      this.drawInteriorDoorTransition(graphics, interior, position.x, position.y, 0);
+      await this.tweenPlayerForTransition(position.x, position.y - 13, 310, 0, 1);
+      await this.tweenPlayerForTransition(position.x, position.y + 38, 470, 0, 1, {
+        fromAlpha: 1,
+        toAlpha: 0.06,
+        fromScale: PLAYER_AVATAR_SCALE,
+        toScale: PLAYER_AVATAR_SCALE * 0.72,
+        onUpdate: (progress) => this.drawInteriorDoorTransition(
+          graphics,
+          interior,
+          position.x,
+          position.y,
+          progress
+        )
+      });
+    } finally {
+      graphics.destroy();
+    }
+  }
+
+  private async animateLandmarkSurfaceArrival(interior: ActiveLandmarkInterior): Promise<void> {
+    const searchRadius = Math.max(
+      240,
+      interior.landmark.footprintRadiusTiles * WORLD_TILE_SIZE * 0.6
+    );
+    const entrance = this.chunkManager.findNearbyLandmarkEntrance(
+      interior.returnWorldX,
+      interior.returnWorldY,
+      searchRadius
+    );
+    if (!entrance || entrance.landmark.id !== interior.landmark.id) {
+      this.player.setPosition(interior.returnWorldX, interior.returnWorldY);
+      this.restoreTransitionAvatar();
+      return;
+    }
+
+    const centerX = (entrance.landmark.centerTileX + 0.5) * WORLD_TILE_SIZE;
+    const centerY = (entrance.landmark.centerTileY + 0.5) * WORLD_TILE_SIZE;
+    const radialX = entrance.worldX - centerX;
+    const radialY = entrance.worldY - centerY;
+    const radialLength = Math.max(1, Math.hypot(radialX, radialY));
+    const outwardX = radialX / radialLength;
+    const outwardY = radialY / radialLength;
+    const landmarkRadius = entrance.landmark.footprintRadiusTiles * WORLD_TILE_SIZE;
+    const hiddenX = entrance.worldX - outwardX * landmarkRadius * 0.17;
+    const hiddenY = entrance.worldY - outwardY * landmarkRadius * 0.17;
+    const thresholdX = entrance.worldX + outwardX * Math.max(18, landmarkRadius * 0.035);
+    const thresholdY = entrance.worldY + outwardY * Math.max(18, landmarkRadius * 0.035);
+    this.player.setPosition(hiddenX, hiddenY);
+    this.playerAvatar.setPosition(hiddenX, hiddenY).setAlpha(0.04).setScale(PLAYER_AVATAR_SCALE * 0.72);
+    this.cameras.main.centerOn(hiddenX, hiddenY);
+    this.chunkManager.update(hiddenX, hiddenY, this.time.now);
+
+    await this.chunkManager.animateLandmarkDoorOpen(entrance.landmark.id);
+    await this.tweenPlayerForTransition(thresholdX, thresholdY, 470, outwardX, outwardY, {
+      fromAlpha: 0.04,
+      toAlpha: 1,
+      fromScale: PLAYER_AVATAR_SCALE * 0.72,
+      toScale: PLAYER_AVATAR_SCALE,
+      onUpdate: () => this.chunkManager.update(this.player.x, this.player.y, this.time.now)
+    });
+    await this.tweenPlayerForTransition(
+      interior.returnWorldX,
+      interior.returnWorldY,
+      290,
+      outwardX,
+      outwardY,
+      { onUpdate: () => this.chunkManager.update(this.player.x, this.player.y, this.time.now) }
+    );
+    await this.chunkManager.animateLandmarkDoorClose(entrance.landmark.id);
+    this.restoreTransitionAvatar();
+  }
+
+  private drawCaveEntryTransition(
+    graphics: Phaser.GameObjects.Graphics,
+    entrance: CaveEntrance,
+    progress: number
+  ): void {
+    const mouth = caveMouthCenter(entrance);
+    const forwardX = Math.cos(entrance.mouthAngle);
+    const forwardY = Math.sin(entrance.mouthAngle);
+    const sideX = -forwardY;
+    const sideY = forwardX;
+    const forwardRadius = entrance.mouthForwardRadiusTiles * WORLD_TILE_SIZE;
+    const sideRadius = entrance.mouthSideRadiusTiles * WORLD_TILE_SIZE;
+    const eased = Phaser.Math.Easing.Sine.InOut(progress);
+    const point = (forward: number, side: number): CaveRenderPoint => ({
+      x: mouth.x + forwardX * forward + sideX * side,
+      y: mouth.y + forwardY * forward + sideY * side
+    });
+    graphics.clear();
+
+    // Darkness advances into the authored mouth rather than appearing as a screen-space fade.
+    // The oriented, uneven lips retain the formation's top-down perspective for any mouth angle.
+    const tunnel: CaveRenderPoint[] = [];
+    for (let segment = 0; segment < 18; segment += 1) {
+      const angle = segment / 18 * Math.PI * 2;
+      const irregularity = 0.9 + Math.sin(angle * 5 + entrance.tileX * 0.17 + entrance.tileY * 0.11) * 0.08;
+      tunnel.push(point(
+        Math.cos(angle) * forwardRadius * (0.34 + eased * 0.2) * irregularity - eased * forwardRadius * 0.2,
+        Math.sin(angle) * sideRadius * (0.48 + eased * 0.18) * irregularity
+      ));
+    }
+    graphics.fillStyle(0x010303, 0.2 + eased * 0.76);
+    graphics.fillPoints(tunnel, true);
+    graphics.lineStyle(3.5, 0x50615a, 0.34 + (1 - eased) * 0.24);
+    graphics.strokePoints(tunnel, true);
+
+    for (let lip = -1; lip <= 1; lip += 2) {
+      const inner = point(-forwardRadius * (0.08 + eased * 0.08), lip * sideRadius * 0.54);
+      const outer = point(forwardRadius * (0.12 - eased * 0.05), lip * sideRadius * 0.94);
+      graphics.lineStyle(11 - eased * 3, lip < 0 ? 0x718079 : 0x35433e, 0.54 + eased * 0.3);
+      graphics.lineBetween(inner.x, inner.y, outer.x, outer.y);
+      graphics.lineStyle(2, 0xb0c0ae, 0.24);
+      graphics.lineBetween(inner.x, inner.y, outer.x, outer.y);
+    }
+    for (let dust = 0; dust < 12; dust += 1) {
+      const drift = dust / 11;
+      const localForward = forwardRadius * (0.32 - eased * 0.72 + drift * 0.26);
+      const localSide = Math.sin(dust * 2.41 + progress * 2.7) * sideRadius * (0.16 + drift * 0.58);
+      const dustPoint = point(localForward, localSide);
+      graphics.fillStyle(dust % 3 ? 0x9da894 : 0xd0d2b8, Math.sin(progress * Math.PI) * (0.1 + drift * 0.19));
+      graphics.fillCircle(dustPoint.x, dustPoint.y, 1.5 + dust % 3);
+    }
+  }
+
+  private async animateCaveEntry(entrance: CaveEntrance): Promise<void> {
+    const mouth = caveMouthCenter(entrance);
+    const forwardX = Math.cos(entrance.mouthAngle);
+    const forwardY = Math.sin(entrance.mouthAngle);
+    const mouthRadius = entrance.mouthForwardRadiusTiles * WORLD_TILE_SIZE;
+    const approachDistance = Math.max(24, mouthRadius * 0.24);
+    const passageDistance = Math.max(34, mouthRadius * 0.42);
+    const graphics = this.add.graphics().setDepth(12.7);
+    try {
+      this.drawCaveEntryTransition(graphics, entrance, 0);
+      await this.tweenPlayerForTransition(
+        mouth.x + forwardX * approachDistance,
+        mouth.y + forwardY * approachDistance,
+        300,
+        -forwardX,
+        -forwardY
+      );
+      await this.tweenPlayerForTransition(
+        mouth.x - forwardX * passageDistance,
+        mouth.y - forwardY * passageDistance,
+        620,
+        -forwardX,
+        -forwardY,
+        {
+          fromAlpha: 1,
+          toAlpha: 0.03,
+          fromScale: PLAYER_AVATAR_SCALE,
+          toScale: PLAYER_AVATAR_SCALE * 0.64,
+          onUpdate: (progress) => this.drawCaveEntryTransition(graphics, entrance, progress)
+        }
+      );
+    } finally {
+      graphics.destroy();
+    }
+  }
+
   private async beginLandmarkEntranceSequence(entrance: LandmarkEntrance): Promise<void> {
     if (this.landmarkEntranceSequenceInProgress || this.caveTransitionInProgress) {
       return;
@@ -3465,11 +3754,13 @@ export class AdventureScene extends Phaser.Scene {
     this.worldReady = false;
     this.ambientAudio?.setSwimming(false, false, false);
     this.footstepElapsedMs = 0;
-    this.showTerrainLoading();
     this.cancelHarvesting();
     this.hideLandmarkHint();
+    this.interactionHighlight.setVisible(false);
 
     try {
+      await this.animateLandmarkInteriorDeparture(interior);
+      this.showTerrainLoading();
       await this.waitForTerrainLoadingPaint();
       await this.chunkManager.prime(interior.returnWorldX, interior.returnWorldY, (progress) => {
         const ratio = progress.completed / Math.max(1, progress.total);
@@ -3504,9 +3795,57 @@ export class AdventureScene extends Phaser.Scene {
       this.updateMinimap(0, true);
       this.updatePlayerAvatar(0, false);
       this.markSaveDirty();
-      await this.finishTerrainLoading();
+      const usesAnimatedDoor = interior.landmark.type === LandmarkType.GiantAncientTree
+        || interior.landmark.type === LandmarkType.Watchtower;
+      await this.finishTerrainLoading(!usesAnimatedDoor);
+      if (usesAnimatedDoor) {
+        try {
+          await this.animateLandmarkSurfaceArrival(interior);
+        } finally {
+          this.chunkManager.resetLandmarkDoor(interior.landmark.id);
+          this.restoreTransitionAvatar();
+        }
+        this.updateInteractionTarget(true);
+        this.updateCaveEntranceInteraction(true);
+        this.updateLandmarkEntranceInteraction(true);
+        this.completeTerrainTransition();
+      }
     } catch (error) {
+      this.chunkManager.resetLandmarkDoor(interior.landmark.id);
+      this.restoreTransitionAvatar();
       this.recoverFromTerrainLoadingFailure('leave the landmark', error);
+    }
+  }
+
+  private drawWatchtowerStairTransition(
+    graphics: Phaser.GameObjects.Graphics,
+    interior: ActiveLandmarkInterior,
+    stair: LandmarkInteriorStair,
+    progress: number,
+    arriving: boolean
+  ): void {
+    const position = landmarkInteriorWorldTilePosition(interior.origin, stair.tileX, stair.tileY);
+    const palette = interior.layout.palette;
+    const travel = arriving ? 1 - progress : progress;
+    const directionSign = stair.direction === 'up' ? -1 : 1;
+    graphics.clear();
+    graphics.fillStyle(palette.wallShadow, 0.15 + Math.sin(travel * Math.PI) * 0.28);
+    graphics.fillEllipse(position.x, position.y + directionSign * travel * 8, 142, 94);
+    for (let step = 0; step < 8; step += 1) {
+      const stepProgress = step / 7;
+      const y = position.y + directionSign * (31 - step * 9);
+      const width = 101 - stepProgress * 42;
+      const highlightDistance = Math.abs(stepProgress - travel);
+      const highlight = Math.max(0, 1 - highlightDistance * 4.4);
+      graphics.lineStyle(3 + highlight * 3, palette.ambientLight, 0.12 + highlight * 0.72);
+      graphics.lineBetween(position.x - width * 0.5, y, position.x + width * 0.5, y);
+    }
+    for (let mote = 0; mote < 10; mote += 1) {
+      const phase = progress * Math.PI * 1.6 + mote * 1.91;
+      const radius = 19 + (mote % 4) * 12;
+      const moteY = position.y + directionSign * (travel * 54 - 23) + Math.sin(phase * 1.3) * 10;
+      graphics.fillStyle(mote % 3 ? palette.floorDetail : palette.ambientLight, 0.08 + Math.sin(progress * Math.PI) * 0.34);
+      graphics.fillCircle(position.x + Math.cos(phase) * radius, moteY, 1.5 + mote % 3);
     }
   }
 
@@ -3523,10 +3862,39 @@ export class AdventureScene extends Phaser.Scene {
     this.landmarkInteriorExitNearby = false;
     this.interactionHighlight.setVisible(false);
     this.hideLandmarkHint();
-    this.cameras.main.fadeOut(170, 13, 17, 18);
-    await new Promise<void>((resolve) => this.time.delayedCall(175, () => resolve()));
+    const previousPlayerX = this.player.x;
+    const previousPlayerY = this.player.y;
+    const departurePosition = landmarkInteriorWorldTilePosition(previous.origin, stair.tileX, stair.tileY);
+    const departureGraphics = this.add.graphics().setDepth(12.6);
+    let arrivalGraphics: Phaser.GameObjects.Graphics | null = null;
 
     try {
+      const departureBaseY = departurePosition.y + (stair.direction === 'up' ? 28 : -28);
+      await this.tweenPlayerForTransition(departurePosition.x, departureBaseY, 300, 0, stair.direction === 'up' ? -1 : 1);
+      await this.tweenPlayerForTransition(
+        departurePosition.x,
+        departurePosition.y + (stair.direction === 'up' ? -25 : 25),
+        560,
+        0,
+        stair.direction === 'up' ? -1 : 1,
+        {
+          fromAlpha: 1,
+          toAlpha: 0.05,
+          fromScale: PLAYER_AVATAR_SCALE,
+          toScale: PLAYER_AVATAR_SCALE * 0.63,
+          onUpdate: (progress) => this.drawWatchtowerStairTransition(
+            departureGraphics,
+            previous,
+            stair,
+            progress,
+            false
+          )
+        }
+      );
+      departureGraphics.destroy();
+      this.cameras.main.fadeOut(125, 13, 17, 18);
+      await new Promise<void>((resolve) => this.time.delayedCall(130, () => resolve()));
+
       const layout = generateLandmarkInterior(this.worldSeed, previous.landmark, stair.targetFloor);
       const origin = landmarkInteriorWorldOrigin(this.worldSeed, previous.landmark, stair.targetFloor);
       this.activeLandmarkInterior = {
@@ -3553,24 +3921,66 @@ export class AdventureScene extends Phaser.Scene {
         arrivalX += deltaX / length * WORLD_TILE_SIZE * 1.45;
         arrivalY += deltaY / length * WORLD_TILE_SIZE * 1.45;
       }
-      this.player.setPosition(arrivalX, arrivalY);
-      this.cameras.main.centerOn(arrivalX, arrivalY);
+      const arrivalStart = arrivalStair
+        ? landmarkInteriorWorldTilePosition(origin, arrivalStair.tileX, arrivalStair.tileY)
+        : { x: arrivalX, y: arrivalY };
+      this.player.setPosition(arrivalStart.x, arrivalStart.y);
+      this.playerAvatar
+        .setPosition(arrivalStart.x, arrivalStart.y)
+        .setAlpha(0.05)
+        .setScale(PLAYER_AVATAR_SCALE * 0.63);
+      this.cameras.main.centerOn(arrivalStart.x, arrivalStart.y);
       this.terrainSurface = `${layout.floorLabel} · floor ${layout.floorNumber}`;
       this.drawActiveLandmarkInterior();
       this.lastLandmarkInteriorAccentFrame = Number.NEGATIVE_INFINITY;
       this.updateLandmarkInteriorAccents(this.time.now, true);
       this.updateLandmarkInteriorInteraction(true);
       this.updateDropInteraction(this.time.now, true);
-      this.updatePlayerAvatar(0, false);
       this.markSaveDirty();
-      this.cameras.main.fadeIn(190, 13, 17, 18);
+      const activeArrivalGraphics = this.add.graphics().setDepth(12.6);
+      arrivalGraphics = activeArrivalGraphics;
+      this.cameras.main.fadeIn(150, 13, 17, 18);
+      if (arrivalStair) {
+        await this.tweenPlayerForTransition(
+          arrivalX,
+          arrivalY,
+          610,
+          arrivalX - arrivalStart.x,
+          arrivalY - arrivalStart.y,
+          {
+            fromAlpha: 0.05,
+            toAlpha: 1,
+            fromScale: PLAYER_AVATAR_SCALE * 0.63,
+            toScale: PLAYER_AVATAR_SCALE,
+            onUpdate: (progress) => this.drawWatchtowerStairTransition(
+              activeArrivalGraphics,
+              this.activeLandmarkInterior!,
+              arrivalStair,
+              progress,
+              true
+            )
+          }
+        );
+      }
+      activeArrivalGraphics.destroy();
+      arrivalGraphics = null;
+      this.restoreTransitionAvatar();
+      this.updateLandmarkInteriorInteraction(true);
     } catch (error) {
       this.activeLandmarkInterior = previous;
+      this.player.setPosition(previousPlayerX, previousPlayerY);
       this.drawActiveLandmarkInterior();
       this.cameras.main.centerOn(this.player.x, this.player.y);
       this.cameras.main.fadeIn(190, 13, 17, 18);
+      this.restoreTransitionAvatar();
       console.error('Wildbound could not change watchtower floors.', error);
     } finally {
+      if (departureGraphics.active) {
+        departureGraphics.destroy();
+      }
+      if (arrivalGraphics?.active) {
+        arrivalGraphics.destroy();
+      }
       this.worldReady = true;
       this.caveTransitionInProgress = false;
     }
@@ -4832,7 +5242,6 @@ export class AdventureScene extends Phaser.Scene {
     this.worldReady = false;
     this.ambientAudio?.setSwimming(false, false, false);
     this.footstepElapsedMs = 0;
-    this.showTerrainLoading(continueExistingLoading);
     this.cancelHarvesting();
     this.nearbyCaveEntrance = null;
     this.nearbyLandmarkEntrance = null;
@@ -4846,6 +5255,10 @@ export class AdventureScene extends Phaser.Scene {
     this.hideLandmarkHint();
 
     try {
+      if (!continueExistingLoading) {
+        await this.animateCaveEntry(entrance);
+      }
+      this.showTerrainLoading(continueExistingLoading);
       await this.waitForTerrainLoadingPaint();
 
       const layout = generateCaveLayout(this.worldSeed, entrance);
@@ -4881,12 +5294,18 @@ export class AdventureScene extends Phaser.Scene {
       this.updateCaveVisibility(true);
       this.updateCaveInteraction(true);
       this.updateDropInteraction(0, true);
+      this.restoreTransitionAvatar();
       this.updatePlayerAvatar(0, false);
       if (markDirty) {
         this.markSaveDirty();
       }
       await this.finishTerrainLoading();
     } catch (error) {
+      if (!this.activeCave) {
+        this.player.setPosition(returnWorldX, returnWorldY);
+        this.cameras.main.centerOn(returnWorldX, returnWorldY);
+      }
+      this.restoreTransitionAvatar();
       this.recoverFromTerrainLoadingFailure('enter the cave', error);
     }
   }

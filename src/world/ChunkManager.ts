@@ -525,6 +525,10 @@ export class ChunkManager {
     return this.landmarkManager.animateLandmarkDoorOpen(landmarkId);
   }
 
+  animateLandmarkDoorClose(landmarkId: string): Promise<void> {
+    return this.landmarkManager.animateLandmarkDoorClose(landmarkId);
+  }
+
   resetLandmarkDoor(landmarkId: string): void {
     this.landmarkManager.resetLandmarkDoor(landmarkId);
   }

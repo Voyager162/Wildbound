@@ -3134,6 +3134,34 @@ export class LandmarkManager {
     });
   }
 
+  animateLandmarkDoorClose(landmarkId: string): Promise<void> {
+    const visual = this.visuals.get(landmarkId);
+    if (!visual || (
+      visual.landmark.type !== LandmarkType.GiantAncientTree
+      && visual.landmark.type !== LandmarkType.Watchtower
+    )) {
+      return Promise.resolve();
+    }
+    const palette = paletteFor(visual.landmark.biome);
+    return new Promise((resolve) => {
+      this.scene.tweens.addCounter({
+        from: visual.doorProgress,
+        to: 0,
+        duration: 520,
+        ease: 'Sine.easeInOut',
+        onUpdate: (tween) => {
+          visual.doorProgress = Number(tween.getValue());
+          drawLandmarkDoor(this.seed, visual, palette);
+        },
+        onComplete: () => {
+          visual.doorProgress = 0;
+          drawLandmarkDoor(this.seed, visual, palette);
+          resolve();
+        }
+      });
+    });
+  }
+
   resetLandmarkDoor(landmarkId: string): void {
     const visual = this.visuals.get(landmarkId);
     if (!visual || (
