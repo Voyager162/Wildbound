@@ -461,8 +461,10 @@ for (let offsetY = -1.35; offsetY <= 0.55; offsetY += 0.19) {
 
 const watchtowerWalls = watchtowerPlan.components.filter((component) => component.role === 'tower-foundation');
 const watchtowerButtresses = watchtowerPlan.components.filter((component) => component.role === 'tower-leg');
+const watchtowerDoors = watchtowerPlan.components.filter((component) => component.role === 'tower-door');
 assert.equal(watchtowerWalls.length, 5, 'Watchtowers must use a solid U-shaped masonry wall plan with a doorway gap');
 assert.equal(watchtowerButtresses.length, 4, 'Watchtowers must retain four seeded corner buttresses');
+assert.equal(watchtowerDoors.length, 1, 'Watchtowers must expose one closed structural door');
 assert.equal(
   watchtowerPlan.components.filter((component) => component.role === 'tower-platform').length,
   1,
@@ -487,10 +489,23 @@ assert.equal(
     WORLD_TILE_SIZE * 0.06
   ),
   false,
-  'The watchtower door lane must remain open and enterable'
+  'The watchtower exterior interaction point must remain outside the closed door collision'
 );
 const watchtowerCenterX = (watchtowerPlan.landmark.centerTileX + 0.5) * WORLD_TILE_SIZE;
 const watchtowerCenterY = (watchtowerPlan.landmark.centerTileY + 0.5) * WORLD_TILE_SIZE;
+const watchtowerDoor = watchtowerDoors[0]!;
+assert.equal(watchtowerDoor.shape.kind, 'oriented-box');
+const watchtowerDoorCenterX = watchtowerCenterX
+  + watchtowerDoor.shape.x * Math.cos(watchtowerPlan.landmark.rotation)
+  - watchtowerDoor.shape.y * Math.sin(watchtowerPlan.landmark.rotation);
+const watchtowerDoorCenterY = watchtowerCenterY
+  + watchtowerDoor.shape.x * Math.sin(watchtowerPlan.landmark.rotation)
+  + watchtowerDoor.shape.y * Math.cos(watchtowerPlan.landmark.rotation);
+assert.equal(
+  landmarkStructureContainsWorldPoint(watchtowerPlan, watchtowerDoorCenterX, watchtowerDoorCenterY),
+  true,
+  'The closed watchtower door must stop normal player movement through the entrance'
+);
 assert.equal(
   watchtowerOccludesWorldPoint(watchtowerPlan, watchtowerCenterX, watchtowerCenterY),
   true,
@@ -500,6 +515,29 @@ assert.equal(
   watchtowerOccludesWorldPoint(watchtowerPlan, watchtowerEntrance.worldX, watchtowerEntrance.worldY),
   false,
   'A player standing at the watchtower door must remain visible in front'
+);
+const watchtowerWallBoxes = watchtowerWalls.map((component) => {
+  assert.equal(component.shape.kind, 'oriented-box');
+  const rotation = component.shape.rotation + watchtowerPlan.landmark.rotation;
+  const centerX = watchtowerCenterX
+    + component.shape.x * Math.cos(watchtowerPlan.landmark.rotation)
+    - component.shape.y * Math.sin(watchtowerPlan.landmark.rotation);
+  const screenWidth = Math.abs(Math.cos(rotation)) * component.shape.width
+    + Math.abs(Math.sin(rotation)) * component.shape.height;
+  const screenDepth = Math.abs(Math.sin(rotation)) * component.shape.width
+    + Math.abs(Math.cos(rotation)) * component.shape.height;
+  return { centerX, screenWidth, screenDepth };
+});
+const watchtowerRightEdge = Math.max(...watchtowerWallBoxes.map((wall) => wall.centerX + wall.screenWidth * 0.5));
+const watchtowerBodyDepth = Math.max(...watchtowerWallBoxes.map((wall) => wall.screenDepth));
+assert.equal(
+  watchtowerOccludesWorldPoint(
+    watchtowerPlan,
+    watchtowerRightEdge + watchtowerBodyDepth * 0.07,
+    watchtowerCenterY
+  ),
+  true,
+  'The watchtower east return must begin occluding before a right-side approach reaches the front facade'
 );
 assert.equal(
   watchtowerOccludesWorldPoint(

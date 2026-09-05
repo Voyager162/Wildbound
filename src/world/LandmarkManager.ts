@@ -43,6 +43,7 @@ const LANDMARK_TREE_ANIMATION_BEHIND_DEPTH = 11.3;
 const LANDMARK_TREE_DOOR_BEHIND_DEPTH = 11.4;
 const LANDMARK_STONE_BEHIND_DEPTH = 11.1;
 const LANDMARK_TOWER_BEHIND_DEPTH = 11.1;
+const LANDMARK_TOWER_DOOR_BEHIND_DEPTH = 11.25;
 const LANDMARK_ANIMATION_INTERVAL_MS = 50;
 
 interface Point {
@@ -2204,7 +2205,7 @@ const drawTower = (seed: string, visual: LandmarkVisual, palette: LandmarkPalett
     { x: bodyRight, y: baseY },
     { x: bodyLeft, y: baseY }
   ], mortar, 1);
-  const sideProjection = bodyDepth * 0.14;
+  const sideProjection = bodyDepth * 0.22;
   fillPolygon(structure, [
     { x: bodyRight, y: topY },
     { x: bodyRight + sideProjection, y: topY - bodyDepth * 0.07 },
@@ -2398,21 +2399,7 @@ const drawTower = (seed: string, visual: LandmarkVisual, palette: LandmarkPalett
     structure.fillStyle(0x101314, 0.98);
     structure.fillCircle(openingX, springY, radius);
     structure.fillRect(openingX - radius, springY, width, openingBottomY - springY);
-    if (includeDoor) {
-      structure.fillStyle(shadeColor(palette.woodDark, -0.08), 1);
-      structure.fillCircle(openingX, springY + r * 0.008, radius * 0.82);
-      structure.fillRect(openingX - radius * 0.82, springY, radius * 1.64, openingBottomY - springY);
-      for (let plank = -2; plank <= 2; plank += 1) {
-        const plankX = openingX + plank * width * 0.145;
-        structure.lineStyle(Math.max(1.1, r * 0.0027), plank % 2 ? palette.wood : palette.woodLight, 0.56);
-        structure.lineBetween(plankX, springY - radius * 0.72, plankX, openingBottomY - r * 0.012);
-      }
-      structure.lineStyle(Math.max(2, r * 0.004), 0x26282a, 0.9);
-      structure.lineBetween(openingX - radius * 0.78, springY + height * 0.26, openingX + radius * 0.78, springY + height * 0.26);
-      structure.lineBetween(openingX - radius * 0.78, springY + height * 0.57, openingX + radius * 0.78, springY + height * 0.57);
-      structure.fillStyle(0xd5b86f, 0.9);
-      structure.fillCircle(openingX + radius * 0.48, openingBottomY - height * 0.36, Math.max(2.5, r * 0.005));
-    } else {
+    if (!includeDoor) {
       structure.lineStyle(Math.max(1.5, r * 0.003), palette.stoneLight, 0.28);
       structure.lineBetween(openingX, springY - radius * 0.76, openingX, openingBottomY - r * 0.012);
       structure.lineBetween(openingX - radius * 0.72, springY + radius * 0.22, openingX + radius * 0.72, springY + radius * 0.22);
@@ -2583,16 +2570,6 @@ const drawTower = (seed: string, visual: LandmarkVisual, palette: LandmarkPalett
       foreground.fillRoundedRect(x, y - r * 0.065, r * 0.055, r * 0.075, 3);
     }
   });
-  // Seeded telescope/lens mounting gives the tower a readable exploration purpose.
-  const lensX = center.x + r * (0.1 + towerVariant * 0.08);
-  const lensY = deckBackY + bodyDepth * 0.2;
-  foreground.lineStyle(r * 0.018, palette.woodDark, 1);
-  foreground.lineBetween(lensX - r * 0.045, lensY + r * 0.07, lensX, lensY);
-  foreground.lineBetween(lensX + r * 0.045, lensY + r * 0.07, lensX, lensY);
-  foreground.lineStyle(r * 0.024, mixColor(palette.wood, palette.stoneDark, 0.35), 1);
-  foreground.lineBetween(lensX - r * 0.07, lensY, lensX + r * 0.085, lensY - r * 0.035);
-  foreground.fillStyle(0xb9e5e8, 0.9);
-  foreground.fillCircle(lensX + r * 0.085, lensY - r * 0.035, r * 0.018);
 };
 
 const drawStaticVisual = (
@@ -2716,6 +2693,120 @@ const drawAncientTreeDoor = (
   door.fillCircle(handleX, handleY, Math.max(2.5, radius * 0.095));
   door.fillStyle(palette.woodLight, 0.9);
   door.fillCircle(handleX - s * 0.002, handleY - s * 0.003, Math.max(1.4, radius * 0.045));
+};
+
+const drawWatchtowerDoor = (
+  seed: string,
+  visual: LandmarkVisual,
+  palette: LandmarkPalette
+): void => {
+  const { door, landmark, plan } = visual;
+  door.clear();
+  const entrance = plan.entrance;
+  if (landmark.type !== LandmarkType.Watchtower || !entrance) return;
+  const r = landmark.footprintRadiusTiles * WORLD_TILE_SIZE;
+  const walls = plan.components.filter((part) => (
+    part.role === 'tower-foundation' && part.shape.kind === 'oriented-box'
+  ));
+  if (walls.length === 0) return;
+  const baseY = Math.max(...walls.map((part) => {
+    if (part.shape.kind !== 'oriented-box') return Number.NEGATIVE_INFINITY;
+    return shapeCenterWorld(landmark, part.shape).y + part.shape.height * 0.5;
+  }));
+  const closedX = landmarkEntranceVisualPosition(entrance).worldX;
+  const doorWidth = r * 0.18;
+  const doorHeight = r * 0.3;
+  const archHeight = doorWidth * 0.5;
+  const eased = Phaser.Math.Easing.Sine.InOut(visual.doorProgress);
+  const swingAngle = eased * Math.PI * 0.48;
+  const projection = Math.max(0.075, Math.cos(swingAngle));
+  const projectedWidth = doorWidth * projection;
+  const hingeX = closedX - doorWidth * 0.5;
+  const outwardShift = Math.sin(swingAngle) * r * 0.055;
+  const doorCenterX = hingeX + projectedWidth * 0.5;
+  const doorBottomY = baseY + outwardShift;
+  const doorTopY = doorBottomY - doorHeight;
+  const faceColor = mixColor(palette.wood, palette.woodLight, 0.24);
+
+  door.fillStyle(0x090b0b, 0.34);
+  door.fillEllipse(
+    doorCenterX + r * 0.012,
+    doorBottomY + r * 0.018,
+    projectedWidth * 1.18,
+    r * 0.035
+  );
+  door.fillStyle(shadeColor(palette.woodDark, -0.18), 1);
+  door.fillEllipse(doorCenterX, doorTopY + archHeight, projectedWidth, archHeight * 2);
+  door.fillRect(doorCenterX - projectedWidth * 0.5, doorTopY + archHeight, projectedWidth, doorHeight - archHeight);
+  door.fillStyle(faceColor, 1);
+  door.fillEllipse(doorCenterX, doorTopY + archHeight, projectedWidth * 0.86, archHeight * 1.72);
+  door.fillRect(
+    doorCenterX - projectedWidth * 0.43,
+    doorTopY + archHeight,
+    projectedWidth * 0.86,
+    doorHeight - archHeight - r * 0.009
+  );
+  door.lineStyle(Math.max(1.6, r * 0.0036), palette.woodLight, 0.48);
+  door.strokeEllipse(doorCenterX, doorTopY + archHeight, projectedWidth * 0.88, archHeight * 1.76);
+  door.lineBetween(
+    doorCenterX - projectedWidth * 0.44,
+    doorTopY + archHeight,
+    doorCenterX - projectedWidth * 0.44,
+    doorBottomY - r * 0.01
+  );
+  door.lineBetween(
+    doorCenterX + projectedWidth * 0.44,
+    doorTopY + archHeight,
+    doorCenterX + projectedWidth * 0.44,
+    doorBottomY - r * 0.01
+  );
+
+  // Plank grain and iron bracing compress naturally as the door turns toward edge-on.
+  for (let plank = 1; plank < 5; plank += 1) {
+    const x = doorCenterX - projectedWidth * 0.43 + projectedWidth * 0.86 * plank / 5;
+    door.lineStyle(Math.max(0.9, r * 0.0023), plank % 2 ? palette.woodLight : palette.woodDark, 0.38);
+    door.lineBetween(x, doorTopY + archHeight * 0.42, x, doorBottomY - r * 0.012);
+  }
+  [0.48, 0.75].forEach((progress) => {
+    const y = doorTopY + doorHeight * progress;
+    door.lineStyle(Math.max(1.8, r * 0.0045), 0x202526, 0.94);
+    door.lineBetween(
+      doorCenterX - projectedWidth * 0.43,
+      y,
+      doorCenterX + projectedWidth * 0.43,
+      y
+    );
+  });
+  door.lineStyle(Math.max(2.2, r * 0.0048), shadeColor(palette.stoneDark, -0.18), 0.95);
+  door.lineBetween(hingeX, doorTopY + archHeight * 0.65, hingeX, doorBottomY - r * 0.018);
+  door.fillStyle(0xd1b46d, 0.92);
+  door.fillCircle(
+    doorCenterX + projectedWidth * 0.26,
+    doorTopY + doorHeight * 0.63,
+    Math.max(2.3, r * 0.0055)
+  );
+
+  // Seeded scratches keep the moving door as detailed as the surrounding masonry.
+  for (let scratch = 0; scratch < 7; scratch += 1) {
+    const x = doorCenterX + (detailRandom(seed, landmark, scratch, 0xe580) - 0.5) * projectedWidth * 0.62;
+    const y = doorTopY + doorHeight * (0.28 + detailRandom(seed, landmark, scratch, 0xe581) * 0.58);
+    door.lineStyle(Math.max(0.7, r * 0.0016), palette.woodLight, 0.2);
+    door.lineBetween(x, y, x + projectedWidth * 0.08, y + r * 0.012);
+  }
+};
+
+const drawLandmarkDoor = (
+  seed: string,
+  visual: LandmarkVisual,
+  palette: LandmarkPalette
+): void => {
+  if (visual.landmark.type === LandmarkType.GiantAncientTree) {
+    drawAncientTreeDoor(seed, visual, palette);
+  } else if (visual.landmark.type === LandmarkType.Watchtower) {
+    drawWatchtowerDoor(seed, visual, palette);
+  } else {
+    visual.door.clear();
+  }
 };
 
 const drawAnimatedVisual = (
@@ -2883,22 +2974,6 @@ const drawAnimatedVisual = (
         accent.fillCircle(rune.worldX + Math.cos(phase) * distance, rune.worldY + Math.sin(phase * 1.3) * distance * 0.48, 1.5 + pulse * 1.2);
       }
     }
-  } else if (landmark.type === LandmarkType.Watchtower) {
-    const center = centerFor(landmark);
-    const towerWalls = plan.components.filter((part) => (
-      part.role === 'tower-foundation' && part.shape.kind === 'oriented-box'
-    ));
-    const baseY = Math.max(...towerWalls.map((part) => {
-      if (part.shape.kind !== 'oriented-box') return 0;
-      return shapeCenterWorld(landmark, part.shape).y + part.shape.height * 0.5;
-    }));
-    const topY = baseY - Math.max(...towerWalls.map((part) => part.height));
-    const bodyDepth = r * 0.47;
-    const towerVariant = plan.components.find((part) => part.role === 'tower-platform')?.variant ?? 0.5;
-    const lensX = center.x + r * (0.1 + towerVariant * 0.08) + r * 0.085;
-    const lensY = topY - bodyDepth * 0.04 - r * 0.035;
-    accent.fillStyle(0xf3db8a, 0.34 + pulse * 0.42);
-    accent.fillCircle(lensX, lensY, 3.2 + pulse * 1.4);
   }
   plan.materials.forEach((node) => {
     if (node.glowStrength <= 0 || state.isLandmarkMaterialHarvested(node.id)) {
@@ -2925,11 +3000,7 @@ const createVisual = (
     shadow: scene.add.graphics().setDepth(LANDMARK_SHADOW_DEPTH),
     structure: scene.add.graphics().setDepth(LANDMARK_STRUCTURE_DEPTH),
     accent: scene.add.graphics().setDepth(
-      landmark.type === LandmarkType.GiantAncientTree
-        ? LANDMARK_TREE_ANIMATION_FRONT_DEPTH
-        : landmark.type === LandmarkType.Watchtower
-          ? LANDMARK_FOREGROUND_DEPTH + 0.1
-          : LANDMARK_ACCENT_DEPTH
+      landmark.type === LandmarkType.GiantAncientTree ? LANDMARK_TREE_ANIMATION_FRONT_DEPTH : LANDMARK_ACCENT_DEPTH
     ),
     door: scene.add.graphics().setDepth(LANDMARK_DOOR_DEPTH),
     foreground: scene.add.graphics().setDepth(
@@ -2939,7 +3010,7 @@ const createVisual = (
     doorProgress: 0
   };
   drawStaticVisual(seed, visual, state);
-  drawAncientTreeDoor(seed, visual, paletteFor(landmark.biome));
+  drawLandmarkDoor(seed, visual, paletteFor(landmark.biome));
   drawAnimatedVisual(seed, visual, state, 0);
   return visual;
 };
@@ -3022,11 +3093,9 @@ export class LandmarkManager {
             : LANDMARK_STRUCTURE_DEPTH
         );
       } else if (visual.landmark.type === LandmarkType.Watchtower) {
-        visual.structure.setDepth(
-          watchtowerOccludesWorldPoint(visual.plan, playerWorldX, playerWorldY)
-            ? LANDMARK_TOWER_BEHIND_DEPTH
-            : LANDMARK_STRUCTURE_DEPTH
-        );
+        const playerIsBehind = watchtowerOccludesWorldPoint(visual.plan, playerWorldX, playerWorldY);
+        visual.structure.setDepth(playerIsBehind ? LANDMARK_TOWER_BEHIND_DEPTH : LANDMARK_STRUCTURE_DEPTH);
+        visual.door.setDepth(playerIsBehind ? LANDMARK_TOWER_DOOR_BEHIND_DEPTH : LANDMARK_DOOR_DEPTH);
       }
     });
     const frame = Math.floor(time / LANDMARK_ANIMATION_INTERVAL_MS);
@@ -3037,9 +3106,12 @@ export class LandmarkManager {
     this.visuals.forEach((visual) => drawAnimatedVisual(this.seed, visual, this.state, time));
   }
 
-  animateAncientTreeDoorOpen(landmarkId: string): Promise<void> {
+  animateLandmarkDoorOpen(landmarkId: string): Promise<void> {
     const visual = this.visuals.get(landmarkId);
-    if (!visual || visual.landmark.type !== LandmarkType.GiantAncientTree) {
+    if (!visual || (
+      visual.landmark.type !== LandmarkType.GiantAncientTree
+      && visual.landmark.type !== LandmarkType.Watchtower
+    )) {
       return Promise.resolve();
     }
     const palette = paletteFor(visual.landmark.biome);
@@ -3051,24 +3123,27 @@ export class LandmarkManager {
         ease: 'Sine.easeInOut',
         onUpdate: (tween) => {
           visual.doorProgress = Number(tween.getValue());
-          drawAncientTreeDoor(this.seed, visual, palette);
+          drawLandmarkDoor(this.seed, visual, palette);
         },
         onComplete: () => {
           visual.doorProgress = 1;
-          drawAncientTreeDoor(this.seed, visual, palette);
+          drawLandmarkDoor(this.seed, visual, palette);
           resolve();
         }
       });
     });
   }
 
-  resetAncientTreeDoor(landmarkId: string): void {
+  resetLandmarkDoor(landmarkId: string): void {
     const visual = this.visuals.get(landmarkId);
-    if (!visual || visual.landmark.type !== LandmarkType.GiantAncientTree) {
+    if (!visual || (
+      visual.landmark.type !== LandmarkType.GiantAncientTree
+      && visual.landmark.type !== LandmarkType.Watchtower
+    )) {
       return;
     }
     visual.doorProgress = 0;
-    drawAncientTreeDoor(this.seed, visual, paletteFor(visual.landmark.biome));
+    drawLandmarkDoor(this.seed, visual, paletteFor(visual.landmark.biome));
   }
 
   findNearbyEntrance(worldX: number, worldY: number, radiusPixels: number): LandmarkEntrance | null {
@@ -3112,7 +3187,7 @@ export class LandmarkManager {
     this.visuals.forEach((visual) => {
       if (visual.plan.materials.some((material) => material.id === materialId)) {
         drawStaticVisual(this.seed, visual, this.state);
-        drawAncientTreeDoor(this.seed, visual, paletteFor(visual.landmark.biome));
+        drawLandmarkDoor(this.seed, visual, paletteFor(visual.landmark.biome));
         drawAnimatedVisual(this.seed, visual, this.state, this.lastAnimationFrame * LANDMARK_ANIMATION_INTERVAL_MS);
       }
     });

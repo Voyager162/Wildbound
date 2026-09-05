@@ -3276,7 +3276,9 @@ export class AdventureScene extends Phaser.Scene {
     }
     const returnWorldX = this.player.x;
     const returnWorldY = this.player.y;
-    if (entrance.landmark.type !== LandmarkType.GiantAncientTree) {
+    const usesAnimatedDoor = entrance.landmark.type === LandmarkType.GiantAncientTree
+      || entrance.landmark.type === LandmarkType.Watchtower;
+    if (!usesAnimatedDoor) {
       await this.enterLandmarkInterior(entrance.landmark, returnWorldX, returnWorldY);
       return;
     }
@@ -3301,8 +3303,8 @@ export class AdventureScene extends Phaser.Scene {
     const pullDistance = Math.max(16, radius * 0.045);
 
     try {
-      // Approach the plug, brace backward while pulling it free, then walk through the revealed
-      // hollow. Player input stays locked for this short authored sequence.
+      // Approach the closed door, brace backward while it swings outward, then walk through the
+      // revealed opening. Player input stays locked for this short authored sequence.
       await this.tweenPlayerForLandmarkEntrance(
         entrance.worldX + outwardX * grabDistance,
         entrance.worldY + outwardY * grabDistance,
@@ -3311,7 +3313,7 @@ export class AdventureScene extends Phaser.Scene {
         -outwardY
       );
       await Promise.all([
-        this.chunkManager.animateAncientTreeDoorOpen(entrance.landmark.id),
+        this.chunkManager.animateLandmarkDoorOpen(entrance.landmark.id),
         this.tweenPlayerForLandmarkEntrance(
           entrance.worldX + outwardX * (grabDistance + pullDistance),
           entrance.worldY + outwardY * (grabDistance + pullDistance),
@@ -3329,12 +3331,12 @@ export class AdventureScene extends Phaser.Scene {
       );
       await this.enterLandmarkInterior(entrance.landmark, returnWorldX, returnWorldY);
     } catch (error) {
-      console.error('Wildbound could not complete the ancient-tree entrance sequence.', error);
+      console.error(`Wildbound could not complete the ${entrance.landmark.type} entrance sequence.`, error);
       this.player.setPosition(returnWorldX, returnWorldY);
       this.playerAvatar.setPosition(returnWorldX, returnWorldY);
       this.updateLandmarkEntranceInteraction(true);
     } finally {
-      this.chunkManager.resetAncientTreeDoor(entrance.landmark.id);
+      this.chunkManager.resetLandmarkDoor(entrance.landmark.id);
       this.landmarkEntranceSequenceInProgress = false;
     }
   }

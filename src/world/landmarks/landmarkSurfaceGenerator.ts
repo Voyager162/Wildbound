@@ -19,6 +19,7 @@ export type LandmarkComponentRole =
   | 'skeleton-skull'
   | 'tower-foundation'
   | 'tower-leg'
+  | 'tower-door'
   | 'tower-platform';
 
 export type LandmarkGroundDetailKind =
@@ -566,6 +567,25 @@ const towerPlan = (seed: string, landmark: ProceduralLandmark): Omit<LandmarkSur
       index
     ));
   });
+  const doorShape = screenAlignedBox(
+    0,
+    halfDepth - wallThickness * 0.5,
+    doorHalfWidth * 2,
+    wallThickness
+  );
+  shapes.push(doorShape);
+  components.push(component(
+    landmark,
+    'tower-door',
+    0,
+    doorShape,
+    r * 0.3,
+    0,
+    0,
+    1,
+    planRandom(planSeed, 50, 9, 4),
+    9
+  ));
   [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sideX, sideY], index) => {
     const screenX = sideX * (halfWidth - wallThickness * 0.08);
     const screenY = sideY * (halfDepth - wallThickness * 0.08);
@@ -957,6 +977,7 @@ export const watchtowerOccludesWorldPoint = (
   let right = Number.NEGATIVE_INFINITY;
   let groundLineY = Number.NEGATIVE_INFINITY;
   let visualTopY = Number.POSITIVE_INFINITY;
+  let bodyDepth = 0;
   walls.forEach((part) => {
     if (part.shape.kind !== 'oriented-box') return;
     const rotatedCenter = rotateLocal(part.shape.x, part.shape.y, plan.landmark.rotation);
@@ -971,12 +992,16 @@ export const watchtowerOccludesWorldPoint = (
     right = Math.max(right, centerX + screenWidth * 0.5);
     groundLineY = Math.max(groundLineY, centerY + screenDepth * 0.5);
     visualTopY = Math.min(visualTopY, centerY + screenDepth * 0.5 - part.height);
+    bodyDepth = Math.max(bodyDepth, screenDepth);
   });
-  // The player's feet control depth. The southern doorway and approach remain in front, while
-  // the continuous masonry body hides an avatar crossing behind the tower.
-  return worldX >= left - WORLD_TILE_SIZE * 0.12
-    && worldX <= right + WORLD_TILE_SIZE * 0.12
-    && worldY <= groundLineY + WORLD_TILE_SIZE * 0.04
+  const eastReturnProjection = bodyDepth * 0.22;
+  // Change depth just before the avatar artwork touches the silhouette. That lead-in lets the
+  // east return progressively cover a player approaching from the right, and lets the facade
+  // progressively cover a player walking north, instead of popping over an already-overlapped
+  // avatar. The southern entrance position remains safely in front of this envelope.
+  return worldX >= left - WORLD_TILE_SIZE * 0.55
+    && worldX <= right + eastReturnProjection + WORLD_TILE_SIZE * 0.55
+    && worldY <= groundLineY + WORLD_TILE_SIZE * 0.55
     && worldY >= visualTopY - WORLD_TILE_SIZE * 0.12;
 };
 
